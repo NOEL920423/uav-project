@@ -1,8 +1,9 @@
 # uav_interfaces
 
 Owns the typed ROS 2 message, service, and action contracts shared by the UAV
-integration packages. Phase 1 establishes only the package boundary; runtime
-behavior belongs to later phases.
+integration packages. Phase 1 generates `Obstacle`, `ObstacleArray`,
+`EpisodeState`, `GenerateEpisode`, and `RunEpisode`; runtime behavior belongs
+to later phases.
 
 - Inputs: interface definitions maintained in this package.
 - Outputs: generated language bindings after a workspace build.

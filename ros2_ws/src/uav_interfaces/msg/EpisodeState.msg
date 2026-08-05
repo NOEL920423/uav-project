@@ -1,0 +1,9 @@
+std_msgs/Header header
+string episode_id
+string phase
+string control_source
+bool success
+bool collision
+int32 active_waypoint_index
+float32 elapsed_time
+string status_message

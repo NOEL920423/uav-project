@@ -1,0 +1,7 @@
+int64 random_seed
+int32 obstacle_count
+bool enable_recording
+---
+bool success
+string episode_id
+string status_message

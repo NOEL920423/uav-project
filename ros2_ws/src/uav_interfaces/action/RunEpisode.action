@@ -1,0 +1,18 @@
+string episode_id
+bool generate_new_episode
+string controller_source
+bool enable_bspline
+bool enable_recording
+---
+bool success
+bool collision
+float32 mission_time
+float32 path_length
+float32 minimum_obstacle_clearance
+string output_directory
+string status_message
+---
+string phase
+float32 progress
+int32 active_path_segment
+float32 distance_to_goal
