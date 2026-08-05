@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ROS2 generated files
+build/
+install/
+log/
+
+# Generated experiment data
+rosbags/
+uav_vision_dataset/
+uav_episode_logs/
+uav_demo_logs/
+uav_scene_obstacles/
+uav_waypoint_logs/
+ros2_uav_pose_logs/
+uav_bc_models/
+uav_bc_runtime/
+uav_videos/
+
+# Local/vendor copies; authoritative checkouts live beside this project
+pegasus_test/
+
+# Dataset / logs / images / videos
+*.csv
+*.json
+*.log
+*.png
+*.jpg
+*.jpeg
+*.mp4
+*.avi
+*.mkv
+*.pt
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
