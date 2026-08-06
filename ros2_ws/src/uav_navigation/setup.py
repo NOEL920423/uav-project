@@ -14,10 +14,20 @@ setup(
             ["resource/" + package_name],
         ),
         ("share/" + package_name, ["package.xml"]),
-        ("share/" + package_name + "/config", ["config/astar_planner.yaml"]),
+        (
+            "share/" + package_name + "/config",
+            [
+                "config/astar_planner.yaml",
+                "config/trajectory_parameterizer.yaml",
+            ],
+        ),
         (
             "share/" + package_name + "/launch",
-            ["launch/astar_planner_offline.launch.py"],
+            [
+                "launch/astar_planner_offline.launch.py",
+                "launch/planning_to_trajectory_offline.launch.py",
+                "launch/trajectory_parameterizer_offline.launch.py",
+            ],
         ),
     ],
     install_requires=["setuptools"],
@@ -25,7 +35,7 @@ setup(
     maintainer="Noel",
     maintainer_email="a0916190423@gmail.com",
     description=(
-        "Validated A* planner with optional Phase 3 B-spline candidate."
+        "Validated A*/B-spline paths and offline timed trajectories."
     ),
     license="Apache-2.0",
     tests_require=["pytest"],
@@ -37,6 +47,14 @@ setup(
             "uav_navigation.astar_planner_node:offline_harness_main",
             "geometric_path_comparison = "
             "uav_navigation.geometric_comparison:main",
+            "trajectory_parameterizer_node = "
+            "uav_navigation.trajectory_parameterizer_node:main",
+            "trajectory_offline_harness = "
+            "uav_navigation.trajectory_parameterizer_node:"
+            "offline_harness_main",
+            "trajectory_pipeline_harness = "
+            "uav_navigation.trajectory_parameterizer_node:"
+            "pipeline_harness_main",
         ],
     },
 )

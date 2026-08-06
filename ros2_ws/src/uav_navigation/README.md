@@ -127,3 +127,54 @@ ros2 launch uav_navigation astar_planner_offline.launch.py \
 
 The planner is persistent, so the launch service terminates it after the
 required finite harness exits successfully.
+
+## Phase 4 offline trajectory parameterization
+
+The Phase 4 node subscribes only to the final selected
+`/uav/planner/path`. It preserves cleaned path positions exactly, derives
+strictly increasing arc length and time, bounds speed through forward/backward
+passes and curvature, computes NED yaw as `atan2(east, north)`, and applies one
+global time scale for acceleration, jerk, yaw-rate, and yaw-acceleration limits.
+An independent pure validator decides the final validity flag.
+
+Outputs use reliable transient-local depth-one QoS:
+
+- `/uav/trajectory/candidate` — `uav_interfaces/msg/TimedTrajectory`
+- `/uav/trajectory/valid` — `std_msgs/msg/Bool`
+- `/uav/trajectory/status` — `std_msgs/msg/String`
+
+Configuration is installed from `config/trajectory_parameterizer.yaml`. Limits
+are conservative offline engineering defaults in SI units; they are not
+verified physical limits of a real UAV. Run direct and combined finite checks:
+
+| Parameter | Default | Unit / meaning |
+|---|---:|---|
+| `maximum_speed_mps` | 2.0 | m/s, point speed cap |
+| `maximum_longitudinal_acceleration_mps2` | 1.5 | m/s², forward speed increase |
+| `maximum_longitudinal_deceleration_mps2` | 1.5 | m/s², speed decrease magnitude |
+| `maximum_lateral_acceleration_mps2` | 1.5 | m/s², curvature-induced acceleration |
+| `maximum_jerk_mps3` | 3.0 | m/s³, acceleration derivative norm |
+| `maximum_yaw_rate_radps` | 1.5 | rad/s, unwrapped NED yaw derivative |
+| `maximum_yaw_acceleration_radps2` | 2.0 | rad/s², yaw-rate derivative |
+| `start_speed_mps` | 0.0 | m/s, requested first-point speed |
+| `end_speed_mps` | 0.0 | m/s, requested last-point speed |
+| `minimum_segment_time_s` | 0.001 | s, positive duration floor |
+| `minimum_speed_mps` | 0.001 | m/s, safe time-division threshold |
+| `curvature_epsilon` | 1e-9 | 1/m, curvature denominator floor |
+| `maximum_time_scaling_iterations` | 8 | count, global-scaling attempts |
+| `maximum_total_time_scale` | 100.0 | dimensionless, scaling budget |
+| `trajectory_minimum_points` | 2 | count after duplicate cleanup |
+| `require_zero_start_speed` | true | enforce a stopped first point |
+| `require_zero_end_speed` | true | enforce a stopped last point |
+
+Run direct and combined finite checks:
+
+```bash
+./uav trajectory-check fixture:=straight-line
+./uav trajectory-check fixture:=impossible-config-rejection
+./uav pipeline-check enable_bspline:=true
+```
+
+This package still contains no follower, controller, setpoint adapter,
+OFFBOARD/arming logic, simulator process, or PX4 input publisher. A valid timed
+trajectory is analysis data and cannot command flight.

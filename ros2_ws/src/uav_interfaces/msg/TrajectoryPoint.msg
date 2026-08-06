@@ -1,0 +1,10 @@
+builtin_interfaces/Duration time_from_start
+geometry_msgs/Point position
+geometry_msgs/Vector3 velocity
+geometry_msgs/Vector3 acceleration
+geometry_msgs/Vector3 jerk
+float64 yaw_ned
+float64 yaw_rate
+float64 yaw_acceleration
+float64 arc_length
+float64 curvature

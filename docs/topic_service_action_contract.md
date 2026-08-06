@@ -98,6 +98,22 @@ camera, and mux nodes may not do so. The mux is not implemented in Phase 1.
 | `/uav/vehicle/twist` — `geometry_msgs/msg/TwistStamped` | PX4 telemetry adapter | tracker, safety, recorder | `px4_ned`; same source-time conversion policy | `BE/V/K5`; expected 20–50 Hz | Finite velocity with declared NED/angular convention; episode/frame ready | Stale/invalid twist blocks non-HOLD activation and is surfaced in episode status | PX4 telemetry phase |
 | `/uav/vehicle/odometry` — `nav_msgs/msg/Odometry` | PX4 telemetry adapter | planner/tracker, safety, recorder, UI | `header.frame_id=px4_ned`, `child_frame_id=base_link`; common ROS stamp | `BE/V/K5`; expected 20–50 Hz | Pose/twist/covariance internally consistent; transform contract validated | Stale/inconsistent odometry marks unhealthy; no extrapolated sample may silently command flight | PX4 telemetry phase |
 
+## Phase 4 trajectory contracts
+
+Phase 4 is event-driven and uses reliable transient-local depth-one QoS. It is
+strictly downstream of the final Phase 3 selection and is not a command path.
+
+| Exact name and type | Owner | Input/source | Frame and timestamp | Acceptance and failure behavior |
+|---|---|---|---|---|
+| `/uav/trajectory/candidate` — `uav_interfaces/msg/TimedTrajectory` | `uav_navigation` trajectory parameterizer | Only `/uav/planner/path`; pose stamps and orientations ignored | Header and `source_path_frame` are `px4_ned`; output header uses current ROS time | Published only for a finite structured candidate. `valid=true` only after independent validation; rejected finite candidates carry `valid=false` and status. |
+| `/uav/trajectory/valid` — `std_msgs/msg/Bool` | Independent trajectory validation result publisher | Current unique path attempt | No header; paired with current candidate/status transaction | Published for every attempted non-identical path. Missing, stale, or rejected is never interpreted as true. |
+| `/uav/trajectory/status` — `std_msgs/msg/String` | Trajectory parameterizer | Current unique path attempt | No header; controlled pipe-delimited fields | Reports success/rejection, counts, duration, time scale, dynamics maxima, and explicit rejection reason. |
+
+`TimedTrajectory` positions exactly equal the adjacent-duplicate-cleaned source
+path. Time and arc length are finite and strictly increasing. The node consumes
+no raw/simplified/candidate planner topics, vehicle state, joystick, NavRL,
+simulator, or PX4 topics. No Phase 4 owner publishes `/fmu/in/*`.
+
 ## Global failure and lifecycle rules
 
 - Every candidate and selected command is stamped. Stale candidates are

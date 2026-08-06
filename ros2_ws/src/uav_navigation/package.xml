@@ -3,7 +3,7 @@
 <package format="3">
   <name>uav_navigation</name>
   <version>0.1.0</version>
-  <description>Validated ROS 2 A* planner with optional B-spline candidate.</description>
+  <description>Validated A*/B-spline paths and offline timed trajectories.</description>
   <maintainer email="a0916190423@gmail.com">Noel</maintainer>
   <license>Apache-2.0</license>
   <exec_depend>rclpy</exec_depend>

@@ -1,0 +1,20 @@
+trajectory_parameterizer:
+  ros__parameters:
+    use_sim_time: false
+    maximum_speed_mps: 2.0
+    maximum_longitudinal_acceleration_mps2: 1.5
+    maximum_longitudinal_deceleration_mps2: 1.5
+    maximum_lateral_acceleration_mps2: 1.5
+    maximum_jerk_mps3: 3.0
+    maximum_yaw_rate_radps: 1.5
+    maximum_yaw_acceleration_radps2: 2.0
+    start_speed_mps: 0.0
+    end_speed_mps: 0.0
+    minimum_segment_time_s: 0.001
+    minimum_speed_mps: 0.001
+    curvature_epsilon: 1.0e-9
+    maximum_time_scaling_iterations: 8
+    maximum_total_time_scale: 100.0
+    trajectory_minimum_points: 2
+    require_zero_start_speed: true
+    require_zero_end_speed: true
