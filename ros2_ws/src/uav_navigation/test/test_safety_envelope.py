@@ -8,7 +8,10 @@ from uav_navigation.models import CircularObstacle, PlannerConfig, Point3D
 from uav_navigation.path_validator import (
     filter_overflyable_obstacles,
     minimum_segment_clearance,
+    nearest_obstacle_clearance,
     planning_radius,
+    point_clearance,
+    segment_clearance,
     validate_path,
     validation_radius,
 )
@@ -57,6 +60,23 @@ def test_signed_continuous_segment_clearance(
         assert clearance == pytest.approx(0.0, abs=1e-12)
     else:
         assert math.copysign(1.0, clearance) == expected_sign
+
+
+def test_point_segment_and_nearest_clearance_helpers() -> None:
+    """Expose each required clearance boundary with the same signed formula."""
+    item = obstacle()
+    config = PlannerConfig()
+    tangent = Point3D(0.0, 0.58, -2.0)
+    assert point_clearance(tangent, item, config) == pytest.approx(0.0)
+    assert segment_clearance(
+        Point3D(-1.0, 0.58, -2.0),
+        Point3D(1.0, 0.58, -2.0),
+        item,
+        config,
+    ) == pytest.approx(0.0)
+    clearance = nearest_obstacle_clearance(tangent, (item,), config)
+    assert clearance == pytest.approx(0.0)
+    assert math.isinf(nearest_obstacle_clearance(tangent, (), config))
 
 
 def test_validator_names_colliding_segment_and_obstacle() -> None:

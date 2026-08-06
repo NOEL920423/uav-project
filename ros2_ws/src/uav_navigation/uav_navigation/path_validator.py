@@ -77,6 +77,65 @@ def minimum_segment_clearance(
     return minimum
 
 
+def point_clearance(
+    point: Point3D,
+    obstacle: CircularObstacle,
+    config: PlannerConfig,
+    *,
+    use_validation_radius: bool = True,
+) -> float:
+    """Return signed clearance from a point to one obstacle envelope."""
+    radius = (
+        validation_radius(obstacle, config)
+        if use_validation_radius
+        else planning_radius(obstacle, config)
+    )
+    return distance_2d(point, obstacle.center) - radius
+
+
+def segment_clearance(
+    start: Point3D,
+    end: Point3D,
+    obstacle: CircularObstacle,
+    config: PlannerConfig,
+    *,
+    use_validation_radius: bool = True,
+) -> float:
+    """Return signed clearance from one segment to one obstacle envelope."""
+    radius = (
+        validation_radius(obstacle, config)
+        if use_validation_radius
+        else planning_radius(obstacle, config)
+    )
+    return point_to_segment_distance_2d(
+        obstacle.center,
+        start,
+        end,
+    ) - radius
+
+
+def nearest_obstacle_clearance(
+    point: Point3D,
+    obstacles: Sequence[CircularObstacle],
+    config: PlannerConfig,
+    *,
+    use_validation_radius: bool = True,
+) -> float:
+    """Return the nearest signed point clearance, or infinity when empty."""
+    return min(
+        (
+            point_clearance(
+                point,
+                obstacle,
+                config,
+                use_validation_radius=use_validation_radius,
+            )
+            for obstacle in obstacles
+        ),
+        default=math.inf,
+    )
+
+
 def validate_path(
     path: Sequence[Point3D],
     obstacles: Sequence[CircularObstacle],

@@ -47,6 +47,18 @@ def polyline_length_2d(path: Sequence[Point3D]) -> float:
     )
 
 
+def cumulative_polyline_lengths_2d(
+    path: Sequence[Point3D],
+) -> tuple[float, ...]:
+    """Return cumulative XY length at each point, beginning with zero."""
+    if not path:
+        return ()
+    cumulative = [0.0]
+    for first, second in zip(path, path[1:]):
+        cumulative.append(cumulative[-1] + distance_2d(first, second))
+    return tuple(cumulative)
+
+
 def segment_lengths_2d(path: Sequence[Point3D]) -> tuple[float, ...]:
     """Return each XY segment length."""
     return tuple(
@@ -80,3 +92,12 @@ def absolute_heading_changes(path: Sequence[Point3D]) -> tuple[float, ...]:
         wrapped = (current - previous + math.pi) % (2.0 * math.pi) - math.pi
         changes.append(abs(wrapped))
     return tuple(changes)
+
+
+def points_are_finite(path: Sequence[Point3D]) -> bool:
+    """Confirm finite coordinates at an explicit collection boundary."""
+    return all(
+        math.isfinite(coordinate)
+        for point in path
+        for coordinate in (point.x, point.y, point.z)
+    )

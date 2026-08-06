@@ -1,0 +1,48 @@
+astar_planner:
+  ros__parameters:
+    # Canonical output frame. Phase 2 rejects every other value.
+    planning_frame: px4_ned
+    # A* grid cell size [m].
+    grid_resolution_m: 0.05
+    # Dynamic-grid padding around endpoints and obstacles [m].
+    grid_margin_m: 2.0
+    # Horizontal physical radius of the UAV [m].
+    uav_physical_radius_m: 0.18
+    # Static obstacle margin added during grid planning [m].
+    static_safety_margin_m: 0.13
+    # Extra clearance required by continuous segment validation [m].
+    minimum_segment_clearance_m: 0.07
+    # Maximum distance used to recover a rounded occupied endpoint cell [m].
+    endpoint_search_radius_m: 1.0
+    # Ramer-Douglas-Peucker candidate tolerance [m].
+    path_simplification_tolerance_m: 0.05
+    # Maximum spacing in every published simplified/final path [m].
+    maximum_waypoint_spacing_m: 1.30
+    # Prefer grid routes near the exact start-to-goal segment.
+    use_direct_path_bias: true
+    # Direct-path proximity cost weight [dimensionless].
+    direct_path_bias_weight: 0.07
+    # Add a soft cost near planning envelopes.
+    use_clearance_aware_cost: true
+    # Distance over which the soft-clearance cost acts [m].
+    soft_clearance_radius_m: 0.40
+    # Soft-clearance cost weight [dimensionless].
+    clearance_cost_weight: 0.25
+    # Fixed height above the Isaac world origin [m].
+    flight_altitude_m: 2.0
+    # Ignore obstacles that can be safely overflown at the fixed altitude.
+    enable_overfly_short_obstacles: true
+    # Required vertical separation over an obstacle top [m].
+    overfly_vertical_clearance_m: 0.35
+    # Isaac-world to NED north position offset [m].
+    ned_offset_x: 0.0
+    # Isaac-world to NED east position offset [m].
+    ned_offset_y: 0.0
+    # Isaac-world to NED down position offset [m].
+    ned_offset_z: 0.0
+    # Second-search conservative occupancy addition [m].
+    retry_extra_inflation_m: 0.07
+    # Hard allocation guard for a dynamically generated grid [cells].
+    maximum_grid_cells: 4000000
+    # ROS built-in clock selection. Offline tests use wall-backed ROS time.
+    use_sim_time: false

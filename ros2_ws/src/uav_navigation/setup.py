@@ -1,4 +1,4 @@
-"""Package the UAV navigation scaffold."""
+"""Package the UAV navigation planner."""
 
 from setuptools import find_packages, setup
 
@@ -14,17 +14,25 @@ setup(
             ["resource/" + package_name],
         ),
         ("share/" + package_name, ["package.xml"]),
+        ("share/" + package_name + "/config", ["config/astar_planner.yaml"]),
+        (
+            "share/" + package_name + "/launch",
+            ["launch/astar_planner_offline.launch.py"],
+        ),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
     maintainer="Noel",
     maintainer_email="a0916190423@gmail.com",
-    description="Safe Phase 1 navigation scaffold.",
+    description="Deterministic validated Phase 2 UAV A* planner.",
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "navigation_node = uav_navigation.navigation_node:main",
+            "astar_planner_node = uav_navigation.astar_planner_node:main",
+            "astar_offline_harness = "
+            "uav_navigation.astar_planner_node:offline_harness_main",
         ],
     },
 )

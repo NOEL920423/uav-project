@@ -7,8 +7,10 @@ import pytest
 from uav_navigation.geometry import (
     absolute_heading_changes,
     clamp,
+    cumulative_polyline_lengths_2d,
     distance_2d,
     point_to_segment_distance_2d,
+    points_are_finite,
     polyline_length_2d,
 )
 from uav_navigation.models import CircularObstacle, Point3D
@@ -39,6 +41,8 @@ def test_polyline_heading_changes_and_metrics() -> None:
     path = (point(0, 0), point(1, 0), point(1, 1))
     obstacle = CircularObstacle("far", point(4, 4), 0.5, 4.0)
     assert polyline_length_2d(path) == 2.0
+    assert cumulative_polyline_lengths_2d(path) == (0.0, 1.0, 2.0)
+    assert points_are_finite(path)
     assert absolute_heading_changes(path) == (math.pi / 2.0,)
     metrics = calculate_path_metrics(path, (obstacle,))
     assert metrics.point_count == 3
