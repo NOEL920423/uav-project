@@ -2,18 +2,17 @@
 
 ## Status
 
-This document fixes names and validation rules for Phase 1. It does not create
-a TF tree or implement conversions. Phase 0 established a working position
-mapping but also found that the project has no canonical transform module and
-does not yet define a complete orientation convention.
+Phase 2 closes the first planner-milestone decision and implements only the
+verified position/vector mapping in one pure module. It does not create a TF
+tree and does not claim a complete vehicle orientation convention.
 
 ## Stable frame names
 
-| Frame | Meaning in the target architecture | Phase 1 rule |
+| Frame | Meaning in the target architecture | Phase 2 rule |
 |---|---|---|
 | `isaac_world` | Raw Isaac/Pegasus scene coordinates, poses, obstacles, start, and goal | Never call it ENU unless that is proven. Raw scene messages use this frame. |
-| `map` | Reserved ROS planning/world frame for a future TF-consistent architecture | Name is reserved, but its transform to `isaac_world` and `px4_ned` is unresolved. No Phase 1 runtime publisher uses it. |
-| `px4_ned` | PX4 local North-East-Down position/velocity convention used by the first integration milestone | Per Phase 0, planner paths and candidate commands use this frame until the `map` decision is closed. |
+| `map` | Reserved ROS planning/world frame for a future TF-consistent architecture | No Phase 2 runtime TF or planner message uses it. |
+| `px4_ned` | PX4 local North-East-Down position/velocity convention used by the first integration milestone | Canonical Phase 2 planner frame for obstacles, start, goal, and paths. |
 | `base_link` | UAV body frame at the selected vehicle reference point | Body-axis convention and exact prim/link origin require validation. |
 | `uav_fpv_camera` | Optical frame for the forward camera | Extrinsic transform from `base_link` and optical-axis convention require calibration. |
 | `uav_observer_camera` | Optical frame for the observer camera | Whether this camera is world-fixed or body-attached must be explicit per episode/configuration. |
@@ -36,18 +35,24 @@ pose transform. It says nothing complete about quaternion handedness, yaw zero,
 camera optical axes, vehicle-body axes, local-origin offsets, reset behavior,
 or whether the world origin moves between episodes.
 
-**DECISION REQUIRED BEFORE PHASE 2:** choose whether `map` becomes the
-canonical planning frame or the first migration continues to plan directly in
-`px4_ned`. If `map` is selected, specify and test the full
-`isaac_world -> map -> px4_ned` transform chain. Until that decision, the
-least-destructive contract keeps Phase 0 planner paths in `px4_ned` and raw
-scene geometry in `isaac_world`.
+Phase 2 resolves the first planning decision in favor of `px4_ned`. Raw scene
+geometry remains `isaac_world` and is converted exactly once at the ROS planner
+node boundary. Translation parameters `ned_offset_x/y/z` apply to positions
+only. Velocity and acceleration vectors use the axis mapping without offsets.
+`map` may become a higher-level canonical frame only after deployment origin,
+orientation, and TF requirements are validated.
 
-**DECISION REQUIRED BEFORE PHASE 2:** define orientation, yaw, body-axis,
-camera optical-axis, translation-offset, origin-reset, and covariance
-semantics. Tests must cover forward/inverse round trips, known basis vectors,
-nonzero offsets, and heading examples before any flight-output adapter is
-allowed.
+Planar heading vectors follow the same XY swap. Under the explicit conventions
+that Isaac yaw is counter-clockwise from Isaac `+X`, and NED yaw is clockwise
+from north toward east, `yaw_ned = pi/2 - yaw_isaac`, normalized to
+`[-pi, pi)`. This is a planar mathematical contract, not a complete body pose.
+
+Quaternion conversion, body-axis origin, camera optical axes, origin reset,
+and covariance semantics remain unsupported. Phase 2 `nav_msgs/Path` uses
+identity pose orientation and no Phase 2 consumer may interpret it as heading.
+
+**DECISION REQUIRED BEFORE FLIGHT INTEGRATION:** validate quaternion/body/camera
+transforms, origin reset, and covariance behavior against live Pegasus/PX4.
 
 ## Clock contract
 
@@ -73,3 +78,7 @@ time domain.
 header do not gain an implicit timestamp. Their correlation and timing rules
 must use the associated stamped message or action lifecycle, as documented in
 the interface contract.
+
+The Phase 2 planner is input/event-driven and performs no stateful timestamp
+arithmetic. It therefore needs no `time_utils.py`; pure tests are independent
+of ROS time and `/clock`.
