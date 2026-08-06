@@ -5,6 +5,7 @@ from collections.abc import Sequence
 
 from uav_navigation.geometry import (
     absolute_heading_changes,
+    discrete_curvatures_2d,
     point_to_segment_distance_2d,
     polyline_length_2d,
     segment_lengths_2d,
@@ -19,6 +20,7 @@ def calculate_path_metrics(
     """Calculate deterministic 2D geometry metrics for a path."""
     lengths = segment_lengths_2d(path)
     changes = absolute_heading_changes(path)
+    curvatures = discrete_curvatures_2d(path) if len(path) >= 3 else ()
     clearances = [
         point_to_segment_distance_2d(obstacle.center, start, end)
         - obstacle.radius
@@ -32,6 +34,18 @@ def calculate_path_metrics(
         if changes
         else 0.0
     )
+    mean_curvature = (
+        sum(curvatures) / len(curvatures) if curvatures else 0.0
+    )
+    curvature_variance = (
+        sum(
+            (curvature - mean_curvature) ** 2
+            for curvature in curvatures
+        )
+        / len(curvatures)
+        if curvatures
+        else 0.0
+    )
     return PathMetrics(
         point_count=len(path),
         path_length_m=polyline_length_2d(path),
@@ -41,4 +55,7 @@ def calculate_path_metrics(
         mean_absolute_heading_change_rad=mean_change,
         maximum_absolute_heading_change_rad=max(changes, default=0.0),
         heading_change_variance_rad2=variance,
+        mean_curvature_inverse_m=mean_curvature,
+        maximum_curvature_inverse_m=max(curvatures, default=0.0),
+        curvature_variance_inverse_m2=curvature_variance,
     )

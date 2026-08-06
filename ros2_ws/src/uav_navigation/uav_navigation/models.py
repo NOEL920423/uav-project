@@ -152,6 +152,73 @@ class PlannerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class BSplineConfig:
+    """Pure geometric B-spline candidate and validation configuration."""
+
+    enable_bspline: bool = True
+    bspline_degree: int = 3
+    bspline_sample_spacing_m: float = 0.08
+    bspline_minimum_samples: int = 16
+    bspline_maximum_samples: int = 1000
+    bspline_maximum_curvature: float = 8.0
+    bspline_minimum_clearance_m: float = 0.07
+    bspline_preserve_endpoints: bool = True
+    bspline_allowed_bounds_margin_m: float = 0.0
+    bspline_reject_self_intersection: bool = True
+    bspline_control_point_strategy: str = "validated_simplified_path"
+
+    def __post_init__(self) -> None:
+        """Reject unsafe or ambiguous Phase 3 configuration."""
+        integer_fields = (
+            "bspline_degree",
+            "bspline_minimum_samples",
+            "bspline_maximum_samples",
+        )
+        for field_name in integer_fields:
+            value = float(getattr(self, field_name))
+            if not math.isfinite(value) or not value.is_integer():
+                raise ValueError(f"{field_name} must be an integer")
+            object.__setattr__(self, field_name, int(value))
+        if self.bspline_degree < 1:
+            raise ValueError("bspline_degree must be at least one")
+        if self.bspline_minimum_samples < 2:
+            raise ValueError("bspline_minimum_samples must be at least two")
+        if self.bspline_maximum_samples < self.bspline_minimum_samples:
+            raise ValueError(
+                "bspline_maximum_samples must not be below the minimum"
+            )
+        positive = (
+            "bspline_sample_spacing_m",
+            "bspline_maximum_curvature",
+        )
+        nonnegative = (
+            "bspline_minimum_clearance_m",
+            "bspline_allowed_bounds_margin_m",
+        )
+        for field_name in positive:
+            value = float(getattr(self, field_name))
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{field_name} must be finite and positive")
+            object.__setattr__(self, field_name, value)
+        for field_name in nonnegative:
+            value = float(getattr(self, field_name))
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(
+                    f"{field_name} must be finite and nonnegative"
+                )
+            object.__setattr__(self, field_name, value)
+        if not self.bspline_preserve_endpoints:
+            raise ValueError(
+                "bspline_preserve_endpoints must remain true in Phase 3"
+            )
+        if self.bspline_control_point_strategy != "validated_simplified_path":
+            raise ValueError(
+                "bspline_control_point_strategy must be "
+                "validated_simplified_path"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ValidationResult:
     """Continuous geometry validation result."""
 
@@ -183,6 +250,28 @@ class PathMetrics:
     mean_absolute_heading_change_rad: float
     maximum_absolute_heading_change_rad: float
     heading_change_variance_rad2: float
+    mean_curvature_inverse_m: float = 0.0
+    maximum_curvature_inverse_m: float = 0.0
+    curvature_variance_inverse_m2: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class BSplineResult:
+    """Structured candidate-generation, validation, and selection result."""
+
+    candidate_path: tuple[Point3D, ...] = ()
+    valid: bool = False
+    selected: bool = False
+    status_message: str = "not attempted"
+    rejection_reason: str = ""
+    effective_degree: int = 0
+    control_point_count: int = 0
+    provisional_sample_count: int = 0
+    final_sample_count: int = 0
+    minimum_clearance_m: float = math.inf
+    maximum_curvature_inverse_m: float = 0.0
+    self_intersection: bool = False
+    metrics: Optional[PathMetrics] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,3 +289,11 @@ class PlannerResult:
     simplified_metrics: Optional[PathMetrics] = None
     final_metrics: Optional[PathMetrics] = None
     diagnostics: tuple[tuple[str, str], ...] = ()
+    bspline_enabled: bool = False
+    bspline_candidate: tuple[Point3D, ...] = ()
+    bspline_valid: bool = False
+    bspline_selected: bool = False
+    bspline_rejection_reason: str = ""
+    bspline_effective_degree: int = 0
+    bspline_metrics: Optional[PathMetrics] = None
+    final_path_source: str = "NONE"

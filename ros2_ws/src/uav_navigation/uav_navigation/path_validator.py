@@ -3,7 +3,11 @@
 import math
 from collections.abc import Sequence
 
-from uav_navigation.geometry import distance_2d, point_to_segment_distance_2d
+from uav_navigation.geometry import (
+    distance_2d,
+    point_to_segment_distance_2d,
+    points_are_finite,
+)
 from uav_navigation.models import (
     CircularObstacle,
     PlannerConfig,
@@ -154,6 +158,26 @@ def validate_path(
             0.0,
         )
     tolerance = config.numerical_tolerance
+    if not points_are_finite(path):
+        return ValidationResult(
+            False,
+            "path contains non-finite values",
+            math.inf,
+            0.0,
+        )
+    for index, point in enumerate(path):
+        if not math.isclose(
+            point.z,
+            config.planning_altitude_ned_m,
+            abs_tol=tolerance,
+            rel_tol=0.0,
+        ):
+            return ValidationResult(
+                False,
+                f"point {index} does not use configured planning altitude",
+                math.inf,
+                0.0,
+            )
     if expected_start is not None:
         if not path[0].almost_equals(expected_start, tolerance):
             return ValidationResult(
