@@ -17,3 +17,9 @@ This repository stores UAV simulation research scripts and small scene files.
 
 Generated datasets, rosbags, logs, images, and videos are excluded from Git.
 Large Isaac Sim assets should be backed up separately.
+
+## ROS 2 developer workflow
+
+Use the repository-local `./uav` command for isolated Jazzy build, test,
+verification, interface inspection, and the non-flight offline planner harness.
+See [`docs/developer_commands.md`](docs/developer_commands.md).

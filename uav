@@ -1,0 +1,599 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$SCRIPT_DIR"
+ROS_WS="$REPO_ROOT/ros2_ws"
+ROS_SETUP="/opt/ros/jazzy/setup.bash"
+WORKSPACE_SETUP="$ROS_WS/install/setup.bash"
+RUN_LOG_DIR="$REPO_ROOT/run_logs"
+SCRIPT_PATH="$REPO_ROOT/uav"
+
+readonly SCRIPT_DIR REPO_ROOT ROS_WS ROS_SETUP WORKSPACE_SETUP
+readonly RUN_LOG_DIR SCRIPT_PATH
+
+info() {
+    printf 'INFO: %s\n' "$*"
+}
+
+warn() {
+    printf 'WARN: %s\n' "$*" >&2
+}
+
+error() {
+    printf 'ERROR: %s\n' "$*" >&2
+}
+
+die() {
+    error "$*"
+    return 1
+}
+
+usage() {
+    cat <<'EOF'
+Usage: ./uav <command> [arguments]
+
+Safe ROS 2 Jazzy developer workflow for this repository.
+
+Commands:
+  help           Show this help
+  status         Show Git and workspace status without modifying files
+  doctor         Check ROS, Python, workspace, environment, and topic safety
+  build          Build the ROS 2 workspace in an isolated Jazzy environment
+  test           Test an existing workspace build
+  verify         Run doctor, build, tests, interface/import/static checks
+  offline        Launch the offline planner interactively
+  offline-check  Run and validate the finite offline planner harness
+  topics         Inspect the current ROS graph and reject /fmu/in/ topics
+  interfaces     Show custom interfaces and planner topic contracts
+  shell          Open a clean interactive ROS 2 workspace shell
+
+Examples:
+  ./uav verify
+  ./uav offline use_sim_time:=false
+  ./uav offline-check
+  ./uav shell
+EOF
+}
+
+require_repository() {
+    if [[ ! -d "$REPO_ROOT/.git" ]]; then
+        die "repository check failed: $REPO_ROOT/.git is missing"
+        return 1
+    fi
+    if [[ ! -d "$ROS_WS/src" ]]; then
+        die "repository check failed: $ROS_WS/src is missing"
+        return 1
+    fi
+    if [[ ! -f "$REPO_ROOT/uav" ]]; then
+        die "repository check failed: root-level uav command is missing"
+        return 1
+    fi
+}
+
+require_ros_base() {
+    [[ -f "$ROS_SETUP" ]] || die "required ROS setup is missing: $ROS_SETUP"
+    [[ -x /usr/bin/python3 ]] || die "required Python is missing: /usr/bin/python3"
+}
+
+require_workspace_overlay() {
+    if [[ ! -f "$WORKSPACE_SETUP" ]]; then
+        die "workspace overlay is missing: $WORKSPACE_SETUP; run ./uav build first"
+        return 1
+    fi
+}
+
+clean_environment_command() {
+    local internal_command="$1"
+    shift
+
+    local home_value="${HOME:-}"
+    local user_value="${USER:-}"
+    local timeout_value="${UAV_OFFLINE_TIMEOUT_SECONDS:-20}"
+    local -a clean_variables
+
+    [[ -n "$home_value" ]] || die "HOME must be set"
+    if [[ -z "$user_value" ]]; then
+        user_value="$(/usr/bin/id -un)"
+    fi
+
+    clean_variables=(
+        "HOME=$home_value"
+        "USER=$user_value"
+        "PATH=/usr/bin:/bin"
+        "LANG=C.UTF-8"
+        "UAV_OFFLINE_TIMEOUT_SECONDS=$timeout_value"
+        "UAV_WRAPPER_CLEAN_ENV=1"
+    )
+    if [[ -n "${TERM:-}" ]]; then
+        clean_variables+=("TERM=$TERM")
+    fi
+
+    env -i "${clean_variables[@]}" \
+        /usr/bin/bash "$SCRIPT_PATH" __clean "$internal_command" "$@"
+}
+
+print_clean_summary() {
+    local overlay_state="$1"
+    printf 'Python path: %s\n' "$(command -v python3)"
+    printf 'Python version: %s\n' "$(python3 --version 2>&1)"
+    printf 'ROS distribution: %s\n' "${ROS_DISTRO:-<unset>}"
+    printf 'Workspace: %s\n' "$ROS_WS"
+    printf 'Workspace overlay sourced: %s\n' "$overlay_state"
+}
+
+source_setup_file() {
+    local setup_file="$1"
+    set +u
+    # ROS-generated setup scripts legitimately probe optional unset variables.
+    # shellcheck disable=SC1090,SC1091
+    source "$setup_file"
+    set -u
+}
+
+clean_bootstrap() {
+    local overlay_policy="$1"
+
+    require_repository
+    require_ros_base
+    source_setup_file "$ROS_SETUP"
+
+    if [[ "$(command -v python3)" != "/usr/bin/python3" ]]; then
+        die "clean environment selected unexpected Python: $(command -v python3)"
+        return 1
+    fi
+    if [[ "${ROS_DISTRO:-}" != "jazzy" ]]; then
+        die "expected ROS_DISTRO=jazzy, got ${ROS_DISTRO:-<unset>}"
+        return 1
+    fi
+    if [[ "${AMENT_PREFIX_PATH:-}" == *"uav_ros2_ws"* ]]; then
+        die "legacy workspace contamination detected in AMENT_PREFIX_PATH"
+        return 1
+    fi
+
+    case "$overlay_policy" in
+        required)
+            require_workspace_overlay
+            source_setup_file "$WORKSPACE_SETUP"
+            print_clean_summary "yes"
+            ;;
+        optional)
+            if [[ -f "$WORKSPACE_SETUP" ]]; then
+                source_setup_file "$WORKSPACE_SETUP"
+                print_clean_summary "yes"
+            else
+                print_clean_summary "no (not built yet)"
+            fi
+            ;;
+        none)
+            print_clean_summary "no"
+            ;;
+        *)
+            die "internal error: unknown overlay policy $overlay_policy"
+            return 1
+            ;;
+    esac
+}
+
+scan_forbidden_topics() {
+    local topics
+    if ! topics="$(ros2 topic list)"; then
+        die "unable to inspect ROS topics"
+        return 1
+    fi
+    local forbidden
+    forbidden="$(printf '%s\n' "$topics" | /usr/bin/grep -E '^/fmu/in(/|$)' || true)"
+    if [[ -n "$forbidden" ]]; then
+        error "unexpected /fmu/in/* topics detected"
+        printf '%s\n' "$forbidden" >&2
+        return 1
+    fi
+    printf 'SAFE: no /fmu/in/* topics detected\n'
+}
+
+show_interfaces() {
+    local interface_name
+    for interface_name in \
+        uav_interfaces/msg/Obstacle \
+        uav_interfaces/msg/ObstacleArray \
+        uav_interfaces/msg/EpisodeState \
+        uav_interfaces/srv/GenerateEpisode \
+        uav_interfaces/action/RunEpisode
+    do
+        printf '\nInterface: %s\n' "$interface_name"
+        ros2 interface show "$interface_name"
+    done
+}
+
+run_colcon_build() {
+    local -a build_arguments=("$@")
+    cd "$ROS_WS"
+    set +e
+    colcon build --symlink-install "${build_arguments[@]}"
+    local build_status=$?
+    set -e
+    if ((build_status != 0)); then
+        return "$build_status"
+    fi
+    [[ -f "$WORKSPACE_SETUP" ]] || die "build succeeded but overlay is missing"
+}
+
+run_colcon_tests() {
+    local -a test_arguments=("$@")
+    cd "$ROS_WS"
+    set +e
+    colcon test "${test_arguments[@]}"
+    local test_status=$?
+    colcon test-result --verbose
+    local result_status=$?
+    set -e
+    if ((test_status != 0)); then
+        return "$test_status"
+    fi
+    return "$result_status"
+}
+
+check_pure_navigation_imports() {
+    local module_root="$ROS_WS/src/uav_navigation/uav_navigation"
+    local -a pure_modules=(
+        "$module_root/coordinate_frames.py"
+        "$module_root/geometry.py"
+        "$module_root/models.py"
+        "$module_root/astar_planner.py"
+        "$module_root/path_simplifier.py"
+        "$module_root/path_validator.py"
+        "$module_root/path_metrics.py"
+    )
+    local pattern
+    pattern='^[[:space:]]*(from|import)[[:space:]]+(rclpy|omni|isaac|px4_msgs|pymavlink|pegasus|viewport)'
+    local findings
+    findings="$(/usr/bin/grep -inE "$pattern" "${pure_modules[@]}" || true)"
+    if [[ -n "$findings" ]]; then
+        error "forbidden runtime import found in pure navigation modules"
+        printf '%s\n' "$findings" >&2
+        return 1
+    fi
+    printf 'SAFE: pure navigation modules contain no forbidden runtime imports\n'
+}
+
+check_generated_files_untracked() {
+    local pattern
+    pattern='(^|/)(build|install|log|run_logs|__pycache__|\.pytest_cache)(/|$)|\.(bag|db3|pt|onnx)$'
+    local tracked
+    tracked="$(git -C "$REPO_ROOT" ls-files | /usr/bin/grep -E "$pattern" || true)"
+    if [[ -n "$tracked" ]]; then
+        error "generated or runtime files are tracked by Git"
+        printf '%s\n' "$tracked" >&2
+        return 1
+    fi
+    printf 'SAFE: generated files and runtime logs are not tracked\n'
+}
+
+internal_doctor() {
+    clean_bootstrap optional
+    command -v ros2 >/dev/null || die "ros2 command is unavailable"
+    command -v colcon >/dev/null || die "colcon command is unavailable"
+
+    printf 'Repository: %s\n' "$REPO_ROOT"
+    printf 'Package count: %s\n' "$(
+        find "$ROS_WS/src" -mindepth 2 -maxdepth 2 -name package.xml | wc -l
+    )"
+    if [[ -f "$WORKSPACE_SETUP" ]]; then
+        printf 'Install overlay: available\n'
+    else
+        warn "install overlay is absent; run ./uav build before test/offline"
+    fi
+    printf 'Git branch: %s\n' "$(git -C "$REPO_ROOT" branch --show-current)"
+    if [[ -n "$(git -C "$REPO_ROOT" status --porcelain=v1)" ]]; then
+        warn "working tree has local changes"
+    else
+        printf 'Working tree: clean\n'
+    fi
+    scan_forbidden_topics
+}
+
+internal_verify() {
+    clean_bootstrap none
+    run_colcon_build
+    source_setup_file "$WORKSPACE_SETUP"
+    printf 'Workspace overlay sourced after build: yes\n'
+    run_colcon_tests
+
+    local package_name
+    for package_name in \
+        uav_interfaces \
+        uav_scene_bridge \
+        uav_camera_bridge \
+        uav_navigation \
+        uav_px4_control \
+        uav_data_recorder \
+        uav_bringup
+    do
+        ros2 pkg prefix "$package_name"
+    done
+
+    show_interfaces
+
+    python3 -c "import uav_scene_bridge"
+    python3 -c "import uav_camera_bridge"
+    python3 -c "import uav_navigation"
+    python3 -c "import uav_px4_control"
+    python3 -c "import uav_data_recorder"
+
+    check_pure_navigation_imports
+    scan_forbidden_topics
+    check_generated_files_untracked
+    printf 'VERIFY SUCCESS: build, tests, interfaces, imports, and safety checks passed\n'
+}
+
+internal_offline_check() {
+    clean_bootstrap required
+    local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-20}"
+    if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+        die "UAV_OFFLINE_TIMEOUT_SECONDS must be a positive integer"
+        return 1
+    fi
+    cd "$REPO_ROOT"
+    set +e
+    timeout "${timeout_seconds}s" \
+        ros2 launch uav_navigation astar_planner_offline.launch.py "$@"
+    local launch_status=$?
+    set -e
+    scan_forbidden_topics
+    return "$launch_status"
+}
+
+internal_dispatch() {
+    local command_name="${1:-}"
+    shift || true
+    case "$command_name" in
+        doctor)
+            internal_doctor "$@"
+            ;;
+        build)
+            clean_bootstrap none
+            run_colcon_build "$@"
+            ;;
+        test)
+            clean_bootstrap required
+            run_colcon_tests "$@"
+            ;;
+        verify)
+            internal_verify "$@"
+            ;;
+        offline)
+            clean_bootstrap required
+            cd "$REPO_ROOT"
+            exec ros2 launch uav_navigation astar_planner_offline.launch.py "$@"
+            ;;
+        offline-check)
+            internal_offline_check "$@"
+            ;;
+        topics)
+            clean_bootstrap required
+            ros2 node list
+            ros2 topic list -t
+            ros2 service list -t
+            ros2 action list -t
+            scan_forbidden_topics
+            ;;
+        interfaces)
+            clean_bootstrap required
+            show_interfaces
+            ;;
+        shell)
+            clean_bootstrap optional
+            cd "$REPO_ROOT"
+            printf 'Planning frame: px4_ned\n'
+            export PS1='[uav-ros2] \u@\h:\w\$ '
+            exec /usr/bin/bash --noprofile --norc -i
+            ;;
+        *)
+            die "internal error: unsupported clean command: $command_name"
+            ;;
+    esac
+}
+
+command_status() {
+    printf 'Repository: %s\n' "$REPO_ROOT"
+    git -c core.pager=cat -C "$REPO_ROOT" status
+    git -C "$REPO_ROOT" branch --show-current
+    git -c core.pager=cat -C "$REPO_ROOT" log -5 --oneline
+    git -C "$REPO_ROOT" remote -v
+    git -c core.pager=cat -C "$REPO_ROOT" branch -vv
+
+    local directory
+    for directory in src build install log; do
+        if [[ -d "$ROS_WS/$directory" ]]; then
+            printf 'EXISTS: ros2_ws/%s\n' "$directory"
+        else
+            printf 'MISSING: ros2_ws/%s\n' "$directory"
+        fi
+    done
+}
+
+check_inherited_environment() {
+    if [[ "${AMENT_PREFIX_PATH:-}" == *"uav_ros2_ws"* ]]; then
+        warn "inherited AMENT_PREFIX_PATH contains the legacy workspace"
+    else
+        printf 'Inherited AMENT_PREFIX_PATH: no legacy workspace detected\n'
+    fi
+    if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+        warn "VIRTUAL_ENV is active outside the wrapper: $VIRTUAL_ENV"
+    else
+        printf 'Inherited VIRTUAL_ENV: inactive\n'
+    fi
+    if [[ -n "${PYENV_VERSION:-}" ]]; then
+        warn "PYENV_VERSION is active outside the wrapper: $PYENV_VERSION"
+    else
+        printf 'Inherited PYENV_VERSION: inactive\n'
+    fi
+
+    local path_before_system="${PATH%%/usr/bin*}"
+    if [[ "$path_before_system" == *".pyenv/shims"* ]]; then
+        warn "pyenv shims occur before /usr/bin; clean commands will discard them"
+    else
+        printf 'Inherited PATH: no pyenv shim before /usr/bin\n'
+    fi
+}
+
+command_doctor() {
+    check_inherited_environment
+    clean_environment_command doctor
+}
+
+command_verify() {
+    mkdir -p "$RUN_LOG_DIR"
+    local timestamp
+    timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    local log_file="$RUN_LOG_DIR/verify_${timestamp}.log"
+    info "verification log: $log_file"
+
+    set +e
+    (
+        command_doctor && clean_environment_command verify
+    ) 2>&1 | tee "$log_file"
+    local verify_status=${PIPESTATUS[0]}
+    set -e
+    return "$verify_status"
+}
+
+command_offline_check() {
+    mkdir -p "$RUN_LOG_DIR"
+    local timestamp
+    timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    local log_file="$RUN_LOG_DIR/offline_check_${timestamp}.log"
+    info "offline-check log: $log_file"
+
+    set +e
+    clean_environment_command offline-check "$@" 2>&1 | tee "$log_file"
+    local launch_status=${PIPESTATUS[0]}
+    set -e
+
+    if ((launch_status != 0 && launch_status != 124)); then
+        error "offline launch failed with exit code $launch_status"
+        return "$launch_status"
+    fi
+    if ! /usr/bin/grep -q 'offline integration passed:' "$log_file"; then
+        die "offline success marker was not found in $log_file"
+        return 1
+    fi
+    if ! /usr/bin/grep -Eq \
+        'raw=[1-9][0-9]*, simplified=[1-9][0-9]*, final=[1-9][0-9]*, frame=px4_ned' \
+        "$log_file"
+    then
+        die "offline path counts or px4_ned frame marker are missing"
+        return 1
+    fi
+    if ! /usr/bin/grep -q 'Planner status: SUCCESS|' "$log_file"; then
+        die "planner SUCCESS status marker was not found"
+        return 1
+    fi
+    if ! /usr/bin/grep -q 'SAFE: no /fmu/in/\* topics detected' "$log_file"; then
+        die "offline /fmu/in/* safety marker was not found"
+        return 1
+    fi
+    if ((launch_status == 124)); then
+        warn "timeout stopped a validated persistent launch; accepting exit 124"
+    fi
+    printf 'OFFLINE CHECK SUCCESS: raw, simplified, final, frame, and status validated\n'
+}
+
+print_planner_topics() {
+    cat <<'EOF'
+
+Planner topic contracts:
+  /uav/scene/obstacles
+  /uav/scene/start
+  /uav/scene/goal
+  /uav/planner/path_raw
+  /uav/planner/path_simplified
+  /uav/planner/path
+  /uav/planner/status
+EOF
+}
+
+main() {
+    local command_name="${1:-help}"
+    if [[ "$command_name" == "__clean" ]]; then
+        if [[ "${UAV_WRAPPER_CLEAN_ENV:-}" != "1" ]]; then
+            die "internal clean commands must be entered through a public subcommand"
+            return 1
+        fi
+        shift
+        internal_dispatch "$@"
+        return
+    fi
+
+    case "$command_name" in
+        help|-h|--help)
+            usage
+            ;;
+        status)
+            require_repository
+            command_status
+            ;;
+        doctor)
+            require_repository
+            require_ros_base
+            command_doctor
+            ;;
+        build)
+            require_repository
+            require_ros_base
+            shift
+            clean_environment_command build "$@"
+            ;;
+        test)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            clean_environment_command test "$@"
+            ;;
+        verify)
+            require_repository
+            require_ros_base
+            command_verify
+            ;;
+        offline)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            clean_environment_command offline "$@"
+            ;;
+        offline-check)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            command_offline_check "$@"
+            ;;
+        topics)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            clean_environment_command topics
+            ;;
+        interfaces)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            clean_environment_command interfaces
+            print_planner_topics
+            ;;
+        shell)
+            require_repository
+            require_ros_base
+            clean_environment_command shell
+            ;;
+        *)
+            error "unknown command: $command_name"
+            usage >&2
+            return 64
+            ;;
+    esac
+}
+
+main "$@"
