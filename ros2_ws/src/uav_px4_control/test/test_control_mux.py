@@ -81,6 +81,7 @@ def test_active_stale_latches_and_requires_explicit_recovery() -> None:
     )
     latched = mux.step(0.30)
     assert latched.active_source == HOLD
+    assert latched.state == ControlMuxState.HOLD_LATCHED_FAULT
     assert latched.fault_latched
     response = mux.request_source(ASTAR_EXPERT, 0.48)
     recovered = mux.step(0.50)

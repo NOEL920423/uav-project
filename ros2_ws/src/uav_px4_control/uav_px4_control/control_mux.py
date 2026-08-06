@@ -56,6 +56,7 @@ class ControlSourceMux:
         self.cycle_index = 0
         self.fault_latched = False
         self.latched_reason = ""
+        self._fault_state_reported = False
 
     def accept_candidate(
         self,
@@ -91,6 +92,7 @@ class ControlSourceMux:
         if latch and self.config.latch_hold_after_fault:
             self.fault_latched = True
             self.latched_reason = reason
+            self._fault_state_reported = False
 
     def _handle_backward_time(self, now_s: float) -> None:
         self.registry.clear()
@@ -327,7 +329,7 @@ class ControlSourceMux:
             ControlMuxState.HOLD_WRONG_FRAME,
         }:
             state = ControlMuxState.HOLD_LATCHED_FAULT
-        return ControlMuxResult(
+        result = ControlMuxResult(
             state=state,
             requested_source=self.requested_source,
             active_source=HOLD,
@@ -348,6 +350,9 @@ class ControlSourceMux:
             fault_latched=self.fault_latched,
             status_message=f"{state.value}: {reason}",
         )
+        if self.fault_latched:
+            self._fault_state_reported = True
+        return result
 
     @staticmethod
     def _fault_state(reason: str, fresh: bool) -> ControlMuxState:
@@ -380,7 +385,7 @@ class ControlSourceMux:
         self.last_now_s = now
         if self.fault_latched:
             self._set_active(HOLD, now)
-            if self.state == ControlMuxState.HOLD_REQUESTED:
+            if self._fault_state_reported:
                 self.state = ControlMuxState.HOLD_LATCHED_FAULT
             self.hold_reason = self.latched_reason or self.hold_reason
             return self._hold_result(now)
