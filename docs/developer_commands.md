@@ -5,8 +5,9 @@
 The repository-root `./uav` wrapper replaces repeated environment, build, test,
 inspection, and offline-planner commands with one reproducible entry point. It
 is a non-flight developer tool: it does not start Isaac Sim, Pegasus, PX4,
-Micro XRCE-DDS, cameras, recorders, controllers, OFFBOARD mode, arming, takeoff,
-or B-spline behavior, and it does not publish `/fmu/in/*` commands.
+Micro XRCE-DDS, cameras, recorders, controllers, OFFBOARD mode, arming, or
+takeoff. Its Phase 3 B-spline behavior is pure geometric candidate generation
+and validation; it does not publish `/fmu/in/*` commands.
 
 Run `./uav help` for the concise command list.
 
@@ -50,9 +51,10 @@ Typical daily use:
 ## Offline modes and launch arguments
 
 `./uav offline` hands the terminal directly to `ros2 launch`; it has no timeout
-and may be stopped with Ctrl+C. `./uav offline-check` uses the Phase 2 harness,
-checks its structured success marker and path counts/frame, and writes a
-timestamped ignored log under `run_logs/`. Its default safety timeout is 20 s:
+and may be stopped with Ctrl+C. `./uav offline-check` uses the Phase 3 harness,
+checks its structured success marker, source, validity, path counts/frame, and
+writes a timestamped ignored log under `run_logs/`. Its default safety timeout
+is 20 s:
 
 ```bash
 UAV_OFFLINE_TIMEOUT_SECONDS=30 ./uav offline-check
@@ -62,7 +64,20 @@ Arguments after either subcommand are passed to the launch file:
 
 ```bash
 ./uav offline use_sim_time:=false
-./uav offline-check use_sim_time:=false
+./uav offline-check enable_bspline:=true fixture:=bspline-safe-single-obstacle
+./uav offline-check enable_bspline:=true fixture:=bspline-rejected-corner-cut
+./uav offline-check enable_bspline:=false fixture:=bspline-disabled
+```
+
+Available edge fixtures are `short-two-point-path`, `three-point-path`,
+`duplicate-control-point-path`, `self-intersection-candidate`, and
+`curvature-limit-rejection`. To reproduce the six-scene geometric report after
+building:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ros2_ws/install/setup.bash
+ros2 run uav_navigation geometric_path_comparison
 ```
 
 ## Why shell creates a new shell

@@ -2,8 +2,8 @@
 
 ## Scope and conventions
 
-This contract began as a Phase 1 target. Phase 2 now implements only the three
-scene subscriptions and four non-control planning publications identified in
+This contract began as a Phase 1 target. Phase 3 now implements only the three
+scene subscriptions and six non-control planning publications identified in
 the planning section. Every other endpoint remains a future contract.
 
 QoS notation used in the tables:
@@ -34,11 +34,13 @@ Phase 0 explicitly requires the first milestone's planner/PX4 paths to use
 `px4_ned`. The reserved `map` alternative is blocked by the decision in
 `coordinate_frames.md`.
 
-Phase 2 implements `path_raw`, `path_simplified`, `path`, and `status` with
-`R/TL/K1` QoS. It requires matching stamped `isaac_world` inputs and replans
-only for changed normalized content. A failure publishes empty `px4_ned` paths
-to clear durable stale data, never a nonempty unsafe final path. B-spline and
-all control endpoints remain inactive.
+Phase 3 implements `path_raw`, `path_simplified`,
+`path_bspline_candidate`, `bspline_valid`, `path`, and `status` with `R/TL/K1`
+QoS. It requires matching stamped `isaac_world` inputs and replans only for
+changed normalized content. A failure publishes empty `px4_ned` paths and
+`bspline_valid=false` to clear durable stale data, never a nonempty unsafe final
+path. B-spline is candidate generation only; all control endpoints remain
+inactive.
 
 | Exact name and type | Owner | Subscribers | Frame and timestamp | QoS / rate | State restriction | Failure behavior | Future phase |
 |---|---|---|---|---|---|---|---|

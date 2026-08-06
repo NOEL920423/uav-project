@@ -111,3 +111,75 @@ before and after Phase 2 was identical:
 ```text
 9bb394c0e4e5616f0857ce61e5067971a5931ae5c32a0e33ef3d96af40b94beb
 ```
+
+## Phase 3 validated B-spline candidate
+
+Date: 2026-08-06 (Asia/Taipei)
+
+The pure implementation uses system Python 3.12.3 and adds no NumPy, SciPy, or
+other runtime dependency. Package and full-workspace results after the Phase 3
+changes were:
+
+```text
+./uav build --packages-select uav_navigation
+Summary: 1 package finished
+
+./uav test --packages-select uav_navigation
+Summary: 63 tests, 0 errors, 0 failures, 0 skipped
+
+./uav verify
+Summary: 7 packages finished (build)
+Summary: 7 packages finished (test)
+Summary: 63 tests, 0 errors, 0 failures, 0 skipped
+VERIFY SUCCESS: build, tests, interfaces, imports, and safety checks passed
+```
+
+Coverage adds clamped basis/De Boor evaluation, effective-degree reduction,
+exact endpoints, duplicate removal, arc-length resampling, sample bounds,
+continuous clearance and bounds, straight/circular curvature, self-intersection,
+planner selection/fallback, determinism, six-scene comparison, and ROS fixture
+contracts. Existing Phase 2 regressions remain in the same suite.
+
+Accepted ROS fixture:
+
+```text
+./uav offline-check enable_bspline:=true \
+  fixture:=bspline-safe-single-obstacle
+SUCCESS|astar_success=true|bspline_valid=true|bspline_selected=true
+|final_source=BSPLINE|raw_points=81|simplified_points=6
+|candidate_points=55|final_points=55|length_m=4.243945
+|minimum_physical_clearance_m=0.419106
+|maximum_curvature_inverse_m=0.749852
+OFFLINE CHECK SUCCESS
+```
+
+Rejected ROS fixture, with overall success because the validated A* baseline
+remained available:
+
+```text
+./uav offline-check enable_bspline:=true \
+  fixture:=bspline-rejected-corner-cut
+SUCCESS|astar_success=true|bspline_valid=false|bspline_selected=false
+|final_source=ASTAR_FALLBACK|raw_points=81|simplified_points=6
+|candidate_points=64|final_points=6
+|bspline_rejection=segment 19 intersects obstacle offline_tower
+OFFLINE CHECK SUCCESS
+```
+
+The disabled fixture returned `ASTAR_SIMPLIFIED`. Strict-clearance and
+strict-curvature fixtures returned `ASTAR_FALLBACK`. Two-point, three-point,
+duplicate-control-point, and self-intersection-preflight fixtures all completed
+successfully. Every launch reported `SAFE: no /fmu/in/* topics detected`.
+
+The installed `geometric_path_comparison` entry point completed six fixed
+scenes: four candidates accepted as `BSPLINE`, while strict clearance and
+curvature gates rejected the candidate and selected `ASTAR_FALLBACK`. Full
+metrics and limitations are recorded in `phase3_geometric_comparison.md`.
+
+The canonical legacy hash (pruning nested `.git` directories) remained exactly
+the same before and after Phase 3, and that workspace was never sourced or
+built:
+
+```text
+9bb394c0e4e5616f0857ce61e5067971a5931ae5c32a0e33ef3d96af40b94beb
+```
