@@ -46,6 +46,9 @@ Commands:
   offline-check  Run and validate the finite offline planner harness
   trajectory-check  Validate standalone path-to-trajectory parameterization
   pipeline-check    Validate scene-to-planner-to-trajectory integration
+  tracking-check    Validate direct offline closed-loop trajectory tracking
+  tracking-safety-check  Validate stale-input HOLD behavior
+  full-pipeline-check    Validate complete scene-to-tracking integration
   topics         Inspect the current ROS graph and reject /fmu/in/ topics
   interfaces     Show custom interfaces and planner topic contracts
   shell          Open a clean interactive ROS 2 workspace shell
@@ -56,6 +59,9 @@ Examples:
   ./uav offline-check
   ./uav trajectory-check fixture:=straight-line
   ./uav pipeline-check enable_bspline:=true
+  ./uav tracking-check
+  ./uav tracking-safety-check
+  ./uav full-pipeline-check
   ./uav shell
 EOF
 }
@@ -203,6 +209,7 @@ show_interfaces() {
         uav_interfaces/msg/EpisodeState \
         uav_interfaces/msg/TrajectoryPoint \
         uav_interfaces/msg/TimedTrajectory \
+        uav_interfaces/msg/TrajectoryTrackingStatus \
         uav_interfaces/srv/GenerateEpisode \
         uav_interfaces/action/RunEpisode
     do
@@ -256,6 +263,14 @@ check_pure_navigation_imports() {
         "$module_root/trajectory_validator.py"
         "$module_root/yaw_profile.py"
         "$module_root/trajectory_metrics.py"
+        "$module_root/tracking_models.py"
+        "$module_root/trajectory_sampler.py"
+        "$module_root/trajectory_tracker.py"
+        "$module_root/tracking_validator.py"
+        "$module_root/tracking_metrics.py"
+        "$module_root/offline_kinematic_plant.py"
+        "$module_root/tracking_fixtures.py"
+        "$module_root/tracking_comparison.py"
     )
     local pattern
     pattern='^[[:space:]]*(from|import)[[:space:]]+(rclpy|omni|isaac|px4_msgs|pymavlink|pegasus|viewport)|/fmu/in/'
@@ -392,6 +407,40 @@ internal_pipeline_check() {
     return "$launch_status"
 }
 
+internal_tracking_check() {
+    clean_bootstrap required
+    local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-20}"
+    if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+        die "UAV_OFFLINE_TIMEOUT_SECONDS must be a positive integer"
+        return 1
+    fi
+    cd "$REPO_ROOT"
+    set +e
+    timeout "${timeout_seconds}s" \
+        ros2 launch uav_navigation trajectory_tracking_offline.launch.py "$@"
+    local launch_status=$?
+    set -e
+    scan_forbidden_topics
+    return "$launch_status"
+}
+
+internal_full_pipeline_check() {
+    clean_bootstrap required
+    local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-20}"
+    if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+        die "UAV_OFFLINE_TIMEOUT_SECONDS must be a positive integer"
+        return 1
+    fi
+    cd "$REPO_ROOT"
+    set +e
+    timeout "${timeout_seconds}s" \
+        ros2 launch uav_navigation planning_to_tracking_offline.launch.py "$@"
+    local launch_status=$?
+    set -e
+    scan_forbidden_topics
+    return "$launch_status"
+}
+
 internal_dispatch() {
     local command_name="${1:-}"
     shift || true
@@ -423,6 +472,12 @@ internal_dispatch() {
             ;;
         pipeline-check)
             internal_pipeline_check "$@"
+            ;;
+        tracking-check|tracking-safety-check)
+            internal_tracking_check "$@"
+            ;;
+        full-pipeline-check)
+            internal_full_pipeline_check "$@"
             ;;
         topics)
             clean_bootstrap required
@@ -602,6 +657,13 @@ Trajectory topic contracts:
   /uav/trajectory/candidate
   /uav/trajectory/valid
   /uav/trajectory/status
+
+Offline tracking topic contracts:
+  /uav/vehicle/odometry
+  /uav/control/astar_command
+  /uav/control/astar_reference_pose
+  /uav/control/astar_reference_twist
+  /uav/control/astar_tracking_status
 EOF
 }
 
@@ -679,6 +741,43 @@ main() {
             command_phase4_check \
                 pipeline-check \
                 'pipeline offline integration passed:' "$@"
+            ;;
+        tracking-check)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            command_phase4_check \
+                tracking-check \
+                'tracking offline integration passed:' "$@"
+            ;;
+        tracking-safety-check)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            local fixture_found=false
+            local argument
+            for argument in "$@"; do
+                if [[ "$argument" == fixture:=* ]]; then
+                    fixture_found=true
+                fi
+            done
+            if [[ "$fixture_found" == false ]]; then
+                set -- fixture:=stale-odometry "$@"
+            fi
+            command_phase4_check \
+                tracking-safety-check \
+                'tracking offline integration passed:' "$@"
+            ;;
+        full-pipeline-check)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            command_phase4_check \
+                full-pipeline-check \
+                'full pipeline offline integration passed:' "$@"
             ;;
         topics)
             require_repository

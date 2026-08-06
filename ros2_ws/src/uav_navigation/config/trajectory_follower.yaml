@@ -1,0 +1,25 @@
+trajectory_follower:
+  ros__parameters:
+    use_sim_time: false
+    position_kp: 1.0
+    velocity_kd: 0.2
+    yaw_kp: 1.5
+    maximum_command_speed_mps: 2.0
+    maximum_horizontal_command_speed_mps: 2.0
+    maximum_vertical_command_speed_mps: 1.0
+    maximum_command_acceleration_mps2: 1.5
+    maximum_yaw_rate_command_radps: 1.5
+    maximum_yaw_acceleration_command_radps2: 2.0
+    odometry_timeout_s: 0.25
+    trajectory_validity_timeout_s: 0.50
+    trajectory_start_delay_s: 0.10
+    control_period_s: 0.02
+    goal_position_tolerance_m: 0.15
+    goal_velocity_tolerance_mps: 0.15
+    goal_yaw_tolerance_rad: 0.20
+    goal_settle_time_s: 0.50
+    maximum_tracking_error_m: 2.0
+    maximum_terminal_wait_s: 2.0
+    reject_wrong_frame: true
+    require_validity_topic: true
+    hold_command_epsilon: 1.0e-9

@@ -18,6 +18,7 @@ setup(
             "share/" + package_name + "/config",
             [
                 "config/astar_planner.yaml",
+                "config/trajectory_follower.yaml",
                 "config/trajectory_parameterizer.yaml",
             ],
         ),
@@ -26,7 +27,9 @@ setup(
             [
                 "launch/astar_planner_offline.launch.py",
                 "launch/planning_to_trajectory_offline.launch.py",
+                "launch/planning_to_tracking_offline.launch.py",
                 "launch/trajectory_parameterizer_offline.launch.py",
+                "launch/trajectory_tracking_offline.launch.py",
             ],
         ),
     ],
@@ -49,12 +52,25 @@ setup(
             "uav_navigation.geometric_comparison:main",
             "trajectory_parameterizer_node = "
             "uav_navigation.trajectory_parameterizer_node:main",
+            "trajectory_follower_node = "
+            "uav_navigation.trajectory_follower_node:main",
             "trajectory_offline_harness = "
             "uav_navigation.trajectory_parameterizer_node:"
             "offline_harness_main",
             "trajectory_pipeline_harness = "
             "uav_navigation.trajectory_parameterizer_node:"
             "pipeline_harness_main",
+            "tracking_trajectory_publisher = "
+            "uav_navigation.offline_tracking_harness:"
+            "trajectory_publisher_main",
+            "tracking_scene_publisher = "
+            "uav_navigation.offline_tracking_harness:scene_publisher_main",
+            "offline_kinematic_plant = "
+            "uav_navigation.offline_tracking_harness:plant_main",
+            "tracking_result_monitor = "
+            "uav_navigation.offline_tracking_harness:monitor_main",
+            "tracking_comparison = "
+            "uav_navigation.tracking_comparison:main",
         ],
     },
 )
