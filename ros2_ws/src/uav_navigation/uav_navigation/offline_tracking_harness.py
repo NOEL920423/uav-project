@@ -176,6 +176,7 @@ class OfflineKinematicPlantNode(Node):
         super().__init__("offline_kinematic_plant")
         self.declare_parameter("fixture", "straight-trajectory")
         self.declare_parameter("full_pipeline", False)
+        self.declare_parameter("command_topic", COMMAND_TOPIC)
         self.fixture = tracking_fixture(
             str(self.get_parameter("fixture").value)
         )
@@ -195,7 +196,10 @@ class OfflineKinematicPlantNode(Node):
             Odometry, ODOMETRY_TOPIC, live_qos()
         )
         self.create_subscription(
-            TwistStamped, COMMAND_TOPIC, self._command_callback, live_qos()
+            TwistStamped,
+            str(self.get_parameter("command_topic").value),
+            self._command_callback,
+            live_qos(),
         )
         self._started = time.monotonic()
         self.create_timer(config.integration_timestep_s, self._tick)

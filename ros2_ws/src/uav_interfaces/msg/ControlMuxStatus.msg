@@ -1,0 +1,15 @@
+std_msgs/Header header
+string requested_source
+string active_source
+bool selected_command_valid
+bool hold_active
+string hold_reason
+bool switch_in_progress
+float64 switch_remaining_time
+float64 selected_source_age
+float64 selected_linear_speed
+float64 selected_yaw_rate
+uint64 transition_count
+string[] healthy_sources
+string[] stale_sources
+string status_message

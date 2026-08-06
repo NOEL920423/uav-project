@@ -14,6 +14,14 @@ setup(
             ["resource/" + package_name],
         ),
         ("share/" + package_name, ["package.xml"]),
+        ("share/" + package_name + "/config", ["config/control_mux.yaml"]),
+        (
+            "share/" + package_name + "/launch",
+            [
+                "launch/control_mux_offline.launch.py",
+                "launch/control_stack_offline.launch.py",
+            ],
+        ),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -24,7 +32,23 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
+            "control_mux_node = uav_px4_control.control_mux_node:main",
+            "control_mux_comparison = "
+            "uav_px4_control.control_mux_comparison:main",
+            "control_mux_result_monitor = "
+            "uav_px4_control.offline_control_mux_harness:monitor_main",
             "px4_control_node = uav_px4_control.px4_control_node:main",
+            "synthetic_astar_candidate = "
+            "uav_px4_control.offline_control_mux_harness:"
+            "astar_publisher_main",
+            "synthetic_hold_candidate = "
+            "uav_px4_control.offline_control_mux_harness:hold_publisher_main",
+            "synthetic_joystick_candidate = "
+            "uav_px4_control.offline_control_mux_harness:"
+            "joystick_publisher_main",
+            "synthetic_navrl_candidate = "
+            "uav_px4_control.offline_control_mux_harness:"
+            "navrl_publisher_main",
         ],
     },
 )

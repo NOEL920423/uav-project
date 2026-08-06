@@ -49,6 +49,9 @@ Commands:
   tracking-check    Validate direct offline closed-loop trajectory tracking
   tracking-safety-check  Validate stale-input HOLD behavior
   full-pipeline-check    Validate complete scene-to-tracking integration
+  mux-check         Validate offline source selection and safe handoff
+  mux-safety-check  Validate stale-source latch and explicit recovery
+  control-stack-check  Validate scene-to-follower-to-mux-to-plant graph
   topics         Inspect the current ROS graph and reject /fmu/in/ topics
   interfaces     Show custom interfaces and planner topic contracts
   shell          Open a clean interactive ROS 2 workspace shell
@@ -62,6 +65,9 @@ Examples:
   ./uav tracking-check
   ./uav tracking-safety-check
   ./uav full-pipeline-check
+  ./uav mux-check
+  ./uav mux-safety-check
+  ./uav control-stack-check
   ./uav shell
 EOF
 }
@@ -210,7 +216,9 @@ show_interfaces() {
         uav_interfaces/msg/TrajectoryPoint \
         uav_interfaces/msg/TimedTrajectory \
         uav_interfaces/msg/TrajectoryTrackingStatus \
+        uav_interfaces/msg/ControlMuxStatus \
         uav_interfaces/srv/GenerateEpisode \
+        uav_interfaces/srv/SetControlSource \
         uav_interfaces/action/RunEpisode
     do
         printf '\nInterface: %s\n' "$interface_name"
@@ -284,6 +292,28 @@ check_pure_navigation_imports() {
     printf 'SAFE: pure navigation modules contain no forbidden runtime imports\n'
 }
 
+check_pure_control_imports() {
+    local module_root="$ROS_WS/src/uav_px4_control/uav_px4_control"
+    local -a pure_modules=(
+        "$module_root/control_source_models.py"
+        "$module_root/control_source_registry.py"
+        "$module_root/control_mux.py"
+        "$module_root/selected_command_validator.py"
+        "$module_root/control_mux_fixtures.py"
+        "$module_root/control_mux_comparison.py"
+    )
+    local pattern
+    pattern='^[[:space:]]*(from|import)[[:space:]]+(rclpy|omni|isaac|px4_msgs|pymavlink|pegasus|viewport|torch|tensorflow|onnxruntime)|/fmu/in/'
+    local findings
+    findings="$(/usr/bin/grep -inE "$pattern" "${pure_modules[@]}" || true)"
+    if [[ -n "$findings" ]]; then
+        error "forbidden runtime import found in pure control modules"
+        printf '%s\n' "$findings" >&2
+        return 1
+    fi
+    printf 'SAFE: pure control modules contain no forbidden runtime imports\n'
+}
+
 check_generated_files_untracked() {
     local pattern
     pattern='(^|/)(build|install|log|run_logs|__pycache__|\.pytest_cache)(/|$)|\.(bag|db3|pt|onnx)$'
@@ -349,6 +379,7 @@ internal_verify() {
     python3 -c "import uav_data_recorder"
 
     check_pure_navigation_imports
+    check_pure_control_imports
     scan_forbidden_topics
     check_generated_files_untracked
     printf 'VERIFY SUCCESS: build, tests, interfaces, imports, and safety checks passed\n'
@@ -441,6 +472,40 @@ internal_full_pipeline_check() {
     return "$launch_status"
 }
 
+internal_mux_check() {
+    clean_bootstrap required
+    local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-20}"
+    if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+        die "UAV_OFFLINE_TIMEOUT_SECONDS must be a positive integer"
+        return 1
+    fi
+    cd "$REPO_ROOT"
+    set +e
+    timeout "${timeout_seconds}s" \
+        ros2 launch uav_px4_control control_mux_offline.launch.py "$@"
+    local launch_status=$?
+    set -e
+    scan_forbidden_topics
+    return "$launch_status"
+}
+
+internal_control_stack_check() {
+    clean_bootstrap required
+    local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-20}"
+    if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+        die "UAV_OFFLINE_TIMEOUT_SECONDS must be a positive integer"
+        return 1
+    fi
+    cd "$REPO_ROOT"
+    set +e
+    timeout "${timeout_seconds}s" \
+        ros2 launch uav_px4_control control_stack_offline.launch.py "$@"
+    local launch_status=$?
+    set -e
+    scan_forbidden_topics
+    return "$launch_status"
+}
+
 internal_dispatch() {
     local command_name="${1:-}"
     shift || true
@@ -478,6 +543,12 @@ internal_dispatch() {
             ;;
         full-pipeline-check)
             internal_full_pipeline_check "$@"
+            ;;
+        mux-check|mux-safety-check)
+            internal_mux_check "$@"
+            ;;
+        control-stack-check)
+            internal_control_stack_check "$@"
             ;;
         topics)
             clean_bootstrap required
@@ -664,6 +735,16 @@ Offline tracking topic contracts:
   /uav/control/astar_reference_pose
   /uav/control/astar_reference_twist
   /uav/control/astar_tracking_status
+
+Offline control mux contracts:
+  /uav/control/astar_command
+  /uav/control/joystick_command
+  /uav/control/navrl_command
+  /uav/control/hold_command
+  /uav/control/selected_command
+  /uav/control/source
+  /uav/control/mux_status
+  /uav/control/set_source
 EOF
 }
 
@@ -778,6 +859,36 @@ main() {
             command_phase4_check \
                 full-pipeline-check \
                 'full pipeline offline integration passed:' "$@"
+            ;;
+        mux-check)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            command_phase4_check \
+                mux-check \
+                'mux offline integration passed:' "$@"
+            ;;
+        mux-safety-check)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            command_phase4_check \
+                mux-safety-check \
+                'mux offline integration passed:' \
+                mode:=safety \
+                astar_behavior:=safety-recovery \
+                hold_behavior:=invalid-external-hold "$@"
+            ;;
+        control-stack-check)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            command_phase4_check \
+                control-stack-check \
+                'control stack offline integration passed:' "$@"
             ;;
         topics)
             require_repository

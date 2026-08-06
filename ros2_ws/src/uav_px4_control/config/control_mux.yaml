@@ -1,0 +1,22 @@
+control_mux:
+  ros__parameters:
+    use_sim_time: false
+    default_source: HOLD
+    publish_rate_hz: 50.0
+    astar_timeout_s: 0.25
+    joystick_timeout_s: 0.20
+    navrl_timeout_s: 0.20
+    hold_timeout_s: 0.50
+    switch_hold_duration_s: 0.10
+    minimum_source_dwell_time_s: 0.20
+    maximum_selected_speed_mps: 2.0
+    maximum_selected_horizontal_speed_mps: 2.0
+    maximum_selected_vertical_speed_mps: 1.0
+    maximum_selected_acceleration_mps2: 1.5
+    maximum_selected_yaw_rate_radps: 1.5
+    maximum_selected_yaw_acceleration_radps2: 2.0
+    reject_wrong_frame: true
+    require_monotonic_candidate_stamps: true
+    require_fresh_command_before_switch: true
+    latch_hold_after_fault: true
+    hold_command_epsilon: 1.0e-9

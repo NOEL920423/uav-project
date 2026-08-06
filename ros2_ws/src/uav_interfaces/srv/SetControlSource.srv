@@ -1,0 +1,6 @@
+string source
+---
+bool accepted
+string requested_source
+string active_source
+string status_message

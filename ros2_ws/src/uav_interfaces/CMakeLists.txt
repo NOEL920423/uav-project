@@ -15,7 +15,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TimedTrajectory.msg"
   "msg/TrajectoryPoint.msg"
   "msg/TrajectoryTrackingStatus.msg"
+  "msg/ControlMuxStatus.msg"
   "srv/GenerateEpisode.srv"
+  "srv/SetControlSource.srv"
   "action/RunEpisode.action"
   DEPENDENCIES action_msgs builtin_interfaces geometry_msgs std_msgs
 )
