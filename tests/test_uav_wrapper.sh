@@ -45,6 +45,15 @@ fi
 /usr/bin/grep -Fq \
     'ros2 launch uav_navigation astar_planner_offline.launch.py "$@"' \
     "$UAV" || fail "offline launch arguments are not forwarded"
+/usr/bin/grep -Fq 'trajectory_parameterizer_offline.launch.py "$@"' \
+    "$UAV" || fail "trajectory-check arguments are not forwarded"
+/usr/bin/grep -Fq 'planning_to_trajectory_offline.launch.py "$@"' \
+    "$UAV" || fail "pipeline-check arguments are not forwarded"
+help_output="$("$UAV" help)"
+[[ "$help_output" == *"trajectory-check"* ]] || \
+    fail "trajectory-check is missing from help"
+[[ "$help_output" == *"pipeline-check"* ]] || \
+    fail "pipeline-check is missing from help"
 
 git -C "$REPO_ROOT" check-ignore -q ros2_ws/build/example
 git -C "$REPO_ROOT" check-ignore -q ros2_ws/install/example

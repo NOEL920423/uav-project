@@ -46,6 +46,8 @@ Typical daily use:
 ./uav test
 ./uav verify
 ./uav offline-check
+./uav trajectory-check
+./uav pipeline-check
 ```
 
 ## Offline modes and launch arguments
@@ -68,6 +70,25 @@ Arguments after either subcommand are passed to the launch file:
 ./uav offline-check enable_bspline:=true fixture:=bspline-rejected-corner-cut
 ./uav offline-check enable_bspline:=false fixture:=bspline-disabled
 ```
+
+Phase 4 adds two finite non-flight checks. `trajectory-check` publishes a
+validated `px4_ned` path directly to the parameterizer; `pipeline-check`
+publishes a fixed scene and verifies the complete A* / B-spline-or-fallback /
+timed-trajectory chain. Both run in the same clean Jazzy environment, forward
+launch arguments, scan for `/fmu/in/*`, and write timestamped ignored logs:
+
+```bash
+./uav trajectory-check fixture:=straight-line
+./uav trajectory-check fixture:=impossible-config-rejection
+./uav trajectory-check fixture:=wrong-frame
+./uav pipeline-check enable_bspline:=true
+./uav pipeline-check enable_bspline:=false
+```
+
+The standalone fixture vocabulary is `straight-line`, `phase3-bspline`,
+`sharp-bend`, `high-curvature`, `duplicate-adjacent`, `two-point`,
+`invalid-one-point`, `nonfinite`, `yaw-wrap`, `jerk-scaling`,
+`impossible-config-rejection`, and `wrong-frame`.
 
 Available edge fixtures are `short-two-point-path`, `three-point-path`,
 `duplicate-control-point-path`, `self-intersection-candidate`, and

@@ -112,6 +112,47 @@ before and after Phase 2 was identical:
 9bb394c0e4e5616f0857ce61e5067971a5931ae5c32a0e33ef3d96af40b94beb
 ```
 
+## Phase 4 deterministic trajectory parameterization
+
+Final verification on 2026-08-06 used ROS 2 Jazzy and `/usr/bin/python3`.
+`./uav build`, `./uav test`, and the independent `./uav verify` rebuild/test
+cycle all passed for seven packages. The suite reported 77 tests, 0 errors,
+0 failures, and 0 skipped. Coverage includes pure configuration, velocity/time
+profiles, acceleration/lateral/jerk constraints, global scaling, NED yaw and
+unwrap behavior, exact geometry/altitude preservation, structured rejection,
+and a live ROS graph candidate/validity/status contract test.
+
+The standalone harness passed all twelve deterministic fixtures. Accepted
+fixtures were straight-line, Phase 3 B-spline-shaped path, sharp bend, high
+curvature, adjacent duplicate cleanup, two-point, yaw wrap, and jerk scaling.
+The one-point, non-finite, impossible scaling-budget, and wrong-frame fixtures
+were rejected as expected. Every fixture also republished an identical input
+and observed zero duplicate recomputations.
+
+Final command results:
+
+```text
+./uav offline-check enable_bspline:=true
+  source=BSPLINE, raw=81, simplified=6, candidate=55, final=55: PASS
+./uav offline-check enable_bspline:=false
+  source=ASTAR_SIMPLIFIED, raw=81, simplified=6, final=6: PASS
+./uav trajectory-check
+  straight-line valid=true, points=3, duration=6.000000 s: PASS
+./uav pipeline-check
+  scene -> A* -> accepted B-spline -> 55-point timed trajectory: PASS
+./uav trajectory-check fixture:=impossible-config-rejection
+  valid=false, maximum jerk diagnostic at point 0: PASS
+./uav topics
+  only /parameter_events and /rosout; no /fmu/in/*: PASS
+```
+
+The global-scaling examples measured scale 2.765436 for high curvature and
+5.572329 for the strict jerk/yaw fixture. The accepted Phase 3 pipeline path
+measured 8.066690 s duration, 2.151213 scale, 0.852011 m/s maximum speed,
+2.991018 m/s³ maximum jerk, and 0.492743 rad/s maximum yaw rate. These are
+offline feasibility measurements, not flight, controller, PX4, tracking, or
+disturbance validation.
+
 ## Phase 3 validated B-spline candidate
 
 Date: 2026-08-06 (Asia/Taipei)

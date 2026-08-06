@@ -44,6 +44,8 @@ Commands:
   verify         Run doctor, build, tests, interface/import/static checks
   offline        Launch the offline planner interactively
   offline-check  Run and validate the finite offline planner harness
+  trajectory-check  Validate standalone path-to-trajectory parameterization
+  pipeline-check    Validate scene-to-planner-to-trajectory integration
   topics         Inspect the current ROS graph and reject /fmu/in/ topics
   interfaces     Show custom interfaces and planner topic contracts
   shell          Open a clean interactive ROS 2 workspace shell
@@ -52,6 +54,8 @@ Examples:
   ./uav verify
   ./uav offline use_sim_time:=false
   ./uav offline-check
+  ./uav trajectory-check fixture:=straight-line
+  ./uav pipeline-check enable_bspline:=true
   ./uav shell
 EOF
 }
@@ -197,6 +201,8 @@ show_interfaces() {
         uav_interfaces/msg/Obstacle \
         uav_interfaces/msg/ObstacleArray \
         uav_interfaces/msg/EpisodeState \
+        uav_interfaces/msg/TrajectoryPoint \
+        uav_interfaces/msg/TimedTrajectory \
         uav_interfaces/srv/GenerateEpisode \
         uav_interfaces/action/RunEpisode
     do
@@ -245,9 +251,14 @@ check_pure_navigation_imports() {
         "$module_root/path_simplifier.py"
         "$module_root/path_validator.py"
         "$module_root/path_metrics.py"
+        "$module_root/trajectory_models.py"
+        "$module_root/trajectory_parameterizer.py"
+        "$module_root/trajectory_validator.py"
+        "$module_root/yaw_profile.py"
+        "$module_root/trajectory_metrics.py"
     )
     local pattern
-    pattern='^[[:space:]]*(from|import)[[:space:]]+(rclpy|omni|isaac|px4_msgs|pymavlink|pegasus|viewport)'
+    pattern='^[[:space:]]*(from|import)[[:space:]]+(rclpy|omni|isaac|px4_msgs|pymavlink|pegasus|viewport)|/fmu/in/'
     local findings
     findings="$(/usr/bin/grep -inE "$pattern" "${pure_modules[@]}" || true)"
     if [[ -n "$findings" ]]; then
@@ -345,6 +356,42 @@ internal_offline_check() {
     return "$launch_status"
 }
 
+internal_trajectory_check() {
+    clean_bootstrap required
+    local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-20}"
+    if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+        die "UAV_OFFLINE_TIMEOUT_SECONDS must be a positive integer"
+        return 1
+    fi
+    cd "$REPO_ROOT"
+    set +e
+    timeout "${timeout_seconds}s" \
+        ros2 launch uav_navigation \
+        trajectory_parameterizer_offline.launch.py "$@"
+    local launch_status=$?
+    set -e
+    scan_forbidden_topics
+    return "$launch_status"
+}
+
+internal_pipeline_check() {
+    clean_bootstrap required
+    local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-20}"
+    if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+        die "UAV_OFFLINE_TIMEOUT_SECONDS must be a positive integer"
+        return 1
+    fi
+    cd "$REPO_ROOT"
+    set +e
+    timeout "${timeout_seconds}s" \
+        ros2 launch uav_navigation \
+        planning_to_trajectory_offline.launch.py "$@"
+    local launch_status=$?
+    set -e
+    scan_forbidden_topics
+    return "$launch_status"
+}
+
 internal_dispatch() {
     local command_name="${1:-}"
     shift || true
@@ -370,6 +417,12 @@ internal_dispatch() {
             ;;
         offline-check)
             internal_offline_check "$@"
+            ;;
+        trajectory-check)
+            internal_trajectory_check "$@"
+            ;;
+        pipeline-check)
+            internal_pipeline_check "$@"
             ;;
         topics)
             clean_bootstrap required
@@ -501,6 +554,35 @@ command_offline_check() {
     printf 'OFFLINE CHECK SUCCESS: raw, simplified, final, frame, and status validated\n'
 }
 
+command_phase4_check() {
+    local check_name="$1"
+    local success_marker="$2"
+    shift 2
+    mkdir -p "$RUN_LOG_DIR"
+    local timestamp log_file launch_status
+    timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    log_file="$RUN_LOG_DIR/${check_name}_${timestamp}.log"
+    info "$check_name log: $log_file"
+    set +e
+    clean_environment_command "$check_name" "$@" 2>&1 | tee "$log_file"
+    launch_status=${PIPESTATUS[0]}
+    set -e
+    if ((launch_status != 0)); then
+        error "$check_name failed with exit code $launch_status"
+        return "$launch_status"
+    fi
+    if ! /usr/bin/grep -q "$success_marker" "$log_file"; then
+        die "$check_name success marker was not found in $log_file"
+        return 1
+    fi
+    if ! /usr/bin/grep -q 'SAFE: no /fmu/in/\* topics detected' "$log_file"; then
+        die "$check_name safety marker was not found in $log_file"
+        return 1
+    fi
+    printf '%s SUCCESS: finite non-flight fixture validated\n' \
+        "${check_name^^}"
+}
+
 print_planner_topics() {
     cat <<'EOF'
 
@@ -514,6 +596,12 @@ Planner topic contracts:
   /uav/planner/bspline_valid
   /uav/planner/path
   /uav/planner/status
+
+Trajectory topic contracts:
+  /uav/planner/path
+  /uav/trajectory/candidate
+  /uav/trajectory/valid
+  /uav/trajectory/status
 EOF
 }
 
@@ -573,6 +661,24 @@ main() {
             require_workspace_overlay
             shift
             command_offline_check "$@"
+            ;;
+        trajectory-check)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            command_phase4_check \
+                trajectory-check \
+                'trajectory offline integration passed:' "$@"
+            ;;
+        pipeline-check)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            command_phase4_check \
+                pipeline-check \
+                'pipeline offline integration passed:' "$@"
             ;;
         topics)
             require_repository
