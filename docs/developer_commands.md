@@ -101,6 +101,55 @@ source ros2_ws/install/setup.bash
 ros2 run uav_navigation geometric_path_comparison
 ```
 
+## Phase 5 offline tracking checks
+
+Phase 5 remains non-flight. Its follower publishes only the ROS-level
+`/uav/control/astar_command` candidate and reference/status topics in
+`px4_ned`; the launch files contain no PX4, Isaac Sim, Pegasus, XRCE, arming,
+OFFBOARD, or `/fmu/in/*` path.
+
+```bash
+./uav tracking-check
+./uav tracking-safety-check
+./uav full-pipeline-check
+```
+
+`tracking-check` runs a fixed timed trajectory through the follower and the
+deterministic first-order plant until `GOAL_HOLD`. `tracking-safety-check`
+defaults to `stale-odometry` and requires an exact zero HOLD with the expected
+reason. `full-pipeline-check` validates the complete fixed scene -> A* ->
+accepted B-spline or A* fallback -> timed trajectory -> follower -> plant
+chain. All three commands are finite, scan for `/fmu/in/*`, and write ignored
+logs under `run_logs/`.
+
+Useful safety fixtures include:
+
+```bash
+./uav tracking-safety-check fixture:=stale-odometry
+./uav tracking-safety-check fixture:=invalid-validity-flag
+./uav tracking-safety-check fixture:=wrong-odometry-frame
+./uav tracking-safety-check fixture:=excessive-tracking-error
+```
+
+The complete deterministic vocabulary is `straight-trajectory`,
+`phase3-bspline-accepted`, `astar-fallback`, `sharp-dynamically-valid`,
+`start-position-offset`, `constant-horizontal-disturbance`,
+`duplicate-trajectory-message`, `stale-odometry`,
+`stale-trajectory-validity`, `invalid-validity-flag`,
+`wrong-odometry-frame`, `nonfinite-odometry`, `backward-time-jump`,
+`command-speed-saturation`, `command-acceleration-saturation`,
+`excessive-tracking-error`, `successful-goal-settling`,
+`terminal-not-reached`, `yaw-wrap-crossing`, and
+`invalid-command-rejection`.
+
+To reproduce the pure eight-fixture table after building:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ros2_ws/install/setup.bash
+ros2 run uav_navigation tracking_comparison
+```
+
 ## Why shell creates a new shell
 
 An executed script cannot safely change its parent shell's environment.

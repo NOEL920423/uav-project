@@ -114,6 +114,34 @@ path. Time and arc length are finite and strictly increasing. The node consumes
 no raw/simplified/candidate planner topics, vehicle state, joystick, NavRL,
 simulator, or PX4 topics. No Phase 4 owner publishes `/fmu/in/*`.
 
+## Phase 5 offline tracking contracts
+
+Phase 5 consumes only the accepted Phase 4 candidate/validity pair and offline
+`px4_ned` odometry. Its reliable volatile 20 Hz outputs are ROS-level
+controller candidates and diagnostics, never PX4 setpoints.
+
+| Exact name and type | Owner | Meaning and frame | Failure behavior |
+|---|---|---|---|
+| `/uav/control/astar_command` — `geometry_msgs/msg/TwistStamped` | `trajectory_follower_node` | `px4_ned`; linear X/Y/Z are north/east/down velocity, angular Z is NED yaw rate, angular X/Y are zero | Missing, stale, false, wrong-frame, non-finite, time-jump, excessive-error, terminal-timeout, or validator failure selects an exact zero HOLD with a reason |
+| `/uav/control/astar_reference_pose` — `geometry_msgs/msg/PoseStamped` | `trajectory_follower_node` | Current interpolated reference position/yaw in `px4_ned` | Absent while no valid reference can be sampled |
+| `/uav/control/astar_reference_twist` — `geometry_msgs/msg/TwistStamped` | `trajectory_follower_node` | Current interpolated NED velocity and yaw rate | Absent while no valid reference can be sampled |
+| `/uav/control/astar_tracking_status` — `uav_interfaces/msg/TrajectoryTrackingStatus` | `trajectory_follower_node` | Stamped `px4_ned` state, gates, errors, saturation flags, diagnostics, and reason | Explicit waiting/HOLD/terminal state; never silently reuses stale evidence |
+
+The candidate command, selected command, and PX4 output command are three
+different ownership layers. Phase 5 implements only the first: a validated A*
+follower candidate on `/uav/control/astar_command`. The internal pure
+`selected_command` field means only the bounded candidate selected over the
+unbounded calculation in the same follower cycle; it is not mux arbitration.
+`/uav/control/selected_command` remains owned by a future source mux, and only
+a future `uav_px4_control` adapter may map that mux output to `/fmu/in/*`.
+Neither later layer exists in the Phase 5 graph.
+
+Receipt time plus `trajectory_start_delay_s` defines the local tracking epoch;
+trajectory timestamps remain relative. Duplicate identical trajectories do
+not reset the epoch. Backward/equal control time fails closed and fresh
+trajectory, validity, and odometry synchronization is required after a
+backward jump.
+
 ## Global failure and lifecycle rules
 
 - Every candidate and selected command is stamped. Stale candidates are

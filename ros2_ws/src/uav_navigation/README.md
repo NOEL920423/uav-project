@@ -1,12 +1,14 @@
 # uav_navigation
 
-Phase 3 provides a deterministic, fixed-altitude, 8-connected A* planner with
-an optional clamped B-spline candidate. Search, geometry, simplification,
-smoothing, validation, and metrics are pure Python. Only
-`astar_planner_node.py` adapts planning to ROS 2.
+The package provides deterministic fixed-altitude A*, an optional validated
+clamped B-spline candidate, timed-trajectory parameterization, and a Phase 5
+offline trajectory-follower candidate. Search, geometry, sampling, tracking,
+validation, kinematic plant, and metrics algorithms remain pure Python; ROS 2
+is confined to adapter and finite-harness modules.
 
-This package does not follow paths, publish control commands, start PX4 or a
-simulator, arm a vehicle, or publish any `/fmu/in/*` topic.
+The Phase 5 follower publishes only a bounded ROS-level candidate command. The
+package does not start PX4 or a simulator, arm a vehicle, implement a control
+source mux or PX4 output mapping, or publish any `/fmu/in/*` topic.
 
 ## ROS interfaces
 
@@ -175,6 +177,36 @@ Run direct and combined finite checks:
 ./uav pipeline-check enable_bspline:=true
 ```
 
-This package still contains no follower, controller, setpoint adapter,
-OFFBOARD/arming logic, simulator process, or PX4 input publisher. A valid timed
-trajectory is analysis data and cannot command flight.
+## Phase 5 offline trajectory tracking
+
+`trajectory_follower_node` subscribes to the validated timed trajectory, its
+fresh validity flag, and `px4_ned` odometry. It publishes:
+
+- `/uav/control/astar_command` — bounded candidate NED velocity/yaw rate
+- `/uav/control/astar_reference_pose` — interpolated reference pose
+- `/uav/control/astar_reference_twist` — interpolated reference velocity
+- `/uav/control/astar_tracking_status` — gates, state, errors, saturation,
+  diagnostics, and HOLD reason
+
+Receipt time plus `trajectory_start_delay_s` defines the deterministic epoch.
+The pure sampler interpolates every timed-trajectory field and the follower
+uses velocity feedforward plus position/velocity/yaw feedback. Ordered speed,
+acceleration, yaw-rate, and yaw-acceleration bounds run before an independent
+validator. Missing, invalid, stale, wrong-frame, non-finite, time-jump,
+excessive-error, or terminal-timeout conditions publish an exact zero HOLD.
+
+Configuration is installed from `config/trajectory_follower.yaml`. The direct
+launch uses only a fixed publisher, follower, deterministic first-order
+kinematic plant, and finite monitor; the combined launch adds the existing
+scene/planner/B-spline/parameterizer chain.
+
+```bash
+./uav tracking-check
+./uav tracking-safety-check fixture:=stale-odometry
+./uav full-pipeline-check enable_bspline:=true
+```
+
+The command on `/uav/control/astar_command` is only a candidate. A future mux
+would own `/uav/control/selected_command`, and a separate future PX4 adapter
+would own any PX4 output. Phase 5 implements neither later layer, contains no
+OFFBOARD/arming logic, and provides no flight or vehicle-dynamics validation.

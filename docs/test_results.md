@@ -1,5 +1,44 @@
 # Test results
 
+## Phase 5 offline closed-loop trajectory tracking
+
+Date: 2026-08-06 (Asia/Taipei)
+
+Phase 5 adds a pure deterministic sampler/controller/validator/plant/metrics
+stack, its ROS 2 adapter and status interface, two finite offline tracking
+graphs, and a complete scene-to-tracking graph. The direct nominal graph ended
+in `GOAL_HOLD`; the stale-odometry graph selected exact-zero
+`HOLD_STALE_ODOMETRY`; and the complete graph accepted a 55-point Phase 3
+B-spline, parameterized it to 8.066690 s, and ended in `GOAL_HOLD` with
+approximately 0.0391 m position RMSE and 0.0657 m maximum position error.
+
+Focused package validation reported 99 tests, 0 errors, 0 failures, and
+0 skipped. Coverage includes all 20 contract fixtures, interpolation fields
+and endpoints, NED feedback and feedforward, ordered bounds, independent
+command rejection, every input HOLD gate, time jumps, continuous goal
+settling, deterministic plant behavior, metrics, ROS graph contracts, and
+absence of `/fmu/in/*`.
+
+```text
+./uav tracking-check
+  fixed trajectory -> follower -> plant -> GOAL_HOLD: PASS
+./uav tracking-safety-check
+  stale odometry -> exact-zero HOLD_STALE_ODOMETRY: PASS
+./uav tracking-safety-check fixture:=invalid-validity-flag
+  false validity -> exact-zero WAITING_VALIDITY: PASS
+./uav tracking-safety-check fixture:=wrong-odometry-frame
+  map odometry -> exact-zero HOLD_INVALID_FRAME: PASS
+./uav tracking-safety-check fixture:=excessive-tracking-error
+  3.001697 m maximum error -> HOLD_TRACKING_ERROR: PASS
+./uav full-pipeline-check
+  scene -> A* -> B-spline -> timed trajectory -> follower -> plant: PASS
+```
+
+All numerical results are offline kinematic fixture measurements. They are not
+PX4 setpoint-mapping validation, UAV dynamics simulation, Isaac Sim results,
+real-flight evidence, or a proof of disturbance rejection. See
+`phase5_offline_tracking_comparison.md` for the eight-fixture table.
+
 ## Phase 2 A* migration
 
 Date: 2026-08-06 (Asia/Taipei)
