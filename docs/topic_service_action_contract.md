@@ -55,9 +55,9 @@ inactive.
 
 For every `TwistStamped` command, `header.frame_id=px4_ned`; linear velocity is
 NED and angular Z is the documented NED yaw-rate convention. The header stamp
-is mandatory. Expected nominal command rate is 20 Hz. A future mux owns a
-configurable short freshness threshold; until validated, the conservative
-starting proposal is 0.25 s and is not implemented in Phase 1.
+is mandatory. Phase 6 mux input QoS is reliable/volatile/keep-last 5 and its
+output rate is 50 Hz by default. Freshness is based on mux receipt time, never
+on a candidate-controlled header stamp; per-source timeouts are configurable.
 
 | Exact name and type | Owner | Subscriber | Frame and timestamp | QoS / rate | State restriction | Failure behavior | Future phase |
 |---|---|---|---|---|---|---|---|
@@ -65,14 +65,17 @@ starting proposal is 0.25 s and is not implemented in Phase 1.
 | `/uav/control/joystick_command` — `geometry_msgs/msg/TwistStamped` | joystick node only | command multiplexer, recorder | `px4_ned`; ROS clock at input processing | `R/V/K5`; 20 Hz while teleop enabled | Requires fresh joystick input and deadman; cannot arm/PX4-publish directly | Timeout/deadman release publishes or selects HOLD, then candidate becomes stale | Teleop migration phase |
 | `/uav/control/navrl_command` — `geometry_msgs/msg/TwistStamped` | bounded NavRL inference node only | command multiplexer, recorder | `px4_ned`; ROS clock at inference completion | `R/V/K5`; target 20 Hz, bounded by validated inference latency | Deployment/inference only; model loaded/validated, fresh observation, active episode | Late/invalid inference is discarded; never reuse stale output; mux selects HOLD | NavRL deployment phase |
 | `/uav/control/hold_command` — `geometry_msgs/msg/TwistStamped` | safety controller only | command multiplexer, recorder | `px4_ned`; ROS clock each safety cycle | `R/V/K5`; 20 Hz whenever graph is control-capable | Always available before any non-HOLD source; bounded zero/position-hold semantics finalized with PX4 adapter | Loss of safety heartbeat blocks PX4 output rather than falling through to another candidate | Safety-controller phase |
-| `/uav/control/selected_command` — `geometry_msgs/msg/TwistStamped` | command multiplexer only | PX4 output node, recorder | `px4_ned`; retains selected candidate stamp or a new documented mux stamp; age is measurable | `R/V/K5`; 20 Hz during control-ready states | Exactly one selected source; invalid source selection, stale candidate, or loss of selected candidate results in HOLD | PX4 adapter rejects stale/invalid selected command and enters its safe HOLD/stop-output state | Multiplexer phase |
-| `/uav/control/source` — `std_msgs/msg/String` | command multiplexer only | PX4 output node, episode state owner, recorder, UI | No frame/header; source change is paired with next stamped selected command and copied into `EpisodeState.control_source` | `R/TL/K1`; on change plus optional 1 Hz heartbeat | Allowed values initially `HOLD`, `ASTAR`, `JOYSTICK`, `NAVRL`; default `HOLD` | Missing/unknown value is invalid and selects HOLD | Multiplexer phase |
+| `/uav/control/selected_command` — `geometry_msgs/msg/TwistStamped` | `control_mux` only | Phase 6 offline plant; future PX4 output node and recorder | `px4_ned`; stamp is always the mux ROS clock at publication, never copied from a candidate | `R/V/K5`; configurable, default 50 Hz | Exactly one selected source; each candidate and final selected command are independently validated | Any stale/invalid selected source or validator failure produces internal exact-zero HOLD; no automatic movement-source failover | Phase 6 offline mux |
+| `/uav/control/source` — `std_msgs/msg/String` | `control_mux` only | future PX4 output node, episode state owner, recorder, UI | No frame/header; published with every mux cycle | `R/V/K5`; default 50 Hz | Exact values `HOLD`, `ASTAR_EXPERT`, `HUMAN_JOYSTICK`, `NAVRL_POLICY`; startup is `HOLD` | Unknown request is rejected and fail-closes to latched HOLD | Phase 6 offline mux |
+| `/uav/control/status` — `uav_interfaces/msg/ControlMuxStatus` | `control_mux` only | test monitor, recorder, operator UI | `header.frame_id=px4_ned`; mux ROS clock | `R/V/K5`; default 50 Hz | Reports request/active source, HOLD reason, handoff time, source health/age, bounds and transition count | Diagnostics never authorize motion; contradictions fail closed | Phase 6 offline mux |
+| `/uav/control/set_source` — `uav_interfaces/srv/SetControlSource` | Server: `control_mux` | Client: offline harness; future episode coordinator/UI | No request stamp; service handling uses mux receipt time and current registry health | Default service QoS | Only canonical sources accepted; movement-to-movement changes honor dwell and HOLD barrier; a fresh explicit request is required after a latched fault | Rejected requests return `accepted=false`; invalid requests select `HOLD_INVALID_SOURCE` | Phase 6 offline mux |
 
 Ownership is exclusive: the A* follower, joystick node, NavRL policy, safety
 controller, and mux publish only their named candidate/selected topic. The
 future PX4 output node in `uav_px4_control` is the only node allowed to publish
 actual `/fmu/in/*` command topics. Planner, joystick, recorder, policy, scene,
-camera, and mux nodes may not do so. The mux is not implemented in Phase 1.
+camera, and mux nodes may not do so. Phase 6 implements only candidate
+arbitration and `selected_command`; it contains no PX4 output publisher.
 
 ## Episode contracts
 
@@ -132,15 +135,31 @@ different ownership layers. Phase 5 implements only the first: a validated A*
 follower candidate on `/uav/control/astar_command`. The internal pure
 `selected_command` field means only the bounded candidate selected over the
 unbounded calculation in the same follower cycle; it is not mux arbitration.
-`/uav/control/selected_command` remains owned by a future source mux, and only
-a future `uav_px4_control` adapter may map that mux output to `/fmu/in/*`.
-Neither later layer exists in the Phase 5 graph.
+Phase 6 now implements the source mux that owns
+`/uav/control/selected_command`; only a separate future `uav_px4_control`
+adapter may map that output to `/fmu/in/*`. That PX4 output layer does not
+exist in the Phase 6 graph.
 
 Receipt time plus `trajectory_start_delay_s` defines the local tracking epoch;
 trajectory timestamps remain relative. Duplicate identical trajectories do
 not reset the epoch. Backward/equal control time fails closed and fresh
 trajectory, validity, and odometry synchronization is required after a
 backward jump.
+
+## Phase 6 offline control mux contracts
+
+The mux subscribes to all four candidate topics but movement ownership stays
+exclusive. Startup and explicit `HOLD` requests use an internal exact-zero
+command. Requests for a movement source require a fresh, finite, bounded
+`px4_ned` candidate. Movement-to-movement changes pass through an exact-zero
+HOLD barrier; a target that becomes unhealthy cancels the handoff. Selected
+source faults latch HOLD and cannot recover merely because messages resume.
+
+The independent selected-command validator enforces horizontal, vertical,
+total speed, acceleration, yaw-rate, yaw-acceleration, frame, finiteness and
+monotonic-time gates. Safety HOLD is immediate and exact zero; ordinary rate
+limits do not delay it. Unselected-source faults never replace a healthy active
+source, and the mux never auto-fails over to another movement source.
 
 ## Global failure and lifecycle rules
 

@@ -206,7 +206,9 @@ scene/planner/B-spline/parameterizer chain.
 ./uav full-pipeline-check enable_bspline:=true
 ```
 
-The command on `/uav/control/astar_command` is only a candidate. A future mux
-would own `/uav/control/selected_command`, and a separate future PX4 adapter
-would own any PX4 output. Phase 5 implements neither later layer, contains no
-OFFBOARD/arming logic, and provides no flight or vehicle-dynamics validation.
+The command on `/uav/control/astar_command` is only a candidate. The Phase 6
+offline mux in `uav_px4_control` owns `/uav/control/selected_command`; only its
+offline control-stack launch remaps this package's fixed-step plant to consume
+that selected output. A separate future PX4 adapter would own any PX4 output.
+Neither package contains OFFBOARD/arming logic or flight/vehicle-dynamics
+validation.

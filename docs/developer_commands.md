@@ -3,11 +3,11 @@
 ## Purpose and safety boundary
 
 The repository-root `./uav` wrapper replaces repeated environment, build, test,
-inspection, and offline-planner commands with one reproducible entry point. It
-is a non-flight developer tool: it does not start Isaac Sim, Pegasus, PX4,
-Micro XRCE-DDS, cameras, recorders, controllers, OFFBOARD mode, arming, or
-takeoff. Its Phase 3 B-spline behavior is pure geometric candidate generation
-and validation; it does not publish `/fmu/in/*` commands.
+inspection, and offline checks with one reproducible entry point. It is a
+non-flight developer tool: it does not start Isaac Sim, Pegasus, PX4, Micro
+XRCE-DDS, cameras, recorders, OFFBOARD mode, arming, or takeoff. Phase 6 starts
+only synthetic candidate publishers, the offline mux, existing follower and
+fixed-step plant as required; it does not publish `/fmu/in/*` commands.
 
 Run `./uav help` for the concise command list.
 
@@ -35,7 +35,10 @@ workspace path, and overlay state.
 | `./uav offline` | Interactive offline planner launch without a default timeout |
 | `./uav offline-check` | Finite, logged, deterministic offline validation |
 | `./uav topics` | ROS graph listing and `/fmu/in/*` rejection |
-| `./uav interfaces` | Five custom definitions and planner topic names |
+| `./uav interfaces` | Custom definitions and canonical ROS topic/service names |
+| `./uav mux-check` | Nominal four-source arbitration and HOLD handoffs |
+| `./uav mux-safety-check` | Stale-source latch, explicit recovery, internal HOLD |
+| `./uav control-stack-check` | Scene through follower, mux and offline plant |
 | `./uav shell` | A new interactive clean shell with a `[uav-ros2]` prompt |
 
 Typical daily use:
@@ -48,6 +51,9 @@ Typical daily use:
 ./uav offline-check
 ./uav trajectory-check
 ./uav pipeline-check
+./uav mux-check
+./uav mux-safety-check
+./uav control-stack-check
 ```
 
 ## Offline modes and launch arguments
@@ -149,6 +155,27 @@ source /opt/ros/jazzy/setup.bash
 source ros2_ws/install/setup.bash
 ros2 run uav_navigation tracking_comparison
 ```
+
+## Phase 6 offline mux checks
+
+Phase 6 owns only ROS-level arbitration. `mux-check` requests
+`ASTAR_EXPERT -> HUMAN_JOYSTICK -> NAVRL_POLICY -> HOLD`, requires an
+exact-zero HOLD barrier between movement sources, and verifies one selected
+publisher. `mux-safety-check` forces selected-source staleness, checks the
+latched HOLD cannot auto-recover, then performs an explicit recovery request;
+it also verifies an invalid external HOLD cannot disable internal HOLD.
+`control-stack-check` connects the real Phase 5 follower to the mux and makes
+the offline plant consume only `/uav/control/selected_command`.
+
+```bash
+./uav mux-check
+./uav mux-safety-check
+./uav control-stack-check enable_bspline:=true
+```
+
+All commands are finite, write ignored logs under `run_logs/`, scan the live
+graph for `/fmu/in/*`, and do not start PX4, Isaac Sim, joystick hardware or a
+NavRL runtime/model.
 
 ## Why shell creates a new shell
 

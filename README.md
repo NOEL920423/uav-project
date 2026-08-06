@@ -24,17 +24,23 @@ Use the repository-local `./uav` command for isolated Jazzy build, test,
 verification, interface inspection, and the non-flight offline planner harness.
 See [`docs/developer_commands.md`](docs/developer_commands.md).
 
-Phase 5 adds a deterministic, offline closed-loop trajectory-follower
-candidate. It samples the validated Phase 4 timed trajectory, creates bounded
-`px4_ned` velocity/yaw-rate candidates, independently validates them, and
-drives only a fixed-step kinematic test plant. It never arms, launches PX4 or
-Isaac Sim, or publishes/remaps any `/fmu/in/*` topic.
+Phase 6 adds a deterministic offline control-source multiplexer after the
+Phase 5 trajectory follower. It arbitrates the canonical `HOLD`,
+`ASTAR_EXPERT`, `HUMAN_JOYSTICK`, and `NAVRL_POLICY` candidates, validates the
+selected command independently, and fails closed through explicit HOLD
+states. It never arms, launches PX4 or Isaac Sim, loads a NavRL model, reads
+joystick hardware, or publishes/remaps any `/fmu/in/*` topic.
 
 ```bash
 ./uav tracking-check
 ./uav tracking-safety-check
 ./uav full-pipeline-check
+./uav mux-check
+./uav mux-safety-check
+./uav control-stack-check
 ```
 
-The quantitative eight-fixture results and their limitations are in
-[`docs/phase5_offline_tracking_comparison.md`](docs/phase5_offline_tracking_comparison.md).
+The quantitative Phase 5 tracking and Phase 6 arbitration results are in
+[`docs/phase5_offline_tracking_comparison.md`](docs/phase5_offline_tracking_comparison.md)
+and
+[`docs/phase6_control_mux_comparison.md`](docs/phase6_control_mux_comparison.md).

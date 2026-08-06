@@ -1,5 +1,39 @@
 # Test results
 
+## Phase 6 offline control-source arbitration
+
+Date: 2026-08-06 (Asia/Taipei)
+
+Phase 6 adds a pure source registry, freshness monitor, fail-closed arbitration
+state machine, ordered selected-command limits, independent validator, ROS 2
+mux/service/status adapter, and finite offline harnesses. All 24 deterministic
+fixtures reached their expected terminal state. The focused
+`uav_px4_control` suite reported 60 passed tests; the complete seven-package
+workspace reported 157 tests, 0 errors, 0 failures, and 0 skipped.
+
+```text
+./uav mux-check
+  ASTAR_EXPERT -> HOLD barrier -> HUMAN_JOYSTICK -> HOLD barrier
+  -> NAVRL_POLICY -> HOLD: PASS
+./uav mux-safety-check
+  selected source stale -> latched HOLD -> explicit recovery: PASS
+  invalid external HOLD -> internal exact-zero HOLD remains available: PASS
+./uav control-stack-check
+  scene -> A* -> 55-point B-spline -> 8.066690 s trajectory
+  -> follower -> mux -> plant -> GOAL_HOLD: PASS
+```
+
+The live control-stack monitor observed 430 movement cycles with one transition
+to `ACTIVE_ASTAR_EXPERT`. Nominal mux validation observed 10 HOLD barrier
+cycles, 35 movement cycles, and six state transitions. Selected output stayed
+within 2.0 m/s and 1.5 rad/s; pure derivative fixtures also enforce
+1.5 m/s² and 2.0 rad/s². No `/fmu/in/*` topic existed.
+
+These results validate offline arbitration contracts only. They do not validate
+PX4 setpoint mapping, OFFBOARD, arming, joystick hardware, NavRL inference,
+Isaac Sim, vehicle dynamics, or flight. See
+`phase6_control_mux_comparison.md` for the 24-fixture table.
+
 ## Phase 5 offline closed-loop trajectory tracking
 
 Date: 2026-08-06 (Asia/Taipei)

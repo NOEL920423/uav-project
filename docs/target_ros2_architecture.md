@@ -128,11 +128,18 @@ Safety envelope定義集中在 `obstacle_geometry.py`；至少包含physical rad
 
 sources：`ASTAR_EXPERT`、`HUMAN_JOYSTICK`、`NAVRL_POLICY`、`HOLD`。
 
-- 各source發到不同input topic，帶timestamp/validity。
-- mux一次只輸出一個source，所有transition寫log並發active source。
-- source stale或invalid立即轉 `HOLD`。
-- source selection不能繞過flight state machine或safety stop。
-- NavRL本階段只定deployment observation/action contract與scaling。
+- Phase 6 已實作 offline mux；各 source 發到獨立 candidate topic，mux 依
+  node-clock receipt time 判斷 freshness。
+- mux 一次只輸出一個 source，唯一擁有 `/uav/control/selected_command`，並發
+  `/uav/control/source` 與 typed `ControlMuxStatus`。
+- movement-source 切換必須通過定時 exact-zero HOLD barrier；handoff 期間目標
+  失效會取消切換並 fault-latch。
+- selected source stale、invalid、wrong-frame、non-finite、time jump 或 bounds
+  violation 立即 fail closed；fault-latched HOLD 只接受明確 service recovery。
+- external HOLD candidate 不可信時仍使用 mux 內部 exact-zero HOLD，不能移除
+  最後安全輸出。
+- source selection 不能繞過未來 flight state machine 或 safety stop。Phase 6
+  不含 PX4 adapter、OFFBOARD、arming、joystick hardware 或 NavRL runtime。
 
 ### `uav_data_recorder`
 
