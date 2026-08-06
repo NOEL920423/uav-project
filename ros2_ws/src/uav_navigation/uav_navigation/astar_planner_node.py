@@ -16,17 +16,26 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from uav_interfaces.msg import Obstacle, ObstacleArray
 
 from uav_navigation.astar_planner import plan_path
+from uav_navigation.bspline_smoother import (
+    generate_bspline_candidate,
+    validate_bspline_candidate,
+)
 from uav_navigation.coordinate_frames import (
     ISAAC_WORLD_FRAME,
     PLANNING_FRAME,
     isaac_to_ned_position,
 )
-from uav_navigation.models import CircularObstacle, PlannerConfig, Point3D
+from uav_navigation.models import (
+    BSplineConfig,
+    CircularObstacle,
+    PlannerConfig,
+    Point3D,
+)
 from uav_navigation.path_validator import validate_path
 
 
@@ -61,6 +70,7 @@ class AstarPlannerNode(Node):
             float(self.get_parameter("ned_offset_z").value),
         )
         self._config = self._read_config()
+        self._bspline_config = self._read_bspline_config()
 
         qos = _durable_qos()
         self._raw_publisher = self.create_publisher(
@@ -71,6 +81,16 @@ class AstarPlannerNode(Node):
         self._simplified_publisher = self.create_publisher(
             Path,
             "/uav/planner/path_simplified",
+            qos,
+        )
+        self._candidate_publisher = self.create_publisher(
+            Path,
+            "/uav/planner/path_bspline_candidate",
+            qos,
+        )
+        self._bspline_valid_publisher = self.create_publisher(
+            Bool,
+            "/uav/planner/bspline_valid",
             qos,
         )
         self._final_publisher = self.create_publisher(
@@ -110,7 +130,8 @@ class AstarPlannerNode(Node):
         self._last_snapshot = None
         self._publish_status("WAITING|missing=obstacles,start,goal")
         self.get_logger().info(
-            "Phase 2 A* planner ready; no control or PX4 topics are created."
+            "Phase 3 A*/B-spline planner ready; no control or PX4 topics "
+            "are created."
         )
 
     def _declare_parameters(self) -> None:
@@ -138,6 +159,17 @@ class AstarPlannerNode(Node):
             "ned_offset_z": 0.0,
             "retry_extra_inflation_m": 0.07,
             "maximum_grid_cells": 4_000_000,
+            "enable_bspline": True,
+            "bspline_degree": 3,
+            "bspline_sample_spacing_m": 0.08,
+            "bspline_minimum_samples": 16,
+            "bspline_maximum_samples": 1000,
+            "bspline_maximum_curvature": 8.0,
+            "bspline_minimum_clearance_m": 0.07,
+            "bspline_preserve_endpoints": True,
+            "bspline_allowed_bounds_margin_m": 0.0,
+            "bspline_reject_self_intersection": True,
+            "bspline_control_point_strategy": "validated_simplified_path",
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -176,6 +208,34 @@ class AstarPlannerNode(Node):
             ned_origin_offset_z_m=value("ned_offset_z"),
             retry_extra_inflation_m=value("retry_extra_inflation_m"),
             maximum_grid_cells=value("maximum_grid_cells"),
+        )
+
+    def _read_bspline_config(self) -> BSplineConfig:
+        """Construct and validate immutable Phase 3 smoothing configuration."""
+
+        def value(name: str):
+            return self.get_parameter(name).value
+
+        return BSplineConfig(
+            enable_bspline=value("enable_bspline"),
+            bspline_degree=value("bspline_degree"),
+            bspline_sample_spacing_m=value("bspline_sample_spacing_m"),
+            bspline_minimum_samples=value("bspline_minimum_samples"),
+            bspline_maximum_samples=value("bspline_maximum_samples"),
+            bspline_maximum_curvature=value("bspline_maximum_curvature"),
+            bspline_minimum_clearance_m=value(
+                "bspline_minimum_clearance_m"
+            ),
+            bspline_preserve_endpoints=value("bspline_preserve_endpoints"),
+            bspline_allowed_bounds_margin_m=value(
+                "bspline_allowed_bounds_margin_m"
+            ),
+            bspline_reject_self_intersection=value(
+                "bspline_reject_self_intersection"
+            ),
+            bspline_control_point_strategy=value(
+                "bspline_control_point_strategy"
+            ),
         )
 
     def _require_scene_frame(self, message) -> None:
@@ -289,6 +349,7 @@ class AstarPlannerNode(Node):
             self._goal,
             self._obstacles,
             self._config,
+            self._bspline_config,
         )
         if not result.success:
             self._publish_failure(result.status)
@@ -298,17 +359,33 @@ class AstarPlannerNode(Node):
         self._simplified_publisher.publish(
             self._to_path(result.simplified_path, stamp)
         )
+        self._candidate_publisher.publish(
+            self._to_path(result.bspline_candidate, stamp)
+        )
+        validity = Bool()
+        validity.data = result.bspline_valid
+        self._bspline_valid_publisher.publish(validity)
         self._final_publisher.publish(self._to_path(result.final_path, stamp))
         metrics = result.final_metrics
         fallback = result.fallback_reason or "none"
         status = (
             f"SUCCESS|method={result.simplification_method}"
+            "|astar_success=true"
+            f"|bspline_enabled={str(result.bspline_enabled).lower()}"
+            f"|bspline_valid={str(result.bspline_valid).lower()}"
+            f"|bspline_selected={str(result.bspline_selected).lower()}"
+            f"|final_source={result.final_path_source}"
             f"|raw_points={len(result.raw_path)}"
             f"|simplified_points={len(result.simplified_path)}"
+            f"|candidate_points={len(result.bspline_candidate)}"
             f"|final_points={len(result.final_path)}"
             f"|length_m={metrics.path_length_m:.6f}"
             "|minimum_physical_clearance_m="
             f"{metrics.minimum_physical_clearance_m:.6f}"
+            "|maximum_curvature_inverse_m="
+            f"{metrics.maximum_curvature_inverse_m:.6f}"
+            "|bspline_rejection="
+            f"{result.bspline_rejection_reason or 'none'}"
             f"|fallback={fallback}"
         )
         self._publish_status(status)
@@ -336,6 +413,10 @@ class AstarPlannerNode(Node):
         empty = self._to_path((), stamp)
         self._raw_publisher.publish(empty)
         self._simplified_publisher.publish(self._to_path((), stamp))
+        self._candidate_publisher.publish(self._to_path((), stamp))
+        validity = Bool()
+        validity.data = False
+        self._bspline_valid_publisher.publish(validity)
         self._final_publisher.publish(self._to_path((), stamp))
         detail = reason.replace("|", "/")
         self._publish_status(f"FAILURE|reason={detail}")
@@ -353,6 +434,27 @@ class OfflinePlannerHarness(Node):
     def __init__(self) -> None:
         """Create the finite non-flight integration harness."""
         super().__init__("astar_offline_harness")
+        self.declare_parameter("fixture", "bspline-safe-single-obstacle")
+        self.declare_parameter("enable_bspline", True)
+        self._fixture = str(self.get_parameter("fixture").value)
+        self._bspline_enabled = bool(
+            self.get_parameter("enable_bspline").value
+        )
+        allowed_fixtures = {
+            "bspline-safe-open-space",
+            "bspline-safe-single-obstacle",
+            "bspline-rejected-corner-cut",
+            "bspline-rejected-clearance",
+            "bspline-disabled",
+            "short-two-point-path",
+            "three-point-path",
+            "duplicate-control-point-path",
+            "self-intersection-candidate",
+            "curvature-limit-rejection",
+        }
+        if self._fixture not in allowed_fixtures:
+            raise RuntimeError(f"unknown offline fixture: {self._fixture}")
+        self._validate_edge_fixture_preflight()
         qos = _durable_qos()
         self._obstacle_publisher = self.create_publisher(
             ObstacleArray,
@@ -383,6 +485,18 @@ class OfflinePlannerHarness(Node):
         )
         self.create_subscription(
             Path,
+            "/uav/planner/path_bspline_candidate",
+            self._receive_candidate,
+            qos,
+        )
+        self.create_subscription(
+            Bool,
+            "/uav/planner/bspline_valid",
+            self._receive_bspline_valid,
+            qos,
+        )
+        self.create_subscription(
+            Path,
             "/uav/planner/path",
             self._receive_final,
             qos,
@@ -395,6 +509,8 @@ class OfflinePlannerHarness(Node):
         )
         self._raw: Path | None = None
         self._simplified: Path | None = None
+        self._candidate: Path | None = None
+        self._bspline_valid: bool | None = None
         self._final: Path | None = None
         self._status = ""
         self._published = False
@@ -417,20 +533,92 @@ class OfflinePlannerHarness(Node):
         obstacle_array = ObstacleArray()
         obstacle_array.header.frame_id = ISAAC_WORLD_FRAME
         obstacle_array.header.stamp = stamp
-        item = Obstacle()
-        item.name = "offline_tower"
-        item.center.x = 0.0
-        item.center.y = 0.0
-        item.center.z = 1.5
-        item.radius = 0.20
-        item.height = 3.0
-        obstacle_array.obstacles.append(item)
-        start = self._scene_pose(-2.0, 0.0, 0.0, stamp)
-        goal = self._scene_pose(2.0, 0.0, 0.0, stamp)
+        obstacle_radius = self._fixture_obstacle_radius()
+        if obstacle_radius is not None:
+            item = Obstacle()
+            item.name = "offline_tower"
+            item.center.x = 0.0
+            item.center.y = 0.0
+            item.center.z = 1.5
+            item.radius = obstacle_radius
+            item.height = 3.0
+            obstacle_array.obstacles.append(item)
+        start_x, goal_x = self._fixture_endpoints()
+        start = self._scene_pose(start_x, 0.0, 0.0, stamp)
+        goal = self._scene_pose(goal_x, 0.0, 0.0, stamp)
         self._obstacle_publisher.publish(obstacle_array)
         self._start_publisher.publish(start)
         self._goal_publisher.publish(goal)
-        self.get_logger().info("Published fixed offline obstacle/start/goal")
+        self.get_logger().info(
+            f"Published offline fixture: {self._fixture}"
+        )
+
+    def _fixture_obstacle_radius(self) -> float | None:
+        """Return the retained obstacle radius for this fixture."""
+        if self._fixture in {
+            "bspline-safe-open-space",
+            "short-two-point-path",
+            "three-point-path",
+            "duplicate-control-point-path",
+            "self-intersection-candidate",
+        }:
+            return None
+        if self._fixture == "bspline-rejected-corner-cut":
+            return 1.0
+        return 0.20
+
+    def _fixture_endpoints(self) -> tuple[float, float]:
+        """Return Isaac-X endpoints that exercise the requested path size."""
+        if self._fixture == "short-two-point-path":
+            return -0.5, 0.5
+        if self._fixture == "three-point-path":
+            return -1.2, 1.2
+        return -2.0, 2.0
+
+    def _validate_edge_fixture_preflight(self) -> None:
+        """Exercise control-only edges before the ROS scene transaction."""
+        if self._fixture == "duplicate-control-point-path":
+            controls = (
+                Point3D(0.0, -1.0, -2.0),
+                Point3D(0.0, -1.0, -2.0),
+                Point3D(0.2, 0.0, -2.0),
+                Point3D(0.0, 1.0, -2.0),
+            )
+            result = generate_bspline_candidate(
+                controls,
+                (),
+                PlannerConfig(maximum_waypoint_spacing_m=2.0),
+                BSplineConfig(
+                    bspline_sample_spacing_m=0.2,
+                    bspline_minimum_samples=2,
+                    bspline_maximum_samples=100,
+                ),
+            )
+            if not result.valid or result.control_point_count != 3:
+                raise RuntimeError("duplicate-control preflight did not pass")
+        if self._fixture == "self-intersection-candidate":
+            crossing = (
+                Point3D(0.0, 0.0, -2.0),
+                Point3D(1.0, 1.0, -2.0),
+                Point3D(0.0, 1.0, -2.0),
+                Point3D(1.0, 0.0, -2.0),
+            )
+            validation, _, intersection = validate_bspline_candidate(
+                crossing,
+                (),
+                PlannerConfig(maximum_waypoint_spacing_m=2.0),
+                BSplineConfig(
+                    bspline_sample_spacing_m=2.0,
+                    bspline_minimum_samples=2,
+                    bspline_maximum_curvature=100.0,
+                ),
+                crossing[0],
+                crossing[-1],
+            )
+            if validation.valid or intersection != (0, 2):
+                raise RuntimeError(
+                    "self-intersection preflight did not reject"
+                )
 
     @staticmethod
     def _scene_pose(x: float, y: float, z: float, stamp) -> PoseStamped:
@@ -452,6 +640,14 @@ class OfflinePlannerHarness(Node):
         self._simplified = message
         self._maybe_finish()
 
+    def _receive_candidate(self, message: Path) -> None:
+        self._candidate = message
+        self._maybe_finish()
+
+    def _receive_bspline_valid(self, message: Bool) -> None:
+        self._bspline_valid = message.data
+        self._maybe_finish()
+
     def _receive_final(self, message: Path) -> None:
         self._final = message
         self._maybe_finish()
@@ -468,15 +664,24 @@ class OfflinePlannerHarness(Node):
         """Validate all received paths once the planner reports success."""
         if self._finished or not self._status.startswith("SUCCESS|"):
             return
-        messages = self._raw, self._simplified, self._final
+        messages = self._raw, self._simplified, self._candidate, self._final
         if any(message is None for message in messages):
             return
-        if any(not message.poses for message in messages):
+        if self._bspline_valid is None:
+            return
+        if any(
+            not message.poses
+            for message in (self._raw, self._simplified, self._final)
+        ):
             self._finish(1, "planner published an empty successful path")
+            return
+        if self._bspline_enabled and not self._candidate.poses:
+            self._finish(1, "enabled planner did not publish a candidate")
             return
         for name, message in (
             ("raw", self._raw),
             ("simplified", self._simplified),
+            ("candidate", self._candidate),
             ("final", self._final),
         ):
             if message.header.frame_id != PLANNING_FRAME:
@@ -490,17 +695,25 @@ class OfflinePlannerHarness(Node):
             )
             for pose in self._final.poses
         )
-        expected_start = Point3D(0.0, -2.0, -2.0)
-        expected_goal = Point3D(0.0, 2.0, -2.0)
-        obstacle = CircularObstacle(
-            "offline_tower",
-            Point3D(0.0, 0.0, -1.5),
-            0.20,
-            3.0,
+        start_x, goal_x = self._fixture_endpoints()
+        expected_start = Point3D(0.0, start_x, -2.0)
+        expected_goal = Point3D(0.0, goal_x, -2.0)
+        radius = self._fixture_obstacle_radius()
+        obstacles = (
+            (
+                CircularObstacle(
+                    "offline_tower",
+                    Point3D(0.0, 0.0, -1.5),
+                    radius,
+                    3.0,
+                ),
+            )
+            if radius is not None
+            else ()
         )
         validation = validate_path(
             points,
-            (obstacle,),
+            obstacles,
             PlannerConfig(),
             expected_start=expected_start,
             expected_goal=expected_goal,
@@ -509,6 +722,50 @@ class OfflinePlannerHarness(Node):
             self._finish(
                 1,
                 f"final path validation failed: {validation.reason}",
+            )
+            return
+        if self._candidate.poses:
+            candidate_start = self._candidate.poses[0].pose.position
+            candidate_goal = self._candidate.poses[-1].pose.position
+            candidate_endpoints = (
+                Point3D(
+                    candidate_start.x,
+                    candidate_start.y,
+                    candidate_start.z,
+                ),
+                Point3D(candidate_goal.x, candidate_goal.y, candidate_goal.z),
+            )
+            if candidate_endpoints != (expected_start, expected_goal):
+                self._finish(1, "candidate did not preserve exact endpoints")
+                return
+        expected_valid, expected_source = self._expected_selection()
+        if self._bspline_valid != expected_valid:
+            self._finish(
+                1,
+                "unexpected bspline_valid for fixture "
+                f"{self._fixture}: {self._bspline_valid}",
+            )
+            return
+        fields = self._status_fields()
+        expected_simplified_count = {
+            "short-two-point-path": "2",
+            "three-point-path": "3",
+        }.get(self._fixture)
+        if (
+            expected_simplified_count is not None
+            and fields.get("simplified_points") != expected_simplified_count
+        ):
+            self._finish(
+                1,
+                "unexpected simplified control count for fixture "
+                f"{self._fixture}: {fields.get('simplified_points')}",
+            )
+            return
+        if fields.get("final_source") != expected_source:
+            self._finish(
+                1,
+                "unexpected final source for fixture "
+                f"{self._fixture}: {fields.get('final_source')}",
             )
             return
         forbidden = [
@@ -522,9 +779,34 @@ class OfflinePlannerHarness(Node):
         detail = (
             f"offline integration passed: raw={len(self._raw.poses)}, "
             f"simplified={len(self._simplified.poses)}, "
-            f"final={len(self._final.poses)}, frame=px4_ned"
+            f"final={len(self._final.poses)}, frame=px4_ned, "
+            f"candidate={len(self._candidate.poses)}, "
+            f"bspline_valid={str(self._bspline_valid).lower()}, "
+            f"source={expected_source}, fixture={self._fixture}"
         )
         self._finish(0, detail)
+
+    def _expected_selection(self) -> tuple[bool, str]:
+        """Return the expected candidate validity and final source."""
+        if not self._bspline_enabled or self._fixture == "bspline-disabled":
+            return False, "ASTAR_SIMPLIFIED"
+        rejected = {
+            "bspline-rejected-corner-cut",
+            "bspline-rejected-clearance",
+            "curvature-limit-rejection",
+        }
+        if self._fixture in rejected:
+            return False, "ASTAR_FALLBACK"
+        return True, "BSPLINE"
+
+    def _status_fields(self) -> dict[str, str]:
+        """Parse the controlled key-value planning status."""
+        fields = {}
+        for field in self._status.split("|")[1:]:
+            if "=" in field:
+                key, value = field.split("=", 1)
+                fields[key] = value
+        return fields
 
     def _finish(self, exit_code: int, detail: str) -> None:
         """Set the process result and stop the finite harness."""

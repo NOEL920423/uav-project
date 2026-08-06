@@ -44,5 +44,26 @@ astar_planner:
     retry_extra_inflation_m: 0.07
     # Hard allocation guard for a dynamically generated grid [cells].
     maximum_grid_cells: 4000000
+    # Phase 3 generates a candidate; final selection still validates it.
+    enable_bspline: true
+    # Requested degree, reduced to control_point_count - 1 for short paths.
+    bspline_degree: 3
+    # Maximum spatial spacing after arc-length resampling [m].
+    bspline_sample_spacing_m: 0.08
+    # Inclusive final candidate sample-count bounds.
+    bspline_minimum_samples: 16
+    bspline_maximum_samples: 1000
+    # Circumcircle discrete curvature limit [1/m], not a dynamics claim.
+    bspline_maximum_curvature: 8.0
+    # Continuous validation clearance, never weaker than Phase 2 [m].
+    bspline_minimum_clearance_m: 0.07
+    # Exact endpoints are mandatory in Phase 3.
+    bspline_preserve_endpoints: true
+    # Inward margin applied only when explicit planning bounds exist [m].
+    bspline_allowed_bounds_margin_m: 0.0
+    # Reject crossings between non-adjacent candidate segments.
+    bspline_reject_self_intersection: true
+    # Only validated simplified A* controls are permitted in production.
+    bspline_control_point_strategy: validated_simplified_path
     # ROS built-in clock selection. Offline tests use wall-backed ROS time.
     use_sim_time: false

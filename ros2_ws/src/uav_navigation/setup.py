@@ -24,7 +24,9 @@ setup(
     zip_safe=True,
     maintainer="Noel",
     maintainer_email="a0916190423@gmail.com",
-    description="Deterministic validated Phase 2 UAV A* planner.",
+    description=(
+        "Validated A* planner with optional Phase 3 B-spline candidate."
+    ),
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={
@@ -33,6 +35,8 @@ setup(
             "astar_planner_node = uav_navigation.astar_planner_node:main",
             "astar_offline_harness = "
             "uav_navigation.astar_planner_node:offline_harness_main",
+            "geometric_path_comparison = "
+            "uav_navigation.geometric_comparison:main",
         ],
     },
 )

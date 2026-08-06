@@ -238,8 +238,10 @@ check_pure_navigation_imports() {
     local -a pure_modules=(
         "$module_root/coordinate_frames.py"
         "$module_root/geometry.py"
+        "$module_root/geometric_comparison.py"
         "$module_root/models.py"
         "$module_root/astar_planner.py"
+        "$module_root/bspline_smoother.py"
         "$module_root/path_simplifier.py"
         "$module_root/path_validator.py"
         "$module_root/path_metrics.py"
@@ -508,6 +510,8 @@ Planner topic contracts:
   /uav/scene/goal
   /uav/planner/path_raw
   /uav/planner/path_simplified
+  /uav/planner/path_bspline_candidate
+  /uav/planner/bspline_valid
   /uav/planner/path
   /uav/planner/status
 EOF

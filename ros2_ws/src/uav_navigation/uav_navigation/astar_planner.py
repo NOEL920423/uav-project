@@ -3,10 +3,15 @@
 import heapq
 import itertools
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from uav_navigation.bspline_smoother import (
+    generate_bspline_candidate,
+    validate_bspline_candidate,
+)
 from uav_navigation.geometry import distance_2d, point_to_segment_distance_2d
 from uav_navigation.models import (
+    BSplineConfig,
     CircularObstacle,
     PlannerConfig,
     PlannerResult,
@@ -332,9 +337,11 @@ def plan_path(
     goal: Point3D,
     obstacles: tuple[CircularObstacle, ...],
     config: PlannerConfig | None = None,
+    bspline_config: BSplineConfig | None = None,
 ) -> PlannerResult:
-    """Plan, continuously validate, simplify, and measure a safe path."""
+    """Plan A*, optionally smooth it, and select an independently safe path."""
     config = config or PlannerConfig()
+    bspline_config = bspline_config or BSplineConfig()
     obstacles = tuple(obstacles)
     if start.almost_equals(goal, config.numerical_tolerance):
         return _failed("invalid request: start and goal are identical", {})
@@ -423,28 +430,103 @@ def plan_path(
             f"no safe simplified path: {simplified.fallback_reason}",
             {"raw_points": len(raw_path)},
         )
-    final_path = simplified.path
+    baseline_path = simplified.path
+    baseline_validation = validate_path(
+        baseline_path,
+        active,
+        config,
+        expected_start=start,
+        expected_goal=goal,
+    )
+    if not baseline_validation.valid:
+        return _failed(
+            "validated A* baseline became invalid: "
+            f"{baseline_validation.reason}",
+            {"raw_points": len(raw_path)},
+        )
+
+    bspline = generate_bspline_candidate(
+        baseline_path,
+        active,
+        config,
+        bspline_config,
+    )
+    if not bspline_config.enable_bspline:
+        final_path = baseline_path
+        final_path_source = "ASTAR_SIMPLIFIED"
+    elif bspline.valid:
+        final_path = bspline.candidate_path
+        final_path_source = "BSPLINE"
+        final_validation, _, _ = validate_bspline_candidate(
+            final_path,
+            active,
+            config,
+            bspline_config,
+            start,
+            goal,
+        )
+        if not final_validation.valid:
+            bspline = replace(
+                bspline,
+                valid=False,
+                selected=False,
+                status_message=(
+                    "B-spline failed final revalidation; A* fallback selected"
+                ),
+                rejection_reason=final_validation.reason,
+            )
+            final_path = baseline_path
+            final_path_source = "ASTAR_FALLBACK"
+    else:
+        final_path = baseline_path
+        final_path_source = "ASTAR_FALLBACK"
+
+    if final_path_source != "BSPLINE":
+        final_validation = validate_path(
+            final_path,
+            active,
+            config,
+            expected_start=start,
+            expected_goal=goal,
+        )
+        if not final_validation.valid:
+            return _failed(
+                f"no valid A* fallback: {final_validation.reason}",
+                {"raw_points": len(raw_path)},
+            )
     raw_metrics = calculate_path_metrics(raw_path, active)
+    simplified_metrics = calculate_path_metrics(baseline_path, active)
     final_metrics = calculate_path_metrics(final_path, active)
     diagnostics = {
         "active_obstacles": len(active),
         "input_obstacles": len(obstacles),
         "grid_retry_extra_inflation_m": used_extra,
         "raw_validation": "safe",
-        "final_validation": simplified.validation.reason,
+        "simplified_validation": baseline_validation.reason,
+        "bspline_status": bspline.status_message,
+        "final_validation": final_validation.reason,
+        "final_path_source": final_path_source,
     }
     return PlannerResult(
         True,
         "success",
         raw_path=raw_path,
-        simplified_path=final_path,
+        simplified_path=baseline_path,
         final_path=final_path,
         simplification_method=simplified.method,
         fallback_reason=simplified.fallback_reason,
         raw_metrics=raw_metrics,
-        simplified_metrics=final_metrics,
+        simplified_metrics=simplified_metrics,
         final_metrics=final_metrics,
         diagnostics=tuple(
             (key, str(value)) for key, value in sorted(diagnostics.items())
         ),
+        bspline_enabled=bspline_config.enable_bspline,
+        bspline_candidate=bspline.candidate_path,
+        bspline_valid=bspline.valid,
+        bspline_selected=bspline.selected and final_path_source == "BSPLINE",
+        bspline_rejection_reason=bspline.rejection_reason,
+        bspline_effective_degree=bspline.effective_degree,
+        bspline_metrics=bspline.metrics,
+        final_path_source=final_path_source,
     )
