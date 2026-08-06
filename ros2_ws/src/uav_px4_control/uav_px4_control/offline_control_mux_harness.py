@@ -31,6 +31,7 @@ from uav_px4_control.control_source_models import (
 
 
 TRACKING_STATUS_TOPIC = "/uav/control/astar_tracking_status"
+SOURCE_DWELL_SETTLE_S = 0.35
 
 
 class SyntheticCandidatePublisher(Node):
@@ -238,7 +239,13 @@ class ControlMuxResultMonitor(Node):
         self._pending = None
         self._pending_source = ""
         if response is None or not response.accepted:
-            self._contract_error = f"service rejected required source {source}"
+            detail = (
+                "no response" if response is None
+                else response.status_message
+            )
+            self._contract_error = (
+                f"service rejected required source {source}: {detail}"
+            )
             return False
         return True
 
@@ -263,7 +270,7 @@ class ControlMuxResultMonitor(Node):
             if status.active_source == ASTAR_EXPERT:
                 self._set_stage("DWELL_ASTAR")
         elif self._stage == "DWELL_ASTAR":
-            if time.monotonic() - self._stage_started > 0.22:
+            if time.monotonic() - self._stage_started > SOURCE_DWELL_SETTLE_S:
                 self._request(HUMAN_JOYSTICK)
                 self._set_stage("REQUEST_JOYSTICK")
         elif self._stage == "REQUEST_JOYSTICK" and self._response_ready():
@@ -276,7 +283,7 @@ class ControlMuxResultMonitor(Node):
                     )
                 self._set_stage("DWELL_JOYSTICK")
         elif self._stage == "DWELL_JOYSTICK":
-            if time.monotonic() - self._stage_started > 0.22:
+            if time.monotonic() - self._stage_started > SOURCE_DWELL_SETTLE_S:
                 self._request(NAVRL_POLICY)
                 self._set_stage("REQUEST_NAVRL")
         elif self._stage == "REQUEST_NAVRL" and self._response_ready():

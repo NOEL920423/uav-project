@@ -8,8 +8,8 @@ Phase 6 adds a pure source registry, freshness monitor, fail-closed arbitration
 state machine, ordered selected-command limits, independent validator, ROS 2
 mux/service/status adapter, and finite offline harnesses. All 24 deterministic
 fixtures reached their expected terminal state. The focused
-`uav_px4_control` suite reported 60 passed tests; the complete seven-package
-workspace reported 157 tests, 0 errors, 0 failures, and 0 skipped.
+`uav_px4_control` suite reported 62 passed tests; the complete seven-package
+workspace reported 159 tests, 0 errors, 0 failures, and 0 skipped.
 
 ```text
 ./uav mux-check
@@ -25,7 +25,7 @@ workspace reported 157 tests, 0 errors, 0 failures, and 0 skipped.
 
 The live control-stack monitor observed 430 movement cycles with one transition
 to `ACTIVE_ASTAR_EXPERT`. Nominal mux validation observed 10 HOLD barrier
-cycles, 35 movement cycles, and six state transitions. Selected output stayed
+cycles, nonzero movement output, and six state transitions. Selected output stayed
 within 2.0 m/s and 1.5 rad/s; pure derivative fixtures also enforce
 1.5 m/s² and 2.0 rad/s². No `/fmu/in/*` topic existed.
 

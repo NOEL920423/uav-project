@@ -144,3 +144,18 @@ def test_wrapper_exposes_all_three_finite_phase6_checks() -> None:
     wrapper = text(REPOSITORY / "uav")
     for command in ("mux-check", "mux-safety-check", "control-stack-check"):
         assert command in wrapper
+
+
+def test_live_mux_monitor_has_deterministic_dwell_margin() -> None:
+    """Keep the harness request later than the configured mux dwell gate."""
+    harness = text(
+        PACKAGE / "uav_px4_control/offline_control_mux_harness.py"
+    )
+    assert "SOURCE_DWELL_SETTLE_S = 0.35" in harness
+    assert harness.count("SOURCE_DWELL_SETTLE_S") == 3
+
+
+def test_mux_status_topic_is_canonical() -> None:
+    """Lock the typed mux status topic required by the Phase 6 contract."""
+    node = text(PACKAGE / "uav_px4_control/control_mux_node.py")
+    assert 'MUX_STATUS_TOPIC = "/uav/control/mux_status"' in node

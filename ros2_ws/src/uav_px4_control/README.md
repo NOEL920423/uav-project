@@ -15,7 +15,7 @@ The mux exclusively publishes:
 
 - `/uav/control/selected_command` (`geometry_msgs/msg/TwistStamped`)
 - `/uav/control/source` (`std_msgs/msg/String`)
-- `/uav/control/status` (`uav_interfaces/msg/ControlMuxStatus`)
+- `/uav/control/mux_status` (`uav_interfaces/msg/ControlMuxStatus`)
 
 Selection requests use `/uav/control/set_source`
 (`uav_interfaces/srv/SetControlSource`). Output stamps use mux ROS time.
