@@ -170,6 +170,15 @@ class Px4OutputGateResult:
     fault_latched: bool
 
 
+@dataclass(frozen=True, slots=True)
+class GateEnableResponse:
+    """Result of an explicit output-enable or disable request."""
+
+    accepted: bool
+    enabled: bool
+    message: str
+
+
 def source_is_known(source: str) -> bool:
     """Return whether a source is in the canonical Phase 6 vocabulary."""
     return source in CONTROL_SOURCES
