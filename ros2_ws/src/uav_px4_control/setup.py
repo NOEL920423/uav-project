@@ -23,6 +23,9 @@ setup(
             [
                 "launch/control_mux_offline.launch.py",
                 "launch/control_stack_offline.launch.py",
+                "launch/px4_mapping_offline.launch.py",
+                "launch/px4_gate_offline.launch.py",
+                "launch/px4_boundary_offline.launch.py",
             ],
         ),
     ],
@@ -38,6 +41,10 @@ setup(
             "control_mux_node = uav_px4_control.control_mux_node:main",
             "px4_mapping_gate_node = "
             "uav_px4_control.px4_mapping_gate_node:main",
+            "px4_boundary_result_monitor = "
+            "uav_px4_control.offline_px4_boundary_harness:monitor_main",
+            "synthetic_px4_telemetry = "
+            "uav_px4_control.offline_px4_boundary_harness:telemetry_main",
             "control_mux_comparison = "
             "uav_px4_control.control_mux_comparison:main",
             "control_mux_result_monitor = "

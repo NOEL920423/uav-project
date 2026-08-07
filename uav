@@ -52,6 +52,9 @@ Commands:
   mux-check         Validate offline source selection and safe handoff
   mux-safety-check  Validate stale-source latch and explicit recovery
   control-stack-check  Validate scene-to-follower-to-mux-to-plant graph
+  px4-map-check     Validate pure and ROS diagnostic PX4 candidate mapping
+  px4-gate-check    Validate fail-closed output gate and explicit recovery
+  px4-boundary-check  Validate scene-to-safe_to_forward diagnostic graph
   topics         Inspect the current ROS graph and reject /fmu/in/ topics
   interfaces     Show custom interfaces and planner topic contracts
   shell          Open a clean interactive ROS 2 workspace shell
@@ -68,6 +71,9 @@ Examples:
   ./uav mux-check
   ./uav mux-safety-check
   ./uav control-stack-check
+  ./uav px4-map-check
+  ./uav px4-gate-check
+  ./uav px4-boundary-check
   ./uav shell
 EOF
 }
@@ -217,8 +223,12 @@ show_interfaces() {
         uav_interfaces/msg/TimedTrajectory \
         uav_interfaces/msg/TrajectoryTrackingStatus \
         uav_interfaces/msg/ControlMuxStatus \
+        uav_interfaces/msg/Px4OutputGateStatus \
+        uav_interfaces/msg/Px4SetpointCandidate \
+        uav_interfaces/msg/Px4SyntheticTelemetry \
         uav_interfaces/srv/GenerateEpisode \
         uav_interfaces/srv/SetControlSource \
+        uav_interfaces/srv/SetPx4OutputEnable \
         uav_interfaces/action/RunEpisode
     do
         printf '\nInterface: %s\n' "$interface_name"
@@ -301,6 +311,12 @@ check_pure_control_imports() {
         "$module_root/selected_command_validator.py"
         "$module_root/control_mux_fixtures.py"
         "$module_root/control_mux_comparison.py"
+        "$module_root/px4_boundary_models.py"
+        "$module_root/px4_candidate_validator.py"
+        "$module_root/px4_output_gate.py"
+        "$module_root/px4_setpoint_mapper.py"
+        "$module_root/px4_synthetic_telemetry.py"
+        "$module_root/px4_timestamp.py"
     )
     local pattern
     pattern='^[[:space:]]*(from|import)[[:space:]]+(rclpy|omni|isaac|px4_msgs|pymavlink|pegasus|viewport|torch|tensorflow|onnxruntime)|/fmu/in/'
@@ -506,6 +522,46 @@ internal_control_stack_check() {
     return "$launch_status"
 }
 
+internal_px4_check() {
+    local command_name="$1"
+    shift
+    clean_bootstrap required
+    local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-20}"
+    if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+        die "UAV_OFFLINE_TIMEOUT_SECONDS must be a positive integer"
+        return 1
+    fi
+    local launch_file
+    case "$command_name" in
+        px4-map-check)
+            python3 -m pytest -q \
+                "$ROS_WS/src/uav_px4_control/test/test_px4_timestamp.py" \
+                "$ROS_WS/src/uav_px4_control/test/test_px4_setpoint_mapping.py"
+            launch_file="px4_mapping_offline.launch.py"
+            ;;
+        px4-gate-check)
+            python3 -m pytest -q \
+                "$ROS_WS/src/uav_px4_control/test/test_px4_output_gate.py"
+            launch_file="px4_gate_offline.launch.py"
+            ;;
+        px4-boundary-check)
+            launch_file="px4_boundary_offline.launch.py"
+            ;;
+        *)
+            die "internal error: unknown Phase 7 check $command_name"
+            return 1
+            ;;
+    esac
+    cd "$REPO_ROOT"
+    set +e
+    timeout "${timeout_seconds}s" \
+        ros2 launch uav_px4_control "$launch_file" "$@"
+    local launch_status=$?
+    set -e
+    scan_forbidden_topics
+    return "$launch_status"
+}
+
 internal_dispatch() {
     local command_name="${1:-}"
     shift || true
@@ -549,6 +605,9 @@ internal_dispatch() {
             ;;
         control-stack-check)
             internal_control_stack_check "$@"
+            ;;
+        px4-map-check|px4-gate-check|px4-boundary-check)
+            internal_px4_check "$command_name" "$@"
             ;;
         topics)
             clean_bootstrap required
@@ -745,6 +804,13 @@ Offline control mux contracts:
   /uav/control/source
   /uav/control/mux_status
   /uav/control/set_source
+
+Offline PX4 output-boundary diagnostics:
+  /uav/test/px4/telemetry_status
+  /uav/px4/setpoint_candidate
+  /uav/px4/output_gate_status
+  /uav/px4/safe_to_forward
+  /uav/px4/set_output_enable
 EOF
 }
 
@@ -889,6 +955,33 @@ main() {
             command_phase4_check \
                 control-stack-check \
                 'control stack offline integration passed:' "$@"
+            ;;
+        px4-map-check)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            command_phase4_check \
+                px4-map-check \
+                'px4 mapping offline integration passed:' "$@"
+            ;;
+        px4-gate-check)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            command_phase4_check \
+                px4-gate-check \
+                'px4 gate offline integration passed:' "$@"
+            ;;
+        px4-boundary-check)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            command_phase4_check \
+                px4-boundary-check \
+                'px4 boundary offline integration passed:' "$@"
             ;;
         topics)
             require_repository

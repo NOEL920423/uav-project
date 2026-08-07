@@ -1,7 +1,9 @@
 # uav_px4_control
 
-Phase 6 implements a deterministic offline control-source multiplexer. Despite
-the package name, there is still no PX4 adapter, `px4_msgs` dependency,
+Phase 6 implements a deterministic offline control-source multiplexer. Phase 7
+adds a pure PX4 velocity-candidate mapper, independent validator, synthetic
+telemetry model, and fail-closed diagnostic output gate. Despite the package
+name, there is still no live PX4 adapter, `px4_msgs` dependency,
 OFFBOARD/arming logic, simulator startup, or `/fmu/in/*` publisher.
 
 ## Contract
@@ -35,14 +37,18 @@ timestamp gates, fresh-before-switch, fault latching, and HOLD epsilon.
 ./uav mux-check
 ./uav mux-safety-check
 ./uav control-stack-check
+./uav px4-map-check
+./uav px4-gate-check
+./uav px4-boundary-check
 ```
 
 The first two commands use synthetic candidates and a finite monitor. The last
 connects the real scene/planner/parameterizer/follower pipeline through the mux
 to the deterministic kinematic plant. These are non-flight tests and provide
-no PX4 setpoint-mapping, vehicle-dynamics, hardware joystick, NavRL runtime,
-Isaac Sim, or flight evidence.
+no vehicle-dynamics, hardware joystick, NavRL runtime, Isaac Sim, or flight
+evidence. The Phase 7 checks stop at `/uav/px4/safe_to_forward`, including an
+injected synthetic failsafe and explicit latch recovery.
 
 The future PX4 output adapter, if separately authorized and safety-gated, must
 remain the sole owner of actual `/fmu/in/*` publications. It is not part of
-Phase 6.
+Phase 7.

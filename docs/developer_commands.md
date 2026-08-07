@@ -5,9 +5,10 @@
 The repository-root `./uav` wrapper replaces repeated environment, build, test,
 inspection, and offline checks with one reproducible entry point. It is a
 non-flight developer tool: it does not start Isaac Sim, Pegasus, PX4, Micro
-XRCE-DDS, cameras, recorders, OFFBOARD mode, arming, or takeoff. Phase 6 starts
-only synthetic candidate publishers, the offline mux, existing follower and
-fixed-step plant as required; it does not publish `/fmu/in/*` commands.
+XRCE-DDS, cameras, recorders, OFFBOARD mode, arming, or takeoff. Phase 6 and 7
+start only synthetic inputs, the offline mux, mapping/gate diagnostics, existing
+follower, and fixed-step plant as required; they do not publish `/fmu/in/*`
+commands.
 
 Run `./uav help` for the concise command list.
 
@@ -39,6 +40,9 @@ workspace path, and overlay state.
 | `./uav mux-check` | Nominal four-source arbitration and HOLD handoffs |
 | `./uav mux-safety-check` | Stale-source latch, explicit recovery, internal HOLD |
 | `./uav control-stack-check` | Scene through follower, mux and offline plant |
+| `./uav px4-map-check` | Pure and live diagnostic NED candidate mapping |
+| `./uav px4-gate-check` | Synthetic failsafe, latch, reset, and re-enable |
+| `./uav px4-boundary-check` | Scene through mux to `safe_to_forward` |
 | `./uav shell` | A new interactive clean shell with a `[uav-ros2]` prompt |
 
 Typical daily use:
@@ -54,6 +58,9 @@ Typical daily use:
 ./uav mux-check
 ./uav mux-safety-check
 ./uav control-stack-check
+./uav px4-map-check
+./uav px4-gate-check
+./uav px4-boundary-check
 ```
 
 ## Offline modes and launch arguments
@@ -176,6 +183,26 @@ the offline plant consume only `/uav/control/selected_command`.
 All commands are finite, write ignored logs under `run_logs/`, scan the live
 graph for `/fmu/in/*`, and do not start PX4, Isaac Sim, joystick hardware or a
 NavRL runtime/model.
+
+## Phase 7 offline PX4 boundary checks
+
+Phase 7 maps the mux-selected `px4_ned` velocity/yaw-rate command into a custom
+diagnostic candidate. `px4-map-check` runs the pure timestamp/mapping fixtures
+before its ROS graph. `px4-gate-check` proves output is disabled by default,
+requires an explicit enable, fails closed on a synthetic failsafe, stays
+latched after telemetry recovery, and requires disable/reset/re-enable.
+`px4-boundary-check` runs the complete scene-to-gate graph and intentionally
+injects the same failure after first observing `SAFE_TO_FORWARD`.
+
+```bash
+./uav px4-map-check
+./uav px4-gate-check
+./uav px4-boundary-check
+```
+
+These commands publish only `/uav/px4/*` diagnostics and synthetic state under
+`/uav/test/px4/*`. The boolean permission is not a PX4 publisher or flight
+authorization.
 
 ## Why shell creates a new shell
 

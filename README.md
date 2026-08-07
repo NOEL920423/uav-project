@@ -31,6 +31,11 @@ selected command independently, and fails closed through explicit HOLD
 states. It never arms, launches PX4 or Isaac Sim, loads a NavRL model, reads
 joystick hardware, or publishes/remaps any `/fmu/in/*` topic.
 
+Phase 7 adds an offline-only PX4 velocity-candidate mapping contract,
+independent validator, synthetic telemetry, and fail-closed output-enable gate.
+The boundary ends at the diagnostic `safe_to_forward` permission bit; it does
+not start or control PX4.
+
 ```bash
 ./uav tracking-check
 ./uav tracking-safety-check
@@ -38,9 +43,14 @@ joystick hardware, or publishes/remaps any `/fmu/in/*` topic.
 ./uav mux-check
 ./uav mux-safety-check
 ./uav control-stack-check
+./uav px4-map-check
+./uav px4-gate-check
+./uav px4-boundary-check
 ```
 
 The quantitative Phase 5 tracking and Phase 6 arbitration results are in
 [`docs/phase5_offline_tracking_comparison.md`](docs/phase5_offline_tracking_comparison.md)
 and
-[`docs/phase6_control_mux_comparison.md`](docs/phase6_control_mux_comparison.md).
+[`docs/phase6_control_mux_comparison.md`](docs/phase6_control_mux_comparison.md),
+with the Phase 7 boundary matrix in
+[`docs/phase7_px4_boundary_validation.md`](docs/phase7_px4_boundary_validation.md).
