@@ -16,8 +16,12 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TrajectoryPoint.msg"
   "msg/TrajectoryTrackingStatus.msg"
   "msg/ControlMuxStatus.msg"
+  "msg/Px4OutputGateStatus.msg"
+  "msg/Px4SetpointCandidate.msg"
+  "msg/Px4SyntheticTelemetry.msg"
   "srv/GenerateEpisode.srv"
   "srv/SetControlSource.srv"
+  "srv/SetPx4OutputEnable.srv"
   "action/RunEpisode.action"
   DEPENDENCIES action_msgs builtin_interfaces geometry_msgs std_msgs
 )

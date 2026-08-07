@@ -1,0 +1,15 @@
+std_msgs/Header header
+uint64 timestamp_us
+bool connected
+uint8 arming_state
+uint8 navigation_state
+bool offboard_control_signal_lost
+bool offboard_active
+bool failsafe
+bool pre_flight_checks_pass
+bool local_position_valid
+bool local_velocity_valid
+bool odometry_valid
+bool pose_frame_ned
+bool velocity_frame_ned
+string fixture

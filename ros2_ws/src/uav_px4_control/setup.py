@@ -14,7 +14,10 @@ setup(
             ["resource/" + package_name],
         ),
         ("share/" + package_name, ["package.xml"]),
-        ("share/" + package_name + "/config", ["config/control_mux.yaml"]),
+        (
+            "share/" + package_name + "/config",
+            ["config/control_mux.yaml", "config/px4_mapping_gate.yaml"],
+        ),
         (
             "share/" + package_name + "/launch",
             [
@@ -33,6 +36,8 @@ setup(
     entry_points={
         "console_scripts": [
             "control_mux_node = uav_px4_control.control_mux_node:main",
+            "px4_mapping_gate_node = "
+            "uav_px4_control.px4_mapping_gate_node:main",
             "control_mux_comparison = "
             "uav_px4_control.control_mux_comparison:main",
             "control_mux_result_monitor = "

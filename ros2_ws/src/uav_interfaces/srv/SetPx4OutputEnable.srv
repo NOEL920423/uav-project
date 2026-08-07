@@ -1,0 +1,7 @@
+bool enable
+---
+bool accepted
+bool enable_requested
+bool safe_to_forward
+string state
+string status_message

@@ -1,0 +1,17 @@
+std_msgs/Header header
+string state
+bool enable_requested
+bool safe_to_forward
+bool selected_command_valid
+bool mux_valid
+bool telemetry_valid
+bool failsafe
+string active_source
+float64 selected_command_age
+float64 telemetry_age
+float64 candidate_horizontal_speed
+float64 candidate_total_speed
+float64 candidate_yaw_rate
+uint64 transition_count
+string hold_reason
+string status_message

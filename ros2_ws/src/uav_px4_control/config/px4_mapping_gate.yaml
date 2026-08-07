@@ -1,0 +1,17 @@
+px4_mapping_gate:
+  ros__parameters:
+    use_sim_time: false
+    publish_rate_hz: 50.0
+    maximum_north_velocity_mps: 2.0
+    maximum_east_velocity_mps: 2.0
+    maximum_down_velocity_mps: 1.0
+    maximum_horizontal_velocity_mps: 2.0
+    maximum_total_velocity_mps: 2.0
+    maximum_yaw_rate_radps: 1.5
+    selected_command_timeout_s: 0.25
+    telemetry_timeout_s: 0.50
+    require_mux_valid: true
+    require_known_source: true
+    require_px4_ned_frame: true
+    latch_faults: true
+    require_explicit_enable: true
