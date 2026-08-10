@@ -3,6 +3,10 @@
 import ast
 from pathlib import Path
 
+from uav_px4_control.offline_control_mux_harness import (
+    CandidateTrafficEvidence,
+)
+
 
 PACKAGE = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PACKAGE.parent
@@ -153,6 +157,27 @@ def test_live_mux_monitor_has_deterministic_dwell_margin() -> None:
     )
     assert "SOURCE_DWELL_SETTLE_S = 0.35" in harness
     assert harness.count("SOURCE_DWELL_SETTLE_S") == 3
+
+
+def test_live_mux_monitor_requires_sustained_fresh_candidate_traffic() -> None:
+    """Select only after several recent, monotonic heartbeat arrivals."""
+    evidence = CandidateTrafficEvidence()
+    evidence.record(10.00, 1.00)
+    evidence.record(10.04, 1.04)
+    assert not evidence.ready(1.05)
+    evidence.record(10.08, 1.08)
+    assert evidence.ready(1.09)
+    assert not evidence.ready(1.21)
+
+
+def test_live_mux_monitor_rejects_replayed_candidate_stamp_readiness() -> None:
+    """A repeated stamp cannot satisfy the pre-selection heartbeat gate."""
+    evidence = CandidateTrafficEvidence()
+    evidence.record(10.00, 1.00)
+    evidence.record(10.04, 1.04)
+    evidence.record(10.04, 1.08)
+    assert not evidence.stamps_monotonic
+    assert not evidence.ready(1.09)
 
 
 def test_mux_status_topic_is_canonical() -> None:

@@ -168,7 +168,10 @@ ros2 run uav_navigation tracking_comparison
 Phase 6 owns only ROS-level arbitration. `mux-check` requests
 `ASTAR_EXPERT -> HUMAN_JOYSTICK -> NAVRL_POLICY -> HOLD`, requires an
 exact-zero HOLD barrier between movement sources, and verifies one selected
-publisher. `mux-safety-check` forces selected-source staleness, checks the
+publisher. Its monitor waits for at least three recent, strictly monotonic
+candidate heartbeats plus mux-reported health before each movement-source
+request, and retains ACTIVE observations across asynchronous service-response
+ordering. `mux-safety-check` forces selected-source staleness, checks the
 latched HOLD cannot auto-recover, then performs an explicit recovery request;
 it also verifies an invalid external HOLD cannot disable internal HOLD.
 `control-stack-check` connects the real Phase 5 follower to the mux and makes

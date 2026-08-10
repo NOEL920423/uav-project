@@ -1,5 +1,37 @@
 # Test results
 
+## Phase 6.1 mux freshness synchronization stabilization
+
+Date: 2026-08-10 (Asia/Taipei)
+
+The Phase 8 baseline failure was investigated without starting Phase 8 or any
+PX4/simulator process. The original mux monitor logged
+`ACTIVE_ASTAR_EXPERT`, then a genuine receipt-time stale/latch transition, but
+timed out at `WAIT_ASTAR` because asynchronous service-response polling had
+lost the earlier ACTIVE event. The offline monitor now requires three recent,
+monotonic candidate heartbeats, submits source requests only when the service
+call is actually started, and retains ACTIVE observations across response
+ordering. Production `astar_timeout_s=0.25 s` and fail-closed behavior are
+unchanged.
+
+```text
+focused mux registry/state/ROS contract tests: 45 passed
+complete workspace: 7 packages, 217 tests, 0 errors, 0 failures, 0 skipped
+nominal mux-check stability: 10/10 passed
+intentional stale-source stability: 3/3 passed
+control-stack-check: PASS, GOAL_HOLD
+Phase 2 through Phase 7 wrapper regression: PASS
+/fmu/in/*: absent
+```
+
+Two nominal stability runs captured startup ASTAR gaps of `0.367503 s` and
+`0.367946 s`. Selection remained in startup HOLD until sustained traffic was
+established, then completed A* → joystick → NavRL → HOLD without an accidental
+stale transition. The three intentional stale fixtures recorded
+`0.639714-0.640463 s` gaps and every run still entered stale HOLD, latched, and
+required explicit recovery. See `phase6_1_mux_timing_investigation.md` for the
+timeline and evidence.
+
 ## Phase 6 offline control-source arbitration
 
 Date: 2026-08-06 (Asia/Taipei)

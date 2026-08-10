@@ -130,6 +130,20 @@ def test_nonmonotonic_stamp_invalidates_latest_source_record() -> None:
     assert "non-monotonic" in record.reason
 
 
+def test_repeated_payload_with_new_stamp_refreshes_receipt_time() -> None:
+    """Treat identical command values as fresh when new heartbeats arrive."""
+    registry = ControlSourceRegistry(ControlMuxConfig())
+    first = fixed_candidate(stamp_s=2.0, north_mps=0.6)
+    second = fixed_candidate(stamp_s=2.04, north_mps=0.6)
+    registry.update(ASTAR_EXPERT, first, 1.0)
+    record = registry.update(ASTAR_EXPERT, second, 1.04)
+    health = registry.health(ASTAR_EXPERT, 1.05)
+    assert record.update_count == 2
+    assert health.healthy
+    assert health.update_count == 2
+    assert health.age_s == pytest.approx(0.01)
+
+
 def test_external_hold_must_be_zero_but_internal_hold_is_independent() -> None:
     """Reject a nonzero external HOLD candidate in its own source record."""
     registry = ControlSourceRegistry(ControlMuxConfig())

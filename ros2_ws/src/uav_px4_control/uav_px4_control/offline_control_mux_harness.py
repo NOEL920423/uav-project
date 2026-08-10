@@ -2,6 +2,7 @@
 
 import math
 import time
+from dataclasses import dataclass
 
 from geometry_msgs.msg import TwistStamped
 
@@ -25,6 +26,7 @@ from uav_px4_control.control_source_models import (
     ASTAR_EXPERT,
     HOLD,
     HUMAN_JOYSTICK,
+    MOVEMENT_SOURCES,
     NAVRL_POLICY,
     SOURCE_TOPICS,
 )
@@ -32,6 +34,47 @@ from uav_px4_control.control_source_models import (
 
 TRACKING_STATUS_TOPIC = "/uav/control/astar_tracking_status"
 SOURCE_DWELL_SETTLE_S = 0.35
+CANDIDATE_READY_MIN_MESSAGES = 3
+CANDIDATE_READY_MAX_AGE_S = 0.12
+
+
+@dataclass
+class CandidateTrafficEvidence:
+    """Track condition-driven heartbeat readiness in the ROS test monitor."""
+
+    update_count: int = 0
+    last_message_stamp_s: float | None = None
+    last_receipt_s: float | None = None
+    maximum_gap_s: float = 0.0
+    stamps_monotonic: bool = True
+
+    def record(self, message_stamp_s: float, receipt_s: float) -> None:
+        """Record every arrival, including repeated command payloads."""
+        stamp = float(message_stamp_s)
+        receipt = float(receipt_s)
+        if self.last_receipt_s is not None:
+            self.maximum_gap_s = max(
+                self.maximum_gap_s, receipt - self.last_receipt_s
+            )
+        if (
+            self.last_message_stamp_s is not None
+            and stamp <= self.last_message_stamp_s
+        ):
+            self.stamps_monotonic = False
+        self.update_count += 1
+        self.last_message_stamp_s = stamp
+        self.last_receipt_s = receipt
+
+    def ready(self, now_s: float) -> bool:
+        """Require sustained, recent, monotonic traffic before selection."""
+        if self.last_receipt_s is None:
+            return False
+        return (
+            self.update_count >= CANDIDATE_READY_MIN_MESSAGES
+            and self.stamps_monotonic
+            and 0.0 <= now_s - self.last_receipt_s
+            <= CANDIDATE_READY_MAX_AGE_S
+        )
 
 
 class SyntheticCandidatePublisher(Node):
@@ -110,6 +153,18 @@ class ControlMuxResultMonitor(Node):
         self.declare_parameter("mode", "normal")
         self.mode = str(self.get_parameter("mode").value)
         qos = control_qos()
+        self._candidate_traffic = {
+            source: CandidateTrafficEvidence()
+            for source in MOVEMENT_SOURCES
+        }
+        self._candidate_subscriptions = []
+        for source in MOVEMENT_SOURCES:
+            self._candidate_subscriptions.append(self.create_subscription(
+                TwistStamped,
+                SOURCE_TOPICS[source],
+                self._candidate_callback(source),
+                qos,
+            ))
         self.create_subscription(
             TwistStamped,
             SELECTED_COMMAND_TOPIC,
@@ -151,6 +206,7 @@ class ControlMuxResultMonitor(Node):
         self._movement_count = 0
         self._transition_max = 0
         self._last_state = ""
+        self._active_sources_seen: set[str] = set()
         self._contract_error = ""
         self._finished = False
         self.exit_code = 1
@@ -192,9 +248,31 @@ class ControlMuxResultMonitor(Node):
     def _source_callback(self, message: String) -> None:
         self._source = message.data
 
+    @staticmethod
+    def _stamp_seconds(message: TwistStamped) -> float:
+        return (
+            float(message.header.stamp.sec)
+            + float(message.header.stamp.nanosec) / 1e9
+        )
+
+    def _candidate_callback(self, source: str):
+        def callback(message: TwistStamped) -> None:
+            self._candidate_traffic[source].record(
+                self._stamp_seconds(message), time.monotonic()
+            )
+        return callback
+
+    def _candidate_ready(self, source: str) -> bool:
+        return self._candidate_traffic[source].ready(time.monotonic())
+
     def _status_callback(self, message: ControlMuxStatus) -> None:
         self._status = message
         state = message.status_message.split(":", 1)[0]
+        if (
+            state.startswith("ACTIVE_")
+            and message.active_source in MOVEMENT_SOURCES
+        ):
+            self._active_sources_seen.add(message.active_source)
         if state != self._last_state:
             self.get_logger().info(
                 f"observed mux state={state}, active={message.active_source}"
@@ -217,19 +295,28 @@ class ControlMuxResultMonitor(Node):
             self._stale_hold_seen = True
         elif message.status_message.startswith("HOLD_LATCHED_FAULT"):
             self._latched_hold_seen = True
+        if (
+            self.mode in {"normal", "control-stack"}
+            and state in {"HOLD_STALE_SOURCE", "HOLD_LATCHED_FAULT"}
+        ):
+            self._contract_error = (
+                f"unexpected {state} during {self._stage}"
+            )
         if message.switch_in_progress:
             self._barrier_count += 1
 
     def _tracking_callback(self, message: TrajectoryTrackingStatus) -> None:
         self._tracking_state = message.state
 
-    def _request(self, source: str) -> None:
+    def _request(self, source: str) -> bool:
         if self._pending is not None or not self._client.service_is_ready():
-            return
+            return False
         request = SetControlSource.Request()
         request.source = source
+        self._active_sources_seen.discard(source)
         self._pending_source = source
         self._pending = self._client.call_async(request)
+        return True
 
     def _response_ready(self) -> bool:
         if self._pending is None or not self._pending.done():
@@ -261,36 +348,63 @@ class ControlMuxResultMonitor(Node):
             if (
                 self._startup_hold_seen
                 and ASTAR_EXPERT in status.healthy_sources
+                and self._candidate_ready(ASTAR_EXPERT)
             ):
-                self._request(ASTAR_EXPERT)
-                self._set_stage("REQUEST_ASTAR")
+                if self._request(ASTAR_EXPERT):
+                    self._set_stage("REQUEST_ASTAR")
         elif self._stage == "REQUEST_ASTAR" and self._response_ready():
-            self._set_stage("WAIT_ASTAR")
+            self._set_stage(
+                "DWELL_ASTAR"
+                if ASTAR_EXPERT in self._active_sources_seen
+                else "WAIT_ASTAR"
+            )
         elif self._stage == "WAIT_ASTAR":
-            if status.active_source == ASTAR_EXPERT:
+            if ASTAR_EXPERT in self._active_sources_seen:
                 self._set_stage("DWELL_ASTAR")
         elif self._stage == "DWELL_ASTAR":
-            if time.monotonic() - self._stage_started > SOURCE_DWELL_SETTLE_S:
-                self._request(HUMAN_JOYSTICK)
+            if (
+                time.monotonic() - self._stage_started
+                > SOURCE_DWELL_SETTLE_S
+                and HUMAN_JOYSTICK in status.healthy_sources
+                and self._candidate_ready(HUMAN_JOYSTICK)
+                and self._request(HUMAN_JOYSTICK)
+            ):
                 self._set_stage("REQUEST_JOYSTICK")
         elif self._stage == "REQUEST_JOYSTICK" and self._response_ready():
-            self._set_stage("WAIT_JOYSTICK")
+            self._set_stage(
+                "DWELL_JOYSTICK"
+                if HUMAN_JOYSTICK in self._active_sources_seen
+                else "WAIT_JOYSTICK"
+            )
         elif self._stage == "WAIT_JOYSTICK":
-            if status.active_source == HUMAN_JOYSTICK:
+            if HUMAN_JOYSTICK in self._active_sources_seen:
                 if self._barrier_count == 0:
                     self._contract_error = (
                         "joystick switch lacked HOLD barrier"
                     )
                 self._set_stage("DWELL_JOYSTICK")
         elif self._stage == "DWELL_JOYSTICK":
-            if time.monotonic() - self._stage_started > SOURCE_DWELL_SETTLE_S:
-                self._request(NAVRL_POLICY)
+            if (
+                time.monotonic() - self._stage_started
+                > SOURCE_DWELL_SETTLE_S
+                and NAVRL_POLICY in status.healthy_sources
+                and self._candidate_ready(NAVRL_POLICY)
+                and self._request(NAVRL_POLICY)
+            ):
                 self._set_stage("REQUEST_NAVRL")
         elif self._stage == "REQUEST_NAVRL" and self._response_ready():
-            self._set_stage("WAIT_NAVRL")
+            self._set_stage(
+                "WAIT_NAVRL"
+                if NAVRL_POLICY not in self._active_sources_seen
+                else "REQUEST_HOLD"
+            )
+            if self._stage == "REQUEST_HOLD" and not self._request(HOLD):
+                self._set_stage("WAIT_NAVRL")
         elif self._stage == "WAIT_NAVRL":
-            if status.active_source == NAVRL_POLICY:
-                self._request(HOLD)
+            if (
+                NAVRL_POLICY in self._active_sources_seen
+                and self._request(HOLD)
+            ):
                 self._set_stage("REQUEST_HOLD")
         elif self._stage == "REQUEST_HOLD" and self._response_ready():
             self._set_stage("WAIT_HOLD")
@@ -306,13 +420,18 @@ class ControlMuxResultMonitor(Node):
             if (
                 self._startup_hold_seen
                 and ASTAR_EXPERT in status.healthy_sources
+                and self._candidate_ready(ASTAR_EXPERT)
             ):
-                self._request(ASTAR_EXPERT)
-                self._set_stage("REQUEST_ASTAR")
+                if self._request(ASTAR_EXPERT):
+                    self._set_stage("REQUEST_ASTAR")
         elif self._stage == "REQUEST_ASTAR" and self._response_ready():
-            self._set_stage("WAIT_ASTAR")
+            self._set_stage(
+                "WAIT_STALE"
+                if ASTAR_EXPERT in self._active_sources_seen
+                else "WAIT_ASTAR"
+            )
         elif self._stage == "WAIT_ASTAR":
-            if status.active_source == ASTAR_EXPERT:
+            if ASTAR_EXPERT in self._active_sources_seen:
                 self._set_stage("WAIT_STALE")
         elif self._stage == "WAIT_STALE":
             if self._stale_hold_seen:
@@ -328,12 +447,22 @@ class ControlMuxResultMonitor(Node):
                 if status.active_source != HOLD:
                     self._contract_error = "fresh data bypassed fault latch"
                     return
-                self._request(ASTAR_EXPERT)
-                self._set_stage("REQUEST_RECOVERY")
+                if self._candidate_ready(ASTAR_EXPERT) and self._request(
+                    ASTAR_EXPERT
+                ):
+                    self._set_stage("REQUEST_RECOVERY")
         elif self._stage == "REQUEST_RECOVERY" and self._response_ready():
-            self._set_stage("WAIT_RECOVERY")
+            self._set_stage(
+                "WAIT_RECOVERY"
+                if ASTAR_EXPERT not in self._active_sources_seen
+                else "RECOVERY_COMPLETE"
+            )
+            if self._stage == "RECOVERY_COMPLETE":
+                self._finish(
+                    0, "stale latch and explicit recovery complete"
+                )
         elif self._stage == "WAIT_RECOVERY":
-            if status.active_source == ASTAR_EXPERT:
+            if ASTAR_EXPERT in self._active_sources_seen:
                 self._finish(0, "stale latch and explicit recovery complete")
 
     def _control_stack_tick(self) -> None:
@@ -341,8 +470,11 @@ class ControlMuxResultMonitor(Node):
         if status is None:
             return
         if self._stage == "WAIT_STARTUP":
-            if ASTAR_EXPERT in status.healthy_sources:
-                self._request(ASTAR_EXPERT)
+            if (
+                ASTAR_EXPERT in status.healthy_sources
+                and self._candidate_ready(ASTAR_EXPERT)
+                and self._request(ASTAR_EXPERT)
+            ):
                 self._set_stage("REQUEST_ASTAR")
         elif self._stage == "REQUEST_ASTAR" and self._response_ready():
             self._set_stage("WAIT_TRACKING")
@@ -396,6 +528,13 @@ class ControlMuxResultMonitor(Node):
             f"barrier_cycles={self._barrier_count}, "
             f"movement_cycles={self._movement_count}, "
             f"transitions={self._transition_max}, frame=px4_ned"
+        )
+        astar_traffic = self._candidate_traffic[ASTAR_EXPERT]
+        summary += (
+            f", astar_messages={astar_traffic.update_count}, "
+            f"astar_max_gap_s={astar_traffic.maximum_gap_s:.6f}, "
+            f"astar_stamps_monotonic="
+            f"{str(astar_traffic.stamps_monotonic).lower()}"
         )
         if code == 0:
             self.get_logger().info(summary)

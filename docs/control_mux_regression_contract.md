@@ -76,6 +76,12 @@ The direct finite graph contains only synthetic candidate publishers, the mux,
 and an independent monitor. It observes startup HOLD, successful A* selection,
 a complete movement-to-movement zero barrier, exact source ownership, all
 three output topics, service response fields, and no `/fmu/in/*` publisher.
+Before requesting a movement source, the monitor must observe at least three
+recent candidate arrivals with strictly increasing stamps and independently
+confirm that the mux reports the source healthy. Submitted service requests and
+observed ACTIVE events are sticky synchronization evidence: a later status
+sample cannot erase an activation that arrived before the asynchronous service
+response. Nominal graphs fail immediately on any stale-source or latched HOLD.
 
 The safety graph covers at least active-source staleness, fault latch,
 fresh-data non-recovery, explicit recovery, wrong frame, non-finite input,
