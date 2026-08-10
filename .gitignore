@@ -45,6 +45,14 @@ pegasus_test/
 *.avi
 *.mkv
 *.pt
+*.pth
+
+# ML Phase 1 generated artifacts
+/datasets/
+/checkpoints/
+/training_runs/
+/tensorboard/
+/wandb/
 
 # Editor / OS
 .vscode/
