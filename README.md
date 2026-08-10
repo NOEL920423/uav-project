@@ -18,6 +18,26 @@ This repository stores UAV simulation research scripts and small scene files.
 Generated datasets, rosbags, logs, images, and videos are excluded from Git.
 Large Isaac Sim assets should be backed up separately.
 
+## Behavior Cloning ML Phase 1
+
+The ROS-independent BC v0 pipeline lives in `uav_ml/`. It uses a 64x64 depth
+observation plus vehicle velocity and goal direction to imitate the existing
+bounded A*/B-spline trajectory follower command. Generated datasets,
+checkpoints, and training runs are not committed.
+
+```bash
+./uav ml-doctor
+./uav dataset-generate-synthetic --output datasets/bc_v0 --episodes 8
+./uav dataset-check --dataset datasets/bc_v0
+./uav bc-smoke-test --device cpu
+./uav bc-train --dataset datasets/bc_v0 --epochs 10 --device auto
+./uav ml-test
+```
+
+The synthetic generator is only a software fixture. See
+`docs/ml_training_architecture.md` and `docs/ml_phase1_results.md` for the real
+Isaac bridge boundary and current evidence.
+
 ## ROS 2 developer workflow
 
 Use the repository-local `./uav` command for isolated Jazzy build, test,

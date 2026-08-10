@@ -242,3 +242,22 @@ alias uav="$HOME/uav-project/uav"
 ```
 
 Then a new shell may use `uav verify`, `uav offline`, and `uav shell`.
+# ML Phase 1 commands
+
+These commands use the caller's Python environment and never source ROS 2:
+
+```bash
+./uav ml-doctor
+./uav dataset-generate-synthetic --output datasets/bc_v0 --episodes 8 --max-steps 32
+./uav dataset-check --dataset datasets/bc_v0
+./uav bc-smoke-test --device cpu --epochs 30
+./uav bc-train --dataset datasets/bc_v0 --epochs 10 --batch-size 32 \
+  --learning-rate 0.001 --device auto \
+  --checkpoint checkpoints/bc_v0.pt \
+  --history training_runs/bc_v0_history.csv
+./uav ml-test
+```
+
+`dataset-generate-synthetic` is labeled software validation only and refuses
+to overwrite an existing dataset unless `--overwrite` is explicit. None of the
+commands starts Isaac Sim, ROS 2, or PX4.
