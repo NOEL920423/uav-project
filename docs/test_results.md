@@ -329,3 +329,25 @@ built:
 ```text
 9bb394c0e4e5616f0857ce61e5067971a5931ae5c32a0e33ef3d96af40b94beb
 ```
+
+## Phase 8 offline PX4 stream boundary
+
+The first package-level Phase 8 validation retained the normal seven-package,
+PX4-independent build. `uav_interfaces` and `uav_px4_control` reported 252
+tests, 0 errors, 0 failures, and 0 skipped after adding 35 stream tests to the
+217-test baseline. `./uav px4-stream-offline-check` independently reported all
+35 adapter/state/ownership tests and all 20 required fixtures passing, followed
+by `SAFE: no /fmu/in/* topics detected`.
+
+No PX4, XRCE, Isaac Sim, OFFBOARD, arming, or live publisher was started for
+that result. The required five-run pre-PX4 mux gate subsequently passed 5/5.
+
+The live PX4 v1.14.3 SIH boundary then passed the zero fixture and all four
+0.10 mapping fixtures. The final timing-instrumented zero run received 41
+matched `TrajectorySetpoint`/`OffboardControlMode` pairs at 20.000656 Hz, with
+0.047295 s minimum interval, 0.052220 s maximum interval, 0.001016 s RMS
+jitter, strict timestamp monotonicity, and no dropped cycle. Gate false, stale
+upstream candidate, and XRCE Agent loss each stopped publication, latched, and
+required explicit repair/reset/re-enable. PX4 stayed disarmed and outside
+OFFBOARD, and no `VehicleCommand` publisher existed. Detailed pass and failed
+attempt evidence is retained in `phase8_sitl_test_results.md`.
