@@ -1,0 +1,7 @@
+bool enable
+---
+bool accepted
+bool stream_enable_requested
+bool streaming
+string state
+string status_message

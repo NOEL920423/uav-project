@@ -1,0 +1,23 @@
+px4_setpoint_streamer:
+  ros__parameters:
+    use_sim_time: false
+    stream_rate_hz: 20.0
+    minimum_prestream_duration_s: 2.0
+    minimum_prestream_messages: 40
+    maximum_publish_gap_s: 0.20
+    candidate_timeout_s: 0.25
+    gate_status_timeout_s: 0.50
+    # Local PX4 v1.14 SIH status/control/failsafe outputs are ~1.7-1.9 Hz.
+    # 0.75 s stays fail-closed while covering the measured 0.575 s interval.
+    telemetry_timeout_s: 0.75
+    minimum_candidate_updates: 3
+    require_safe_to_forward: true
+    require_gate_status_agreement: true
+    require_disarmed: true
+    require_offboard_inactive: true
+    require_no_failsafe: true
+    simulation_mode: true
+    allow_sitl_streaming_only: true
+    latch_stream_faults: true
+    expected_sitl_process_fragment: >-
+      /PX4-Autopilot/build/px4_sitl_default/bin/px4
