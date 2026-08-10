@@ -55,6 +55,12 @@ Commands:
   px4-map-check     Validate pure and ROS diagnostic PX4 candidate mapping
   px4-gate-check    Validate fail-closed output gate and explicit recovery
   px4-boundary-check  Validate scene-to-safe_to_forward diagnostic graph
+  ml-doctor       Check Python, PyTorch, CUDA, GPU, and ML artifact locations
+  dataset-generate-synthetic  Create a labeled software-only BC fixture
+  dataset-check   Validate a versioned BC dataset and print statistics
+  bc-smoke-test   Run the mandatory tiny-overfit/checkpoint smoke test
+  bc-train        Train BcPolicyV0 without ROS 2
+  ml-test         Run ROS/Isaac-independent ML regression tests
   topics         Inspect the current ROS graph and reject /fmu/in/ topics
   interfaces     Show custom interfaces and planner topic contracts
   shell          Open a clean interactive ROS 2 workspace shell
@@ -74,6 +80,12 @@ Examples:
   ./uav px4-map-check
   ./uav px4-gate-check
   ./uav px4-boundary-check
+  ./uav ml-doctor
+  ./uav dataset-generate-synthetic --output datasets/bc_v0 --episodes 8
+  ./uav dataset-check --dataset datasets/bc_v0
+  ./uav bc-smoke-test --device cpu
+  ./uav bc-train --dataset datasets/bc_v0 --epochs 10
+  ./uav ml-test
   ./uav shell
 EOF
 }
@@ -833,6 +845,36 @@ main() {
         status)
             require_repository
             command_status
+            ;;
+        ml-doctor)
+            require_repository
+            shift
+            python3 -m uav_ml.tools.ml_doctor "$@"
+            ;;
+        dataset-generate-synthetic)
+            require_repository
+            shift
+            python3 -m uav_ml.datasets.synthetic_expert "$@"
+            ;;
+        dataset-check)
+            require_repository
+            shift
+            python3 -m uav_ml.tools.dataset_check "$@"
+            ;;
+        bc-smoke-test)
+            require_repository
+            shift
+            python3 -m uav_ml.tools.smoke_test "$@"
+            ;;
+        bc-train)
+            require_repository
+            shift
+            python3 -m uav_ml.train_bc "$@"
+            ;;
+        ml-test)
+            require_repository
+            shift
+            python3 -m unittest discover -s tests/ml -p 'test_*.py' "$@"
             ;;
         doctor)
             require_repository
