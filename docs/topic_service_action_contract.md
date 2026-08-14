@@ -18,6 +18,28 @@ All stamped interfaces use the ROS clock contract in
 `coordinate_frames.md`. In simulation this means `use_sim_time=true` and the
 same authoritative `/clock`. No spatial message may have an empty frame.
 
+## Phase 8 SITL-only PX4 streaming contracts
+
+Phase 8 adds one separately enabled output boundary. Its sole publisher owner
+is `uav_px4_control.px4_setpoint_streamer_node`. The exact live allowlist is
+`/fmu/in/trajectory_setpoint` (`px4_msgs/msg/TrajectorySetpoint`) and
+`/fmu/in/offboard_control_mode` (`px4_msgs/msg/OffboardControlMode`). No tracked
+Phase 8 node may publish another `/fmu/in/*` topic. In particular,
+`/fmu/in/vehicle_command`, OFFBOARD requests, arm/disarm, takeoff, and land are
+forbidden.
+
+| Exact name and type | Owner / consumer | Contract |
+|---|---|---|
+| `/uav/px4/set_stream_enable` — `uav_interfaces/srv/SetPx4StreamEnable` | Server: sole streamer; client: explicit SITL test/operator | Enables only message streaming after all independent readiness gates; disable also clears a latched stream fault. It never changes vehicle mode or arming state. |
+| `/uav/px4/stream_status` — `uav_interfaces/msg/Px4StreamStatus` | Streamer / monitor and operator | Reliable volatile status at stream timer rate; reports typed state, both enables, SITL/DDS/gate/candidate/telemetry evidence, vehicle safety state, timing, counts, and stop reason. |
+| `/fmu/in/trajectory_setpoint` — `px4_msgs/msg/TrajectorySetpoint` | Sole streamer / PX4 SITL uXRCE subscriber | 20 Hz only while both gates and all live safety evidence pass. NED velocity identity mapping; unused fields and absolute yaw are NaN. Publication stops completely when disabled or faulted. |
+| `/fmu/in/offboard_control_mode` — `px4_msgs/msg/OffboardControlMode` | Sole streamer / PX4 SITL uXRCE subscriber | Published as a pair with each trajectory setpoint; velocity flag only. This is a stream heartbeat, not a mode request. Publication stops completely when disabled or faulted. |
+
+The streamer additionally reads `/fmu/out/vehicle_status`,
+`/fmu/out/vehicle_control_mode`, `/fmu/out/vehicle_odometry`, and
+`/fmu/out/failsafe_flags`. It requires disarmed, OFFBOARD inactive, no
+failsafe, fresh NED odometry, live DDS endpoints, and a local SITL identity.
+
 ## Scene contracts
 
 | Exact name and type | Owner | Subscribers / clients | Frame and timestamp | QoS / rate | State restriction | Failure behavior | Future phase |

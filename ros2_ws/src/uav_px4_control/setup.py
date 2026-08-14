@@ -16,7 +16,11 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         (
             "share/" + package_name + "/config",
-            ["config/control_mux.yaml", "config/px4_mapping_gate.yaml"],
+            [
+                "config/control_mux.yaml",
+                "config/px4_mapping_gate.yaml",
+                "config/px4_setpoint_streamer.yaml",
+            ],
         ),
         (
             "share/" + package_name + "/launch",
@@ -26,6 +30,7 @@ setup(
                 "launch/px4_mapping_offline.launch.py",
                 "launch/px4_gate_offline.launch.py",
                 "launch/px4_boundary_offline.launch.py",
+                "launch/px4_sitl_stream.launch.py",
             ],
         ),
     ],
@@ -41,6 +46,16 @@ setup(
             "control_mux_node = uav_px4_control.control_mux_node:main",
             "px4_mapping_gate_node = "
             "uav_px4_control.px4_mapping_gate_node:main",
+            "px4_setpoint_streamer_node = "
+            "uav_px4_control.px4_setpoint_streamer_node:main",
+            "px4_live_telemetry_adapter = "
+            "uav_px4_control.px4_live_telemetry_adapter:main",
+            "px4_sitl_doctor = "
+            "uav_px4_control.px4_sitl_doctor:main",
+            "px4_sitl_stream_monitor = "
+            "uav_px4_control.px4_sitl_stream_monitor:main",
+            "px4_stream_offline_comparison = "
+            "uav_px4_control.px4_stream_fixtures:main",
             "px4_boundary_result_monitor = "
             "uav_px4_control.offline_px4_boundary_harness:monitor_main",
             "synthetic_px4_telemetry = "

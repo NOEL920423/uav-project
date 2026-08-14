@@ -207,6 +207,78 @@ These commands publish only `/uav/px4/*` diagnostics and synthetic state under
 `/uav/test/px4/*`. The boolean permission is not a PX4 publisher or flight
 authorization.
 
+## Phase 8 SITL-only stream checks
+
+The default offline check remains PX4-independent and must pass before starting
+PX4:
+
+```bash
+./uav px4-stream-offline-check
+```
+
+It runs 35 pure/unit/static tests and the 20-fixture stream matrix, enforces the
+two-topic publisher allowlist, and rejects any live `/fmu/in/*` graph because
+PX4 must not be running during this gate.
+
+The standard seven-package build deliberately does not source the legacy
+workspace. Before the first live check, build the clean external `px4_msgs`
+source into this workspace without copying or modifying it:
+
+```bash
+./uav build --base-paths src \
+  /home/noel_614420090/uav_ros2_ws/src/px4_msgs
+```
+
+Start the exact audited PX4 SIH target and Micro XRCE-DDS manually in separate
+`tmux` windows. The wrapper never starts them:
+
+```bash
+tmux new-window -t astar -n xrce
+tmux send-keys -t astar:xrce \
+  'MicroXRCEAgent udp4 -p 8888' C-m
+
+tmux new-window -t astar -n px4
+tmux send-keys -t astar:px4 \
+  'ninja -C /home/noel_614420090/PX4-Autopilot/build/px4_sitl_default sihsim_quadx' C-m
+```
+
+`sihsim_quadx` is the locally inspected built-in PX4 SITL simulation target;
+it does not start Isaac Sim or Gazebo. Wait for PX4 startup and DDS endpoint
+creation, then run the read-only prerequisite:
+
+```bash
+./uav px4-sitl-doctor
+```
+
+The doctor creates no PX4 input publisher. It requires the expected local SITL
+process, `MicroXRCEAgent udp4 -p 8888`, all four telemetry publishers, both PX4
+input subscribers, compatible endpoint QoS, disarmed state, OFFBOARD inactive,
+no critical failsafe, and no `VehicleCommand` publisher. It requires three
+consecutive complete readiness snapshots so DDS discovery convergence after an
+Agent restart cannot be mistaken for stable readiness.
+
+Only after the doctor succeeds:
+
+```bash
+UAV_OFFLINE_TIMEOUT_SECONDS=30 ./uav px4-sitl-stream-check
+```
+
+The finite launch starts disabled, routes a zero candidate through the existing
+mux and Phase 7 mapper/gate, explicitly enables the streamer, verifies at least
+40 message pairs and timing, disables it, and proves publication stops. Optional
+mapping-only fixtures are `fixture:=north-0.10`, `east-0.10`, `down-0.10`, and
+`yaw-rate-0.10`; run them separately only after the zero fixture succeeds.
+
+The live launch overrides only `telemetry_timeout_s` to 0.75 s because the
+audited PX4 status/flags topics were measured at about 1.7--1.9 Hz with maximum
+intervals up to 0.575 s. Candidate timeout remains 0.25 s, gate timeout remains
+0.50 s, Phase 7 limits are unchanged, and publish-gap safety remains 0.20 s.
+The monitor reports pair counts, mean rate, minimum/maximum interval, RMS
+jitter, and first/last timestamp.
+
+Phase 8 never publishes `/fmu/in/vehicle_command`, requests OFFBOARD, arms,
+disarms, takes off, lands, starts Isaac Sim, or targets a real vehicle.
+
 ## Why shell creates a new shell
 
 An executed script cannot safely change its parent shell's environment.

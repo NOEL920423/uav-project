@@ -127,7 +127,17 @@ class SyntheticCandidatePublisher(Node):
             HOLD: (0.00, 0.00, 0.00, 0.00),
         }
         north, east, down, yaw_rate = values[self.source]
-        if behavior == "varying":
+        if behavior == "zero":
+            north, east, down, yaw_rate = (0.0, 0.0, 0.0, 0.0)
+        elif behavior == "north-0.10":
+            north, east, down, yaw_rate = (0.10, 0.0, 0.0, 0.0)
+        elif behavior == "east-0.10":
+            north, east, down, yaw_rate = (0.0, 0.10, 0.0, 0.0)
+        elif behavior == "down-0.10":
+            north, east, down, yaw_rate = (0.0, 0.0, 0.10, 0.0)
+        elif behavior == "yaw-rate-0.10":
+            north, east, down, yaw_rate = (0.0, 0.0, 0.0, 0.10)
+        elif behavior == "varying":
             north *= math.sin(self._sequence * 0.1)
             east += 0.1 * math.cos(self._sequence * 0.1)
         elif behavior == "nonfinite":
