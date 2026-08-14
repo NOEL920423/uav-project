@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 UAV="$REPO_ROOT/uav"
+PPO_RUNNER="$REPO_ROOT/train_ppo.sh"
 
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
@@ -10,7 +11,12 @@ fail() {
 }
 
 [[ -x "$UAV" ]] || fail "$UAV is not executable"
+[[ -x "$PPO_RUNNER" ]] || fail "$PPO_RUNNER is not executable"
 /usr/bin/bash -n "$UAV"
+/usr/bin/bash -n "$PPO_RUNNER"
+ppo_help="$($PPO_RUNNER --help)"
+[[ "$ppo_help" == *"./train_ppo.sh 50k"* ]] || \
+    fail "PPO runner help is missing the 50k preset"
 
 "$UAV" help >/dev/null
 if "$UAV" definitely-not-a-command >/dev/null 2>&1; then

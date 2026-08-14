@@ -8,6 +8,7 @@ ROS_SETUP="/opt/ros/jazzy/setup.bash"
 WORKSPACE_SETUP="$ROS_WS/install/setup.bash"
 RUN_LOG_DIR="$REPO_ROOT/run_logs"
 SCRIPT_PATH="$REPO_ROOT/uav"
+ISAACLAB_SH="${UAV_ISAACLAB_ROOT:-$REPO_ROOT/../IsaacLab}/isaaclab.sh"
 
 readonly SCRIPT_DIR REPO_ROOT ROS_WS ROS_SETUP WORKSPACE_SETUP
 readonly RUN_LOG_DIR SCRIPT_PATH
@@ -56,6 +57,14 @@ Commands:
   px4-gate-check    Validate fail-closed output gate and explicit recovery
   px4-boundary-check  Validate scene-to-safe_to_forward diagnostic graph
   ml-doctor       Check Python, PyTorch, CUDA, GPU, and ML artifact locations
+  rgb-audit       Audit and split legacy RGB episodes without modifying them
+  ae-train        Train/evaluate the episode-split FPV RGB Autoencoder baseline
+  isaac-city-smoke  Validate the fixed-height city reset/step environment
+  isaac-bc-collect  Collect synchronized clean RGB/state/A* demonstrations
+  latent-prepare    Encode demonstrations and calculate train-only normalization
+  latent-bc-train   Train the 72-D latent/state BC actor
+  bc-closed-loop    Evaluate BC closed-loop on unseen Isaac city seeds
+  ppo-train        Advanced PPO command; most users should run ./train_ppo.sh 50k
   dataset-generate-synthetic  Create a labeled software-only BC fixture
   dataset-check   Validate a versioned BC dataset and print statistics
   bc-smoke-test   Run the mandatory tiny-overfit/checkpoint smoke test
@@ -81,6 +90,14 @@ Examples:
   ./uav px4-gate-check
   ./uav px4-boundary-check
   ./uav ml-doctor
+  ./uav rgb-audit
+  ./uav ae-train --epochs 20 --device cuda
+  ./uav isaac-city-smoke --headless --enable_cameras
+  ./uav isaac-bc-collect --headless --enable_cameras
+  ./uav latent-prepare
+  ./uav latent-bc-train
+  ./uav bc-closed-loop --headless --enable_cameras
+  ./train_ppo.sh 50k
   ./uav dataset-generate-synthetic --output datasets/bc_v0 --episodes 8
   ./uav dataset-check --dataset datasets/bc_v0
   ./uav bc-smoke-test --device cpu
@@ -850,6 +867,50 @@ main() {
             require_repository
             shift
             python3 -m uav_ml.tools.ml_doctor "$@"
+            ;;
+        rgb-audit)
+            require_repository
+            shift
+            python3 -m uav_ml.tools.rgb_episode_audit "$@"
+            ;;
+        ae-train)
+            require_repository
+            shift
+            python3 -m uav_ml.train_autoencoder "$@"
+            ;;
+        isaac-city-smoke)
+            require_repository
+            shift
+            [[ -x "$ISAACLAB_SH" ]] || die "IsaacLab launcher is missing: $ISAACLAB_SH"
+            TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p scripts/isaac_city_smoke.py "$@"
+            ;;
+        isaac-bc-collect)
+            require_repository
+            shift
+            [[ -x "$ISAACLAB_SH" ]] || die "IsaacLab launcher is missing: $ISAACLAB_SH"
+            TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p scripts/collect_isaac_bc_demonstrations.py "$@"
+            ;;
+        latent-prepare)
+            require_repository
+            shift
+            python3 -m uav_ml.tools.prepare_isaac_latents "$@"
+            ;;
+        latent-bc-train)
+            require_repository
+            shift
+            python3 -m uav_ml.train_latent_bc "$@"
+            ;;
+        bc-closed-loop)
+            require_repository
+            shift
+            [[ -x "$ISAACLAB_SH" ]] || die "IsaacLab launcher is missing: $ISAACLAB_SH"
+            TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p scripts/evaluate_isaac_bc_closed_loop.py "$@"
+            ;;
+        ppo-train)
+            require_repository
+            shift
+            [[ -x "$ISAACLAB_SH" ]] || die "IsaacLab launcher is missing: $ISAACLAB_SH"
+            TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p scripts/train_isaac_bc_initialized_ppo.py "$@"
             ;;
         dataset-generate-synthetic)
             require_repository
