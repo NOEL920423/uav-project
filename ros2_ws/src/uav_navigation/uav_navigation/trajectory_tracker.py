@@ -226,6 +226,7 @@ class OfflineTrackingController:
         self.settling_started_s: float | None = None
         self.cycle_index = 0
         self.accepted_trajectory_count = 0
+        self.tracking_enabled = not self.config.require_explicit_start
         self._signature = None
 
     @staticmethod
@@ -264,8 +265,43 @@ class OfflineTrackingController:
         self.validity_receipt_s = None
         self.previous_command = None
         self.settling_started_s = None
+        if self.config.require_explicit_start:
+            self.tracking_enabled = False
         self.accepted_trajectory_count += 1
         return True
+
+    def request_tracking_enable(
+        self, enable: bool, current_time_s: float
+    ) -> tuple[bool, str]:
+        """Explicitly reset the trajectory epoch or return to prestart HOLD."""
+        now = float(current_time_s)
+        if not isinstance(enable, bool):
+            return False, "enable must be bool"
+        if not math.isfinite(now):
+            return False, "tracking request time must be finite"
+        if not enable:
+            self.tracking_enabled = False
+            self.previous_command = None
+            self.settling_started_s = None
+            return True, "tracking disabled; exact-zero prestart HOLD active"
+        if self.tracking_enabled:
+            return True, "tracking is already enabled"
+        if self.trajectory is None or not self.trajectory_embedded_valid:
+            return (
+                False,
+                "a valid trajectory is required before tracking start",
+            )
+        if self.config.require_validity_topic and self.validity is not True:
+            return False, "a true trajectory validity heartbeat is required"
+        if self.odometry is None or self.odometry_receipt_s is None:
+            return False, "fresh odometry is required before tracking start"
+        if now - self.odometry_receipt_s > self.config.odometry_timeout_s:
+            return False, "fresh odometry is required before tracking start"
+        self.tracking_epoch_s = now + self.config.trajectory_start_delay_s
+        self.tracking_enabled = True
+        self.previous_command = None
+        self.settling_started_s = None
+        return True, "tracking enabled with a fresh trajectory epoch"
 
     def accept_validity(self, valid: bool, receipt_time_s: float) -> None:
         """Record the independent Phase 4 validity topic receipt."""
@@ -297,6 +333,7 @@ class OfflineTrackingController:
         self.odometry_receipt_s = None
         self.previous_command = None
         self.settling_started_s = None
+        self.tracking_enabled = not self.config.require_explicit_start
         self._signature = None
 
     def _hold(
@@ -420,6 +457,14 @@ class OfflineTrackingController:
                 TrackingState.HOLD_STALE_ODOMETRY,
                 "odometry is stale",
                 trajectory_valid=True,
+            )
+        if not self.tracking_enabled:
+            return self._hold(
+                now,
+                TrackingState.PRESTART_HOLD,
+                "explicit tracking start is required",
+                trajectory_valid=True,
+                odometry_valid=True,
             )
         if self.tracking_epoch_s is None:
             return self._hold(

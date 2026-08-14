@@ -77,3 +77,19 @@ The first command is PX4-independent. The latter two require an already-running
 local PX4 SITL and XRCE Agent; the doctor is read-only. See
 `docs/phase8_live_px4_streaming_design.md` for dependency, mapping, timing, and
 recovery details.
+
+## Guarded SITL flight milestone
+
+The flight milestone reuses the Phase 8 streamer and adds one explicitly
+enabled supervisor as the sole `/fmu/in/vehicle_command` owner. It sequences
+A*, B-spline/timed trajectory, follower, `ASTAR_EXPERT` mux selection, gate,
+prestream, OFFBOARD, arm, takeoff, mission tracking, goal, and PX4 AUTO_LAND.
+
+```bash
+UAV_OFFLINE_TIMEOUT_SECONDS=150 ./uav px4-sitl-flight-check
+```
+
+This command flies an already-running local PX4 SITL. It starts with the
+read-only SITL doctor and emits a finite JSON evidence record under
+`run_logs/`. See `docs/px4_sitl_flight_milestone.md` for the exact safety
+contract, accepted timeline, and limitations.

@@ -129,7 +129,10 @@ class Px4OutputSafetyGate:
             if self._safe_vehicle_signature is None:
                 self._safe_vehicle_signature = signature
                 self._safe_active_source = mux.active_source if mux else None
-            elif signature != self._safe_vehicle_signature:
+            elif (
+                self.config.lock_vehicle_state_signature
+                and signature != self._safe_vehicle_signature
+            ):
                 state = Px4OutputGateState.DISABLED_STATE_CHANGE
                 reason = (
                     "vehicle arming, navigation, or offboard state changed"

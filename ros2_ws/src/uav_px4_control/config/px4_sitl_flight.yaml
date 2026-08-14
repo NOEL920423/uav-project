@@ -1,0 +1,43 @@
+astar_planner:
+  ros__parameters:
+    flight_altitude_m: 1.5
+
+trajectory_follower:
+  ros__parameters:
+    require_explicit_start: true
+    trajectory_validity_timeout_s: 120.0
+    maximum_terminal_wait_s: 8.0
+    goal_position_tolerance_m: 0.25
+    goal_velocity_tolerance_mps: 0.20
+    maximum_tracking_error_m: 2.5
+
+px4_mapping_gate:
+  ros__parameters:
+    telemetry_timeout_s: 0.75
+    lock_vehicle_state_signature: false
+
+px4_setpoint_streamer:
+  ros__parameters:
+    require_disarmed: false
+    require_offboard_inactive: false
+
+px4_sitl_flight_supervisor:
+  ros__parameters:
+    minimum_stream_rate_hz: 19.0
+    takeoff_altitude_m: 1.5
+    takeoff_altitude_tolerance_m: 0.20
+    goal_tolerance_m: 0.35
+    pipeline_timeout_s: 20.0
+    prestream_timeout_s: 15.0
+    offboard_timeout_s: 8.0
+    arm_timeout_s: 8.0
+    takeoff_timeout_s: 20.0
+    replan_timeout_s: 10.0
+    tracking_timeout_s: 45.0
+    landing_timeout_s: 75.0
+    command_retry_s: 0.50
+    takeoff_path_north_m: 0.30
+    goal_north_m: 3.0
+    goal_east_m: 0.5
+    expected_sitl_process_fragment: >-
+      /PX4-Autopilot/build/px4_sitl_default/bin/px4

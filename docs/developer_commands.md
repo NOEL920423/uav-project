@@ -279,6 +279,20 @@ jitter, and first/last timestamp.
 Phase 8 never publishes `/fmu/in/vehicle_command`, requests OFFBOARD, arms,
 disarms, takes off, lands, starts Isaac Sim, or targets a real vehicle.
 
+## Guarded PX4 SITL flight milestone
+
+With a local XRCE Agent and PX4 SIH already running, execute:
+
+```bash
+UAV_OFFLINE_TIMEOUT_SECONDS=150 ./uav px4-sitl-flight-check
+```
+
+Unlike the Phase 8 stream fixture, this command intentionally enters OFFBOARD,
+arms, flies the configured 1.5 m A*/B-spline mission, and requests PX4
+AUTO_LAND. The wrapper refuses a non-SITL, armed, OFFBOARD-active, failsafe, or
+competing-command-owner starting state. Full evidence and limitations are in
+`px4_sitl_flight_milestone.md`.
+
 ## Why shell creates a new shell
 
 An executed script cannot safely change its parent shell's environment.

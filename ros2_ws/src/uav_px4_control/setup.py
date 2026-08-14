@@ -20,6 +20,7 @@ setup(
                 "config/control_mux.yaml",
                 "config/px4_mapping_gate.yaml",
                 "config/px4_setpoint_streamer.yaml",
+                "config/px4_sitl_flight.yaml",
             ],
         ),
         (
@@ -31,6 +32,7 @@ setup(
                 "launch/px4_gate_offline.launch.py",
                 "launch/px4_boundary_offline.launch.py",
                 "launch/px4_sitl_stream.launch.py",
+                "launch/px4_sitl_flight.launch.py",
             ],
         ),
     ],
@@ -56,6 +58,12 @@ setup(
             "uav_px4_control.px4_sitl_stream_monitor:main",
             "px4_stream_offline_comparison = "
             "uav_px4_control.px4_stream_fixtures:main",
+            "px4_odometry_bridge_node = "
+            "uav_px4_control.px4_odometry_bridge_node:main",
+            "px4_sitl_flight_supervisor_node = "
+            "uav_px4_control.px4_sitl_flight_supervisor_node:main",
+            "px4_sitl_flight_monitor = "
+            "uav_px4_control.px4_sitl_flight_monitor:main",
             "px4_boundary_result_monitor = "
             "uav_px4_control.offline_px4_boundary_harness:monitor_main",
             "synthetic_px4_telemetry = "

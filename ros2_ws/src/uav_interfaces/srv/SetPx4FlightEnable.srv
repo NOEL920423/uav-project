@@ -1,0 +1,6 @@
+bool enable
+---
+bool accepted
+bool mission_enable_requested
+string state
+string status_message

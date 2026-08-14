@@ -7,6 +7,7 @@ import pytest
 from uav_px4_control.px4_boundary_models import (
     CandidateValidation,
     MuxHealthEvidence,
+    Px4MappingConfig,
     Px4OutputGateState,
     Px4TelemetryState,
     Px4VelocitySetpointCandidate,
@@ -199,6 +200,28 @@ def test_vehicle_state_change_while_forwarding_latches() -> None:
     assert changed.state == Px4OutputGateState.DISABLED_STATE_CHANGE
     assert changed.fault_latched
     assert not changed.safe_to_forward
+
+
+def test_explicit_flight_config_allows_healthy_vehicle_state_transition():
+    """The flight-only override keeps every other gate while allowing arm."""
+    gate = Px4OutputSafetyGate(Px4MappingConfig(
+        lock_vehicle_state_signature=False
+    ))
+    enable_healthy(gate)
+    changed = step(
+        gate,
+        1.02,
+        vehicle=telemetry(
+            1.02,
+            timestamp_us=1_020_000,
+            arming_state=2,
+            nav_state=14,
+            offboard_active=True,
+        ),
+    )
+    assert changed.state == Px4OutputGateState.SAFE_TO_FORWARD
+    assert changed.safe_to_forward
+    assert not changed.fault_latched
 
 
 def test_waiting_inputs_are_explicit_while_disabled() -> None:

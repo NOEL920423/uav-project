@@ -4,6 +4,11 @@ Phase 8 adds `Px4StreamStatus.msg` and `SetPx4StreamEnable.srv` for the
 separately gated SITL-only setpoint streamer. These interfaces do not authorize
 OFFBOARD, arming, takeoff, landing, or real-vehicle operation.
 
+The guarded flight milestone adds `Px4FlightStatus.msg` and
+`SetPx4FlightEnable.srv`. They expose explicit mission intent and measured
+acceptance evidence; command ownership and all SITL identity/safety checks
+remain in `uav_px4_control`.
+
 Owns the typed ROS 2 message, service, and action contracts shared by the UAV
 integration packages. Current definitions include scene/episode contracts,
 `TimedTrajectory`, `TrajectoryPoint`, `TrajectoryTrackingStatus`, the Phase 6

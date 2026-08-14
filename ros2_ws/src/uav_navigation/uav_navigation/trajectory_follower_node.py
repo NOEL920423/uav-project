@@ -18,6 +18,8 @@ from rclpy.qos import (
 
 from std_msgs.msg import Bool
 
+from std_srvs.srv import SetBool
+
 from uav_interfaces.msg import TimedTrajectory, TrajectoryTrackingStatus
 
 from uav_navigation.models import Point3D
@@ -42,6 +44,7 @@ COMMAND_TOPIC = "/uav/control/astar_command"
 REFERENCE_POSE_TOPIC = "/uav/control/astar_reference_pose"
 REFERENCE_TWIST_TOPIC = "/uav/control/astar_reference_twist"
 TRACKING_STATUS_TOPIC = "/uav/control/astar_tracking_status"
+SET_TRACKING_ENABLE_SERVICE = "/uav/control/set_tracking_enable"
 
 
 def durable_qos() -> QoSProfile:
@@ -128,6 +131,11 @@ class TrajectoryFollowerNode(Node):
         self.create_subscription(
             Bool, VALIDITY_TOPIC, self._validity_callback, durable_qos()
         )
+        self._tracking_service = self.create_service(
+            SetBool,
+            SET_TRACKING_ENABLE_SERVICE,
+            self._tracking_enable_callback,
+        )
         self.create_subscription(
             Odometry, ODOMETRY_TOPIC, self._odometry_callback, live_qos()
         )
@@ -201,6 +209,14 @@ class TrajectoryFollowerNode(Node):
             yaw_rate_radps=message.twist.twist.angular.z,
         )
         self.controller.accept_odometry(state, now)
+
+    def _tracking_enable_callback(self, request, response):
+        accepted, message = self.controller.request_tracking_enable(
+            request.data, self._now_seconds()
+        )
+        response.success = accepted
+        response.message = message
+        return response
 
     def _tick(self) -> None:
         now = self._now_seconds()

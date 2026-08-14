@@ -73,6 +73,7 @@ Commands:
   px4-stream-offline-check  Validate the PX4-independent stream boundary
   px4-sitl-doctor     Read-only check of an already-running SITL/XRCE graph
   px4-sitl-stream-check  Explicitly stream to already-running SITL only
+  px4-sitl-flight-check  Fly one guarded ASTAR_EXPERT mission in running SITL
   topics         Inspect the current ROS graph and reject /fmu/in/ topics
   interfaces     Show custom interfaces and planner topic contracts
   shell          Open a clean interactive ROS 2 workspace shell
@@ -109,6 +110,7 @@ Examples:
   ./uav px4-stream-offline-check
   ./uav px4-sitl-doctor
   ./uav px4-sitl-stream-check
+  UAV_OFFLINE_TIMEOUT_SECONDS=150 ./uav px4-sitl-flight-check
   ./uav shell
 EOF
 }
@@ -261,11 +263,13 @@ show_interfaces() {
         uav_interfaces/msg/Px4OutputGateStatus \
         uav_interfaces/msg/Px4SetpointCandidate \
         uav_interfaces/msg/Px4StreamStatus \
+        uav_interfaces/msg/Px4FlightStatus \
         uav_interfaces/msg/Px4SyntheticTelemetry \
         uav_interfaces/srv/GenerateEpisode \
         uav_interfaces/srv/SetControlSource \
         uav_interfaces/srv/SetPx4OutputEnable \
         uav_interfaces/srv/SetPx4StreamEnable \
+        uav_interfaces/srv/SetPx4FlightEnable \
         uav_interfaces/action/RunEpisode
     do
         printf '\nInterface: %s\n' "$interface_name"
@@ -358,6 +362,8 @@ check_pure_control_imports() {
         "$module_root/px4_stream_models.py"
         "$module_root/px4_stream_state_machine.py"
         "$module_root/px4_stream_fixtures.py"
+        "$module_root/px4_flight_models.py"
+        "$module_root/px4_flight_state_machine.py"
     )
     local pattern
     pattern='^[[:space:]]*(from|import)[[:space:]]+(rclpy|omni|isaac|px4_msgs|pymavlink|pegasus|viewport|torch|tensorflow|onnxruntime)|/fmu/in/'
@@ -640,6 +646,43 @@ internal_px4_sitl_stream_check() {
         ros2 launch uav_px4_control px4_sitl_stream.launch.py "$@"
 }
 
+internal_px4_sitl_flight_check() {
+    clean_bootstrap required
+    require_px4_msgs
+    ros2 run uav_px4_control px4_sitl_doctor
+    local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-150}"
+    if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+        die "UAV_OFFLINE_TIMEOUT_SECONDS must be a positive integer"
+        return 1
+    fi
+    if ((timeout_seconds <= 10)); then
+        die "PX4 SITL flight timeout must exceed 10 seconds"
+        return 1
+    fi
+    local timestamp evidence_path
+    timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    evidence_path="$RUN_LOG_DIR/px4-sitl-flight_${timestamp}.json"
+    mkdir -p "$RUN_LOG_DIR"
+    warn "AUTHORIZED SITL FLIGHT: OFFBOARD, arm, takeoff, track, and land"
+    timeout "${timeout_seconds}s" \
+        ros2 launch uav_px4_control px4_sitl_flight.launch.py \
+        evidence_path:="$evidence_path" \
+        timeout_s:="$((timeout_seconds - 10)).0" "$@"
+    [[ -f "$evidence_path" ]] || die "flight evidence was not written"
+    python3 - "$evidence_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+print(f"Flight evidence: {path}")
+print(f"Flight success: {payload.get('success')}")
+if not payload.get("success"):
+    raise SystemExit(1)
+PY
+}
+
 internal_dispatch() {
     local command_name="${1:-}"
     shift || true
@@ -695,6 +738,9 @@ internal_dispatch() {
             ;;
         px4-sitl-stream-check)
             internal_px4_sitl_stream_check "$@"
+            ;;
+        px4-sitl-flight-check)
+            internal_px4_sitl_flight_check "$@"
             ;;
         topics)
             clean_bootstrap required
@@ -1172,6 +1218,13 @@ main() {
             require_workspace_overlay
             shift
             clean_environment_command px4-sitl-stream-check "$@"
+            ;;
+        px4-sitl-flight-check)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            clean_environment_command px4-sitl-flight-check "$@"
             ;;
         topics)
             require_repository

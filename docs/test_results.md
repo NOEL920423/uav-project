@@ -351,3 +351,17 @@ upstream candidate, and XRCE Agent loss each stopped publication, latched, and
 required explicit repair/reset/re-enable. PX4 stayed disarmed and outside
 OFFBOARD, and no `VehicleCommand` publisher existed. Detailed pass and failed
 attempt evidence is retained in `phase8_sitl_test_results.md`.
+
+## PX4 SITL full-flight milestone
+
+The accepted 2026-08-14 PX4 SIH run completed the full A* to controlled-landing
+sequence in 31.257 s. The monitor observed valid A*, B-spline and timed
+trajectory outputs, `ASTAR_EXPERT`, a maximum stream rate of 20.006 Hz, PX4
+OFFBOARD and arm acknowledgements, takeoff, tracking, a minimum 0.152 m goal
+distance, one accepted `NAV_LAND`, and final PX4 landed/disarmed evidence.
+
+After the implementation, `./uav verify` passed all seven packages with 266
+tests and no errors, failures, or skips. `px4-stream-offline-check` passed
+35/35 tests and 20/20 fixtures; `px4-gate-check` passed 23/23 tests plus its
+fault/latch/recovery launch; `mux-safety-check` passed; and `ml-test` remained
+14/14. Details are in `px4_sitl_flight_milestone.md`.

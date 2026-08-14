@@ -80,6 +80,43 @@ def test_waiting_prestart_tracking_and_duplicate_epoch_contract():
     assert controller.accepted_trajectory_count == 1
 
 
+def test_explicit_start_holds_and_resets_the_trajectory_epoch():
+    """Flight use may prestream zero before explicitly starting tracking."""
+    config = TrackingConfig(
+        require_explicit_start=True,
+        trajectory_validity_timeout_s=10.0,
+        odometry_timeout_s=10.0,
+    )
+    controller = _ready_controller(config, receipt=1.0)
+    assert controller.step(1.2).state == TrackingState.PRESTART_HOLD
+    accepted, message = controller.request_tracking_enable(True, 1.2)
+    assert accepted
+    assert "fresh trajectory epoch" in message
+    assert controller.tracking_epoch_s == 1.3
+    controller.accept_odometry(_odom(1.31), 1.31)
+    assert controller.step(1.31).state == TrackingState.TRACKING
+    accepted, _ = controller.request_tracking_enable(False, 1.32)
+    assert accepted
+    controller.accept_odometry(_odom(1.33), 1.33)
+    assert controller.step(1.33).state == TrackingState.PRESTART_HOLD
+
+
+def test_repeated_explicit_start_is_idempotent():
+    """A supervisor retry must not move an active trajectory epoch."""
+    config = TrackingConfig(
+        require_explicit_start=True,
+        trajectory_validity_timeout_s=10.0,
+        odometry_timeout_s=10.0,
+    )
+    controller = _ready_controller(config, receipt=1.0)
+    assert controller.request_tracking_enable(True, 1.2)[0]
+    epoch = controller.tracking_epoch_s
+    accepted, message = controller.request_tracking_enable(True, 1.3)
+    assert accepted
+    assert "already enabled" in message
+    assert controller.tracking_epoch_s == epoch
+
+
 def test_false_and_stale_validity_select_specific_hold_states():
     """False or stale validity cannot produce a tracking output."""
     controller = _ready_controller()

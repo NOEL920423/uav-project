@@ -22,4 +22,5 @@ trajectory_follower:
     maximum_terminal_wait_s: 2.0
     reject_wrong_frame: true
     require_validity_topic: true
+    require_explicit_start: false
     hold_command_epsilon: 1.0e-9

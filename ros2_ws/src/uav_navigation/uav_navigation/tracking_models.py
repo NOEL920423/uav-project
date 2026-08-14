@@ -54,6 +54,7 @@ class TrackingConfig:
     maximum_terminal_wait_s: float = 2.0
     reject_wrong_frame: bool = True
     require_validity_topic: bool = True
+    require_explicit_start: bool = False
     hold_command_epsilon: float = 1e-9
 
     def __post_init__(self) -> None:
@@ -92,7 +93,11 @@ class TrackingConfig:
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and nonnegative")
             object.__setattr__(self, name, value)
-        for name in ("reject_wrong_frame", "require_validity_topic"):
+        for name in (
+            "reject_wrong_frame",
+            "require_validity_topic",
+            "require_explicit_start",
+        ):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be a boolean")
         if (

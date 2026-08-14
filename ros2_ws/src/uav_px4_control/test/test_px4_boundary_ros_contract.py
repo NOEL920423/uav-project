@@ -53,7 +53,7 @@ string status_message
 
 
 def test_mapping_gate_config_contains_all_locked_parameters() -> None:
-    """Keep all 13 pure boundary parameters in one installed YAML."""
+    """Keep all pure boundary parameters in one installed YAML."""
     config = text(PACKAGE / "config/px4_mapping_gate.yaml")
     names = {
         line.strip().split(":", 1)[0]
@@ -75,6 +75,7 @@ def test_mapping_gate_config_contains_all_locked_parameters() -> None:
         "require_px4_ned_frame",
         "latch_faults",
         "require_explicit_enable",
+        "lock_vehicle_state_signature",
     }
     assert names == expected
 

@@ -49,6 +49,7 @@ class Px4MappingConfig:
     require_px4_ned_frame: bool = True
     latch_faults: bool = True
     require_explicit_enable: bool = True
+    lock_vehicle_state_signature: bool = True
 
     def __post_init__(self) -> None:
         """Reject expanded, non-finite, or contradictory limits."""
@@ -73,6 +74,7 @@ class Px4MappingConfig:
             "require_px4_ned_frame",
             "latch_faults",
             "require_explicit_enable",
+            "lock_vehicle_state_signature",
         )
         for name in boolean_fields:
             if not isinstance(getattr(self, name), bool):

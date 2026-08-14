@@ -6,6 +6,7 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).parents[1] / "uav_px4_control"
 STREAMER = PACKAGE / "px4_setpoint_streamer_node.py"
+FLIGHT_SUPERVISOR = PACKAGE / "px4_sitl_flight_supervisor_node.py"
 ALLOWED = {
     "/fmu/in/trajectory_setpoint",
     "/fmu/in/offboard_control_mode",
@@ -13,8 +14,12 @@ ALLOWED = {
 
 
 def runtime_sources():
-    """Return tracked-style runtime Python sources, excluding tests."""
-    return sorted(PACKAGE.glob("*.py"))
+    """Return Phase 8 runtime sources, excluding the later flight boundary."""
+    return sorted(
+        source
+        for source in PACKAGE.glob("*.py")
+        if source != FLIGHT_SUPERVISOR
+    )
 
 
 def test_exact_live_topic_allowlist_has_one_owner():

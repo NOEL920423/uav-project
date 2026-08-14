@@ -15,3 +15,4 @@ px4_mapping_gate:
     require_px4_ned_frame: true
     latch_faults: true
     require_explicit_enable: true
+    lock_vehicle_state_signature: true
