@@ -1,6 +1,24 @@
 # UAV Isaac Sim PX4 ROS2 Project
 
-This repository stores UAV simulation research scripts and small scene files.
+This repository stores the verified ROS 2/PX4/Isaac runtime, isolated ML
+workflows, tests, documentation, and retained historical prototypes.
+
+## Repository layout
+
+- `ros2_ws/src/`: active ROS 2 runtime packages and package-local tests.
+- `isaac/runtime/`: active Phase 9 Isaac/Pegasus bootstrap and pose bridge.
+- `uav_ml/`: BC, PPO, autoencoder, dataset, inference, and evaluation modules.
+- `scripts/ml/`: standalone IsaacLab/ML workflow entry points.
+- `tools/`: standalone diagnostics and developer utilities.
+- `tests/`: repository-level runtime and ML tests.
+- `legacy/`: preserved prototypes; never used by the active flight command.
+- `assets/usd/legacy_or_unclassified/`: retained USD scenes of unknown status.
+- `docs/`: current design, regression, milestone, and audit documentation.
+- `artifacts/`: documented future layout only; existing ignored artifacts remain
+  in their original locations.
+
+The supported project entry point is `./uav`. The verified Phase 9 simulator
+bootstrap is `isaac/runtime/bootstrap.py`.
 
 ## Main components
 

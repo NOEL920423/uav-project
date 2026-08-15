@@ -6,8 +6,8 @@
 
 ```text
 uav-project/
-├── legacy/                         # 等價驗證後才移入；Phase 0不移動
-├── ros2_isaac_scripts/             # 現有Isaac-side fallback
+├── isaac/runtime/                  # Phase 9 Isaac-side runtime
+├── legacy/                         # 已取代的Isaac/direct-PX4 prototypes
 ├── ros2_ws/
 │   └── src/
 │       ├── uav_interfaces/

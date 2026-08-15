@@ -1,6 +1,6 @@
 from pathlib import Path
 
-script_path = Path("/home/noel_614420090/uav-project/4.px4_astar.py")
+script_path = Path(__file__).resolve().parents[1] / "isaac_direct_pipeline" / "4.px4_astar.py"
 
 code = script_path.read_text(encoding="utf-8")
 

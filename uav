@@ -1005,13 +1005,13 @@ main() {
             require_repository
             shift
             [[ -x "$ISAACLAB_SH" ]] || die "IsaacLab launcher is missing: $ISAACLAB_SH"
-            TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p scripts/isaac_city_smoke.py "$@"
+            TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p scripts/ml/isaac_city_smoke.py "$@"
             ;;
         isaac-bc-collect)
             require_repository
             shift
             [[ -x "$ISAACLAB_SH" ]] || die "IsaacLab launcher is missing: $ISAACLAB_SH"
-            TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p scripts/collect_isaac_bc_demonstrations.py "$@"
+            TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p scripts/ml/collect_isaac_bc_demonstrations.py "$@"
             ;;
         latent-prepare)
             require_repository
@@ -1027,13 +1027,13 @@ main() {
             require_repository
             shift
             [[ -x "$ISAACLAB_SH" ]] || die "IsaacLab launcher is missing: $ISAACLAB_SH"
-            TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p scripts/evaluate_isaac_bc_closed_loop.py "$@"
+            TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p scripts/ml/evaluate_isaac_bc_closed_loop.py "$@"
             ;;
         ppo-train)
             require_repository
             shift
             [[ -x "$ISAACLAB_SH" ]] || die "IsaacLab launcher is missing: $ISAACLAB_SH"
-            TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p scripts/train_isaac_bc_initialized_ppo.py "$@"
+            TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p scripts/ml/train_isaac_bc_initialized_ppo.py "$@"
             ;;
         dataset-generate-synthetic)
             require_repository

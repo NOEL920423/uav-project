@@ -31,8 +31,8 @@ but are not imported by `uav_ml`. The canonical control sources are `HOLD`,
 `ASTAR_EXPERT`, `HUMAN_JOYSTICK`, and `NAVRL_POLICY`; the future learned source
 continues to use the existing velocity-command concept.
 
-Legacy files were inspected but left unchanged: the root and
-`ros2_isaac_scripts/` scene generators, dual-camera setup, PNG recorders,
+Legacy files were inspected and are retained under `legacy/`: the direct and
+Isaac-side scene generators, dual-camera setup, PNG recorders,
 episode manager, pose logger, and A*/PX4 runner. They can generate scenes and
 RGB PNG/CSV records, but the recorder currently proposes wall-time
 post-synchronization and the runner contains PX4 behavior. Neither is admitted
@@ -103,4 +103,3 @@ to a simulation-only velocity controller, and reports reset/collision/timeout.
 The adapter must target the installed Isaac 5.1/Isaac Lab 2.3 APIs or pin a
 different supported runtime. Until that is implemented and validated, the
 repository makes no real-dataset or closed-loop-navigation claim.
-

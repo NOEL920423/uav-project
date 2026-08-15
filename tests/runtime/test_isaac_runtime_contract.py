@@ -4,9 +4,9 @@ import ast
 from pathlib import Path
 
 
-ROOT = Path(__file__).parents[1]
-BOOTSTRAP = ROOT / "ros2_isaac_scripts" / "7.isaac_uav_bootstrap.py"
-BRIDGE = ROOT / "ros2_isaac_scripts" / "8.isaac_runtime_bridge.py"
+ROOT = Path(__file__).parents[2]
+BOOTSTRAP = ROOT / "isaac" / "runtime" / "bootstrap.py"
+BRIDGE = ROOT / "isaac" / "runtime" / "runtime_bridge.py"
 
 
 def test_embedded_runtime_scripts_parse():
@@ -33,7 +33,7 @@ def test_runtime_bridge_has_no_dataset_or_control_boundary():
 def test_bootstrap_uses_runtime_bridge_without_episode_manager_or_camera():
     """Phase 9 startup is isolated from dataset and camera lifecycle."""
     source = BOOTSTRAP.read_text(encoding="utf-8")
-    assert "8.isaac_runtime_bridge.py" in source
+    assert 'RUNTIME_BRIDGE_SCRIPT = SCRIPT_ROOT / "runtime_bridge.py"' in source
     assert "6.isaac_ros2_episode_manager.py" not in source
     assert "MonocularCamera" not in source
 

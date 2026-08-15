@@ -1,4 +1,7 @@
-# ROS 2 UAV 影像與 BC 訓練操作手冊
+# Legacy ROS 2 UAV 影像與 BC 訓練操作手冊
+
+本文件及同目錄 wrapper 描述的是已被取代的 pipeline，僅保留供歷史追溯，
+不是 Phase 9 的正式啟動方式。
 
 ## 1. 從 Windows PowerShell 登入
 
@@ -19,7 +22,7 @@ ssh noel_614420090@140.123.122.115
 ## 2. 啟動完整飛行系統
 
 ```bash
-~/uav-project/uav_pipeline.sh start-flight
+~/uav-project/legacy/pipeline/uav_pipeline.sh start-flight
 ```
 
 這個命令會：
@@ -33,14 +36,14 @@ ssh noel_614420090@140.123.122.115
 查看狀態：
 
 ```bash
-~/uav-project/uav_pipeline.sh status
+~/uav-project/legacy/pipeline/uav_pipeline.sh status
 ```
 
 ## 3. 跑一個 episode
 
 ```bash
-~/uav-project/uav_pipeline.sh run
-~/uav-project/uav_pipeline.sh wait
+~/uav-project/legacy/pipeline/uav_pipeline.sh run
+~/uav-project/legacy/pipeline/uav_pipeline.sh wait
 ```
 
 影像只會在 follower 回報 `ACTIVE`，也就是 PX4 已確認 OFFBOARD 與 ARMED 後開始；進入 LANDING 時會先關閉 FPV/TOP 與 pose 檔案。
@@ -48,9 +51,9 @@ ssh noel_614420090@140.123.122.115
 要跑下一個獨立 episode，先重置 Isaac/PX4：
 
 ```bash
-~/uav-project/uav_pipeline.sh restart-isaac
-~/uav-project/uav_pipeline.sh run
-~/uav-project/uav_pipeline.sh wait
+~/uav-project/legacy/pipeline/uav_pipeline.sh restart-isaac
+~/uav-project/legacy/pipeline/uav_pipeline.sh run
+~/uav-project/legacy/pipeline/uav_pipeline.sh wait
 ```
 
 `restart-isaac` 只允許在 IDLE、COMPLETE 或 FAILED 狀態執行，不會在飛行途中直接關閉。
@@ -72,14 +75,14 @@ WebRTC 僅用來監看畫面，可連可不連，不影響 off-screen FPV/TOP �
 訓練前關閉 Isaac/PX4，釋放 GPU：
 
 ```bash
-~/uav-project/uav_pipeline.sh stop-isaac
-~/uav-project/uav_pipeline.sh train
+~/uav-project/legacy/pipeline/uav_pipeline.sh stop-isaac
+~/uav-project/legacy/pipeline/uav_pipeline.sh train
 ```
 
 查看訓練狀態：
 
 ```bash
-~/uav-project/uav_pipeline.sh train-status
+~/uav-project/legacy/pipeline/uav_pipeline.sh train-status
 ```
 
 或直接監看 ROS 2 topic：
@@ -93,7 +96,7 @@ ros2 topic echo /uav_bc/training_status
 列出資料與模型：
 
 ```bash
-~/uav-project/uav_pipeline.sh list-data
+~/uav-project/legacy/pipeline/uav_pipeline.sh list-data
 ```
 
 ## 6. ROS 2 原始服務命令
@@ -121,4 +124,3 @@ Pose：~/uav-project/ros2_uav_pose_logs/uav_pose_bc_astar_*.csv
 ```
 
 目前的 BC target 是從專家飛行軌跡推導出的未來 0.5 秒 Isaac XYZ 速度。模型輸出尚未直接接到 PX4；必須先做更多場景資料、closed-loop 模擬驗證與安全限制，才能考慮讓模型控制飛行。
-

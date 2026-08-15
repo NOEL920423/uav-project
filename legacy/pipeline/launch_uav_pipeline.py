@@ -12,7 +12,7 @@ except Exception:
 # User settings
 # ============================================================
 
-SCRIPT_DIR = Path("/home/noel_614420090/uav-project")
+SCRIPT_DIR = Path(__file__).resolve().parents[1] / "isaac_direct_pipeline"
 
 SCENE_SCRIPT = SCRIPT_DIR / "2.scene_episode_generator.py"
 DUAL_CAMERA_SCRIPT = SCRIPT_DIR / "1.dual_uav_camera.py"

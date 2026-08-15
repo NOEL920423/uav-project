@@ -5,16 +5,17 @@
 Phase 2 extracts deterministic, position-only A* planning from the working
 legacy pipeline. It does not change or call any legacy script.
 
-- Canonical planning functions: `4.px4_astar.py`, specifically
+- Canonical planning functions:
+  `legacy/isaac_direct_pipeline/4.px4_astar.py`, specifically
   `obstacle_planning_radius`, `obstacle_validation_radius`, grid construction,
   endpoint recovery, `astar_search_grid`, RDP/densification, greedy fallback,
   continuous segment validation, retry with segment clearance, and the 2.5D
   overflight filter.
 - Cross-check: the corresponding function blocks in
-  `5.astar_waypoint_exporter.py` and
-  `ros2_isaac_scripts/5.astar_ros2_path_publisher.py` are byte-identical.
+  `legacy/isaac_direct_pipeline/5.astar_waypoint_exporter.py` and
+  `legacy/isaac_ros2_episode_pipeline/5.astar_ros2_path_publisher.py` are byte-identical.
 - Canonical obstacle geometry: the current high-rise scene generator
-  `ros2_isaac_scripts/2.scene_episode_generator.py` stores a yaw-invariant
+  `legacy/isaac_ros2_episode_pipeline/2.scene_episode_generator.py` stores a yaw-invariant
   bounding-circle radius `0.5 * hypot(width, depth)`. The Phase 2 planner trusts
   the positive finite radius supplied in `ObstacleArray`; USD/BBox extraction
   stays outside the pure planner.

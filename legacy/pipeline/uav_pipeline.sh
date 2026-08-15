@@ -7,7 +7,7 @@ TRAIN_PANE="uav:2.5"
 ISAAC_PANE="uav:3.0"
 ROS_WORKSPACE="/home/noel_614420090/uav_ros2_ws"
 ISAAC_ROOT="/home/noel_614420090/isaacsim/_build/linux-x86_64/release"
-BOOTSTRAP="/home/noel_614420090/uav-project/ros2_isaac_scripts/7.isaac_uav_bootstrap.py"
+BOOTSTRAP="/home/noel_614420090/uav-project/isaac/runtime/bootstrap.py"
 KIT_PATTERN="^${ISAAC_ROOT}/kit/kit .*isaacsim.exp.full.streaming.kit"
 
 source_ros() {
@@ -211,7 +211,7 @@ list_data() {
 
 usage() {
     cat <<'EOF'
-Usage: ~/uav-project/uav_pipeline.sh COMMAND
+Usage: ~/uav-project/legacy/pipeline/uav_pipeline.sh COMMAND
 
 Flight commands:
   start-flight    Start ROS flight nodes and automatic Isaac/Pegasus/PX4 bootstrap
@@ -243,4 +243,3 @@ case "${1:-help}" in
     help|-h|--help) usage ;;
     *) usage >&2; exit 2 ;;
 esac
-

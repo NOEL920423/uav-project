@@ -32,8 +32,8 @@ from pegasus.simulator.params import ROBOTS, SIMULATION_ENVIRONMENTS, WORLD_SETT
 from pxr import Gf, UsdGeom, UsdPhysics
 
 
-SCRIPT_ROOT = Path.home() / "uav-project" / "ros2_isaac_scripts"
-RUNTIME_BRIDGE_SCRIPT = SCRIPT_ROOT / "8.isaac_runtime_bridge.py"
+SCRIPT_ROOT = Path(__file__).resolve().parent
+RUNTIME_BRIDGE_SCRIPT = SCRIPT_ROOT / "runtime_bridge.py"
 PX4_ROOT = Path.home() / "PX4-Autopilot"
 VEHICLE_PRIM_PATH = "/World/quadrotor"
 PHASE9_ROOT = "/World/Phase9Runtime"

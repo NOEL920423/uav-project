@@ -55,6 +55,10 @@ pegasus_test/
 /tensorboard/
 /wandb/
 
+# Reserved Phase 9.5 artifact layout; keep only its documentation in Git
+/artifacts/*
+!/artifacts/README.md
+
 # Editor / OS
 .vscode/
 .DS_Store

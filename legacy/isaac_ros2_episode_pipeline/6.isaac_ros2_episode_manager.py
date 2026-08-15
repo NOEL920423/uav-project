@@ -42,7 +42,7 @@ except Exception as exc:
     ) from exc
 
 
-DEFAULT_SCRIPT_ROOT = Path.home() / "uav-project" / "ros2_isaac_scripts"
+DEFAULT_SCRIPT_ROOT = Path(__file__).resolve().parent
 
 GENERATED_PRIM_PATHS = [
     "/World/GeneratedEpisode",

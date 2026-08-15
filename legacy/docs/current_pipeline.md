@@ -1,10 +1,13 @@
-# 現行 UAV pipeline
+# Historical UAV pipeline audit
 
 本文件描述 2026-08-05 審計時真正存在的兩條 pipeline。它不是目標設計，也不把未運行的元件寫成已驗證成功。
+這些實作已由後續 ROS 2/PX4/Isaac milestones 取代，現保留於
+`legacy/` 供追溯，不是目前的啟動說明。
 
 ## 1. Legacy direct-pymavlink pipeline
 
-入口是 Isaac Script Editor 的 wrapper 或 `launch_uav_pipeline.py`。
+入口是 Isaac Script Editor 的 wrapper 或
+`legacy/pipeline/launch_uav_pipeline.py`。
 
 ```mermaid
 flowchart LR
@@ -40,7 +43,7 @@ flowchart LR
 
 ### Legacy state
 
-`4.px4_astar.py` 使用鬆散字串 phase：takeoff、mission、auto_land_wait、landing、hover、stopped。它沒有單一 published EpisodeState，也沒有所有規格要求的 failure states。
+`legacy/isaac_direct_pipeline/4.px4_astar.py` 使用鬆散字串 phase：takeoff、mission、auto_land_wait、landing、hover、stopped。它沒有單一 published EpisodeState，也沒有所有規格要求的 failure states。
 
 ### Legacy coupling
 
@@ -56,7 +59,7 @@ Isaac components共享同一 Python process，以下 lifecycle依賴 `builtins`�
 
 ## 2. 現有半 ROS 2 pipeline
 
-實際 shell wrapper是 `uav_pipeline.sh`，它假設已有名為 `uav` 的固定 tmux pane layout。Isaac bootstrap以 `--exec ros2_isaac_scripts/7.isaac_uav_bootstrap.py` 啟動 Pegasus/PX4與 episode manager；外部 launch只啟動 follower與 orchestrator。
+當時的 shell wrapper 現保留於 `legacy/pipeline/uav_pipeline.sh`，它假設已有名為 `uav` 的固定 tmux pane layout。這段描述是歷史狀態；目前 Phase 9 bootstrap 是 `isaac/runtime/bootstrap.py`，且不再啟動舊 episode manager。
 
 ```mermaid
 flowchart TB

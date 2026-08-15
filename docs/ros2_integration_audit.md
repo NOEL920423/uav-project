@@ -10,7 +10,7 @@
 
 目前不是「完全非 ROS 2」的專案，而是兩條並存的實作：
 
-1. 根目錄 legacy pipeline：場景、相機、PNG recorder、A*、PX4 控制都在 Isaac Sim Python process 內，以 `builtins` 串接，`4.px4_astar.py` 直接使用 `pymavlink`。
+1. 現存於 `legacy/isaac_direct_pipeline/` 的 legacy pipeline：場景、相機、PNG recorder、A*、PX4 控制都在 Isaac Sim Python process 內，以 `builtins` 串接，`4.px4_astar.py` 直接使用 `pymavlink`。
 2. 半 ROS 2 pipeline：Isaac 端仍用 `builtins` 執行場景、相機、recorder 與 A*，只把 `nav_msgs/Path` 與 Isaac pose 發到 ROS 2；外部 `uav_px4_control` 已用 `px4_msgs` 做 path following、OFFBOARD、ARM、LAND 與 mission orchestration。
 
 可保留的工作成果很多：現有 A* 有 obstacle inflation、RDP/greedy fallback、連續 segment validation、2.5D short-obstacle overflight、lookahead 與 lookahead shortcut validation；ROS 2 follower 已有 telemetry freshness、failsafe、command ACK、OFFBOARD/ARM confirmation 與 landing recovery。遷移應抽取並測試這些行為，不應重寫後丟失。
@@ -119,9 +119,9 @@ Nodes: none
 
 ## 5. 主要檔案審計
 
-### 5.1 `1.dual_uav_camera.py`
+### 5.1 `legacy/isaac_direct_pipeline/1.dual_uav_camera.py`
 
-- 與 `ros2_isaac_scripts/1.dual_uav_camera.py` SHA-256 完全相同。
+- 與 `legacy/isaac_ros2_episode_pipeline/1.dual_uav_camera.py` SHA-256 完全相同。
 - 建立 `/World/UAV_Camera_FPV` 與 `/World/UAV_Camera_Observer`，追蹤 `/World/quadrotor/body`。
 - 使用 `UsdGeom.Camera.Define`、`Gf.Matrix4d().SetLookAt()` 與 Kit update event subscription 更新 camera transform。
 - FPV 可依 body axis 或 motion direction；observer 支援 TOP/CHASE。
@@ -133,7 +133,7 @@ Isaac Sim 5.1 適配風險：viewport APIs 以 optional import 包裝；建立 c
 
 ### 5.2 場景產生器
 
-根目錄 `2.scene_episode_generator.py` 是較舊 cylinder 版本；ROS pipeline 使用 `ros2_isaac_scripts/2.scene_episode_generator.py` 的新版本：
+`legacy/isaac_direct_pipeline/2.scene_episode_generator.py` 是較舊 cylinder 版本；舊 ROS pipeline 使用 `legacy/isaac_ros2_episode_pipeline/2.scene_episode_generator.py` 的新版本：
 
 - 唯一 generated root：`/World/GeneratedEpisode`。
 - start `(0,0,0)`，target `(3,5,0)`；預設 8 obstacles。
@@ -146,9 +146,9 @@ Isaac Sim 5.1 適配風險：viewport APIs 以 optional import 包裝；建立 c
 
 ### 5.3 PNG recorder
 
-需求中提到的 `3.front_camera_png_recorder.py` 不存在。實際檔名是 `3.dual_camera_png_recorder.py`；`run_front_camera_recorder.py` 仍指向不存在的舊檔名，是已確認的 broken legacy wrapper。
+需求中提到的 `3.front_camera_png_recorder.py` 不存在。實際檔名是 `legacy/isaac_direct_pipeline/3.dual_camera_png_recorder.py`；`legacy/wrappers/run_front_camera_recorder.py` 仍指向不存在的舊檔名，是已確認的 broken legacy wrapper。
 
-根目錄 recorder 仍是 viewport capture；ROS pipeline 的 `ros2_isaac_scripts/3.dual_camera_png_recorder.py` 已改善為：
+direct legacy recorder 仍是 viewport capture；舊 ROS pipeline 的 `legacy/isaac_ros2_episode_pipeline/3.dual_camera_png_recorder.py` 已改善為：
 
 - Isaac Replicator off-screen render products，不依賴 active viewport。
 - 每個 camera 配一個 RGB annotator。
@@ -159,7 +159,7 @@ Isaac Sim 5.1 適配風險：viewport APIs 以 optional import 包裝；建立 c
 - start/stop 仍透過 legacy `builtins.start_front_camera_png_recorder()`。
 - 尚未發 ROS image topics、CameraInfo，也沒有 rosbag integration。
 
-### 5.4 `4.px4_astar.py`
+### 5.4 `legacy/isaac_direct_pipeline/4.px4_astar.py`
 
 既有 working safety/control 行為：
 
@@ -183,20 +183,20 @@ Isaac Sim 5.1 適配風險：viewport APIs 以 optional import 包裝；建立 c
 
 ### Isaac-side nodes
 
-`ros2_isaac_scripts/5.astar_ros2_path_publisher.py`：
+`legacy/isaac_ros2_episode_pipeline/5.astar_ros2_path_publisher.py`：
 
 - 約 4,533 行，是 A* runner 的大幅複製，而非可 import planner module。
 - `PUBLISH_ROS2_PATH_ONLY=True`，發 `/uav/planned_path` (`nav_msgs/Path`)。
 - `frame_id=px4_ned`，1 Hz，reliable + transient local。
 - 只發 final simplified path；沒有 raw/simplified/candidate/final 四層 topics。
 
-`5.ros2_uav_pose_publisher_logger.py`：
+`legacy/isaac_ros2_episode_pipeline/5.ros2_uav_pose_publisher_logger.py`：
 
 - 發 `/isaac_uav/pose` (`geometry_msgs/PoseStamped`)，10 Hz，frame `isaac_world`。
 - stamp 取 sim time；CSV 同時保留 wall/record/sim/ROS stamp。
 - pose 是原始 Isaac XYZ/quaternion，沒有轉成 NED，也沒有 velocity。
 
-`6.isaac_ros2_episode_manager.py`：
+`legacy/isaac_ros2_episode_pipeline/6.isaac_ros2_episode_manager.py`：
 
 - 發 `/uav_sim/status`、`/uav_sim/episode_id` (`std_msgs/String`, transient local)。
 - 提供 `/uav_sim/prepare_episode`、`cleanup`、`generate_scene`、`setup_cameras`、`start_recording`、`stop_recording`、`start_pose_logger`、`stop_pose_logger`、`plan_path`、`stop_all`、`get_status`，全部是 `std_srvs/Trigger`。
@@ -256,12 +256,12 @@ ground start/goal 的 NED z 強制設為 -2.0 m
 - scene root 是舊 cylinder；ROS copy 是新 high-rise/direct-blocker 版本。
 - recorder root 是舊 viewport；ROS copy是 Replicator dual-camera 版本；另有 `_b` backup。
 - pose logger root 與 ROS copy不同，ROS copy支援 episode ID/sim time。
-- `4.px4_astar.py` 與 `5.astar_ros2_path_publisher.py` 重複 planner/safety code，已開始 drift。
-- `5.astar_waypoint_exporter.py` 是另一份大型 planner/exporter。
+- `legacy/isaac_direct_pipeline/4.px4_astar.py` 與舊 Isaac-side path publisher 重複 planner/safety code，已開始 drift。
+- `legacy/isaac_direct_pipeline/5.astar_waypoint_exporter.py` 是另一份大型 planner/exporter。
 - `~/uav_ros2_ws` 根目錄還留有 standalone `ros2_lookahead_follower.py`、`ros2_joystick_teleop_px4.py` 等，package 內也有相同功能的新版。
 - 多個 `uav_ros2_phase2`、`uav_ros2_phase3`、`codex_backups`、`uav_ros2_backups` 是歷史副本，不應當作 canonical source。
-- `run_front_camera_recorder.py` 指向不存在檔案。
-- `uav_pipeline.sh` 綁定既有 `tmux uav` pane layout，並非通用 launch entry point。
+- `legacy/wrappers/run_front_camera_recorder.py` 指向不存在檔案。
+- `legacy/pipeline/uav_pipeline.sh` 綁定既有 `tmux uav` pane layout，並非通用 launch entry point。
 
 Phase 0 不搬動或刪除任何 legacy file。
 
@@ -283,7 +283,7 @@ Phase 0 不搬動或刪除任何 legacy file。
 
 ## 10. Phase 0 architecture decisions
 
-1. 保留 `ros2_isaac_scripts` 與 direct-`pymavlink` runner，直到 ROS 2 controller 完成 integration flight。
+1. 保留現位於 `legacy/` 的 Isaac-side 與 direct-`pymavlink` runner，直到 ROS 2 controller 完成 integration flight。
 2. 新 ROS canonical source 放在本 repository 的 `ros2_ws/src`，避免繼續在未版控的 `~/uav_ros2_ws` 修改。
 3. planner/smoothing/validation/metrics 先做純 Python modules，不 import Isaac、rclpy、pymavlink。
 4. obstacle safety envelope 由單一 module與 immutable config產生，A*、simplifier、B-spline validator、lookahead validator共用。

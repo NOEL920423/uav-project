@@ -21,7 +21,7 @@ runtime.
 
 The implementation deliberately reuses these repository components:
 
-- `7.isaac_uav_bootstrap.py` for Pegasus environment, Iris construction,
+- `isaac/runtime/bootstrap.py` for Pegasus environment, Iris construction,
   PX4 MAVLink backend, timeline startup, and PX4 auto-launch;
 - the existing Isaac stage transform technique used by the legacy episode
   manager, reduced to a pose-only runtime adapter;
@@ -104,7 +104,7 @@ adapter in terminal 2:
 cd /home/noel_614420090/isaacsim/_build/linux-x86_64/release
 env -u DISPLAY -u WAYLAND_DISPLAY \
   ./isaac-sim.streaming.sh --livestream 2 \
-  --exec /home/noel_614420090/uav-project/ros2_isaac_scripts/7.isaac_uav_bootstrap.py
+  --exec /home/noel_614420090/uav-project/isaac/runtime/bootstrap.py
 ```
 
 After the Isaac bootstrap reports that the runtime bridge has started, run the
@@ -181,7 +181,7 @@ Commands executed after all runtime processes were stopped:
 
 ```bash
 ./uav test
-pytest -q tests/test_isaac_runtime_contract.py
+pytest -q tests/runtime/test_isaac_runtime_contract.py
 ./uav verify
 git diff --check
 bash -n uav
