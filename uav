@@ -75,6 +75,8 @@ Commands:
   px4-sitl-stream-check  Explicitly stream to already-running SITL only
   px4-sitl-flight-check  Fly one guarded ASTAR_EXPERT mission in running SITL
   isaac-runtime-flight-check  Require Isaac evidence for the guarded mission
+  phase10a-expert-episode  Record and validate one Phase 9 A* expert episode
+  phase10a-dataset-check  Validate/rebuild the Phase 10A dataset artifact
   topics         Inspect the current ROS graph and reject /fmu/in/ topics
   interfaces     Show custom interfaces and planner topic contracts
   shell          Open a clean interactive ROS 2 workspace shell
@@ -113,6 +115,8 @@ Examples:
   ./uav px4-sitl-stream-check
   UAV_OFFLINE_TIMEOUT_SECONDS=150 ./uav px4-sitl-flight-check
   UAV_OFFLINE_TIMEOUT_SECONDS=180 ./uav isaac-runtime-flight-check
+  UAV_OFFLINE_TIMEOUT_SECONDS=180 ./uav phase10a-expert-episode
+  ./uav phase10a-dataset-check
   ./uav shell
 EOF
 }
@@ -693,6 +697,29 @@ internal_isaac_runtime_flight_check() {
         "$@"
 }
 
+internal_phase10a_expert_episode() {
+    clean_bootstrap required
+    require_px4_msgs
+    local camera_format
+    set +e
+    camera_format="$(timeout 15s ros2 topic echo \
+        /uav/isaac/fpv/image/compressed sensor_msgs/msg/CompressedImage \
+        --once --field format 2>/dev/null)"
+    local camera_status=$?
+    set -e
+    if ((camera_status != 0)) || [[ "$camera_format" != *"jpeg"* ]]; then
+        die "Phase 10A FPV JPEG stream is not ready; start Isaac with UAV_PHASE10A_CAMERA=1"
+        return 1
+    fi
+    internal_px4_sitl_flight_check \
+        use_external_scene:=true \
+        require_isaac_evidence:=true \
+        record_expert_dataset:=true \
+        dataset_root:="$REPO_ROOT/artifacts/datasets/bc_expert_v1" \
+        start_delay_s:=5.0 \
+        "$@"
+}
+
 internal_dispatch() {
     local command_name="${1:-}"
     shift || true
@@ -754,6 +781,9 @@ internal_dispatch() {
             ;;
         isaac-runtime-flight-check)
             internal_isaac_runtime_flight_check "$@"
+            ;;
+        phase10a-expert-episode)
+            internal_phase10a_expert_episode "$@"
             ;;
         topics)
             clean_bootstrap required
@@ -1238,6 +1268,23 @@ main() {
             require_workspace_overlay
             shift
             clean_environment_command "$command_name" "$@"
+            ;;
+        phase10a-expert-episode)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            if [[ -e "$REPO_ROOT/artifacts/datasets/bc_expert_v1" ]]; then
+                die "refusing to overwrite artifacts/datasets/bc_expert_v1"
+                return 1
+            fi
+            clean_environment_command phase10a-expert-episode "$@"
+            python3 -m uav_ml.tools.validate_expert_dataset
+            ;;
+        phase10a-dataset-check)
+            require_repository
+            shift
+            python3 -m uav_ml.tools.validate_expert_dataset "$@"
             ;;
         topics)
             require_repository

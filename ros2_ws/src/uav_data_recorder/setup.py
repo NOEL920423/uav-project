@@ -25,6 +25,8 @@ setup(
     entry_points={
         "console_scripts": [
             "data_recorder_node = uav_data_recorder.data_recorder_node:main",
+            "expert_dataset_recorder = "
+            "uav_data_recorder.expert_dataset_recorder_node:main",
         ],
     },
 )

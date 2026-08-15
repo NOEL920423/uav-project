@@ -37,6 +37,8 @@ def generate_launch_description() -> LaunchDescription:
     start_delay_s = LaunchConfiguration("start_delay_s")
     use_external_scene = LaunchConfiguration("use_external_scene")
     require_isaac_evidence = LaunchConfiguration("require_isaac_evidence")
+    record_expert_dataset = LaunchConfiguration("record_expert_dataset")
+    dataset_root = LaunchConfiguration("dataset_root")
     return LaunchDescription([
         DeclareLaunchArgument(
             "evidence_path",
@@ -47,6 +49,13 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("use_external_scene", default_value="false"),
         DeclareLaunchArgument(
             "require_isaac_evidence", default_value="false"
+        ),
+        DeclareLaunchArgument(
+            "record_expert_dataset", default_value="false"
+        ),
+        DeclareLaunchArgument(
+            "dataset_root",
+            default_value="artifacts/datasets/bc_expert_v1",
         ),
         Node(
             package="uav_scene_bridge",
@@ -79,6 +88,17 @@ def generate_launch_description() -> LaunchDescription:
         Node(
             package="uav_px4_control",
             executable="px4_odometry_bridge_node",
+            output="screen",
+        ),
+        Node(
+            package="uav_data_recorder",
+            executable="expert_dataset_recorder",
+            parameters=[{
+                "dataset_root": dataset_root,
+                "episode_id": "episode_000001",
+                "synchronization_tolerance_s": 0.100,
+            }],
+            condition=IfCondition(record_expert_dataset),
             output="screen",
         ),
         Node(

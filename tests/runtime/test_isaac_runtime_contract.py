@@ -15,14 +15,13 @@ def test_embedded_runtime_scripts_parse():
     ast.parse(BRIDGE.read_text(encoding="utf-8"))
 
 
-def test_runtime_bridge_has_no_dataset_or_control_boundary():
-    """The embedded adapter cannot record data or command PX4."""
+def test_runtime_bridge_has_no_storage_or_control_boundary():
+    """The embedded adapter cannot write datasets or command PX4."""
     source = BRIDGE.read_text(encoding="utf-8")
     forbidden = (
         "csv.writer",
         "open(",
         "MonocularCamera",
-        "omni.replicator",
         "/fmu/in/",
         "VehicleCommand",
         "ControlCommand",
@@ -30,12 +29,20 @@ def test_runtime_bridge_has_no_dataset_or_control_boundary():
     assert not [token for token in forbidden if token in source]
 
 
-def test_bootstrap_uses_runtime_bridge_without_episode_manager_or_camera():
-    """Phase 9 startup is isolated from dataset and camera lifecycle."""
+def test_bootstrap_uses_runtime_bridge_without_episode_manager():
+    """Phase 9 startup remains isolated from episode lifecycle."""
     source = BOOTSTRAP.read_text(encoding="utf-8")
     assert 'RUNTIME_BRIDGE_SCRIPT = SCRIPT_ROOT / "runtime_bridge.py"' in source
     assert "6.isaac_ros2_episode_manager.py" not in source
     assert "MonocularCamera" not in source
+
+
+def test_phase10a_camera_is_explicitly_opt_in():
+    """Default Phase 9 runtime must not pay the camera rendering cost."""
+    source = BRIDGE.read_text(encoding="utf-8")
+    assert 'os.environ.get("UAV_PHASE10A_CAMERA", "0") == "1"' in source
+    assert "/uav/isaac/fpv/image/compressed" in source
+    assert "JPEG_QUALITY = 85" in source
 
 
 def test_isaac_adapter_uses_standard_ros_messages_only():
@@ -43,4 +50,5 @@ def test_isaac_adapter_uses_standard_ros_messages_only():
     source = BRIDGE.read_text(encoding="utf-8")
     assert "geometry_msgs.msg" in source
     assert "std_msgs.msg" in source
+    assert "sensor_msgs.msg" in source
     assert "uav_interfaces" not in source

@@ -1,0 +1,533 @@
+"""Record one synchronized Phase 9 ASTAR_EXPERT episode as BC dataset V1."""
+
+from __future__ import annotations
+
+import csv
+import json
+import math
+import time
+from collections import Counter, deque
+from pathlib import Path
+
+from geometry_msgs.msg import PoseStamped, TwistStamped
+
+from nav_msgs.msg import Odometry
+
+import rclpy
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+from sensor_msgs.msg import CompressedImage
+
+from uav_data_recorder.expert_dataset_contract import (
+    CSV_FIELDS,
+    DATASET_VERSION,
+    SAMPLE_RATE_HZ,
+    SYNCHRONIZATION_TOLERANCE_S,
+    TimedValue,
+    contract_manifest,
+    episode_outcome_success,
+    goal_features,
+    nearest,
+    ned_to_body,
+    normalize_action,
+    previous,
+    timestamp_seconds,
+    yaw_from_quaternion,
+)
+
+from uav_interfaces.msg import ControlMuxStatus, Px4FlightStatus
+
+
+IMAGE_TOPIC = "/uav/isaac/fpv/image/compressed"
+ODOMETRY_TOPIC = "/uav/vehicle/odometry"
+EXPERT_COMMAND_TOPIC = "/uav/control/astar_command"
+MUX_STATUS_TOPIC = "/uav/control/mux_status"
+FLIGHT_STATUS_TOPIC = "/uav/px4/flight_status"
+GOAL_TOPIC = "/uav/scene/goal"
+EPISODE_ID = "episode_000001"
+
+
+def _atomic_json(path: Path, payload: dict) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+    temporary.replace(path)
+
+
+class ExpertDatasetRecorderNode(Node):
+    """Join image/state/expert streams and finalize exactly one episode."""
+
+    def __init__(self) -> None:
+        """Create output paths, buffers, subscriptions, and join timer."""
+        super().__init__("expert_dataset_recorder")
+        self.declare_parameter(
+            "dataset_root", "artifacts/datasets/bc_expert_v1"
+        )
+        self.declare_parameter("episode_id", EPISODE_ID)
+        self.declare_parameter(
+            "synchronization_tolerance_s", SYNCHRONIZATION_TOLERANCE_S
+        )
+        self.dataset_root = Path(
+            str(self.get_parameter("dataset_root").value)
+        ).expanduser().resolve()
+        self.episode_id = str(self.get_parameter("episode_id").value)
+        self.tolerance_s = float(
+            self.get_parameter("synchronization_tolerance_s").value
+        )
+        if self.episode_id != EPISODE_ID:
+            raise ValueError("Phase 10A records exactly episode_000001")
+        if not math.isfinite(self.tolerance_s) or self.tolerance_s <= 0.0:
+            raise ValueError("synchronization tolerance must be positive")
+        if abs(self.tolerance_s - SYNCHRONIZATION_TOLERANCE_S) > 1e-9:
+            raise ValueError(
+                "Phase 10A synchronization tolerance is fixed at 0.100 s"
+            )
+
+        self.episode_dir = self.dataset_root / self.episode_id
+        if self.episode_dir.exists():
+            raise FileExistsError(
+                f"refusing to overwrite existing episode: {self.episode_dir}"
+            )
+        self.images_dir = self.episode_dir / "images"
+        self.images_dir.mkdir(parents=True)
+        self.started_utc = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+        )
+        self._write_initial_metadata()
+
+        self._states: deque[TimedValue] = deque(maxlen=400)
+        self._actions: deque[TimedValue] = deque(maxlen=400)
+        self._mux: deque[TimedValue] = deque(maxlen=400)
+        self._flight: deque[TimedValue] = deque(maxlen=400)
+        self._images: deque[TimedValue] = deque(maxlen=20)
+        self._goal: PoseStamped | None = None
+        self._rows: list[dict] = []
+        self._rejections: Counter[str] = Counter()
+        self._timeline: list[dict] = []
+        self._last_phase = ""
+        self._last_status: Px4FlightStatus | None = None
+        self._observed_goal_reached = False
+        self._observed_landing_commanded = False
+        self._observed_landed_after_landing = False
+        self._finalized = False
+
+        live = QoSProfile(depth=50, reliability=ReliabilityPolicy.RELIABLE)
+        durable = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(
+            CompressedImage, IMAGE_TOPIC, self._image_callback, live
+        )
+        self.create_subscription(
+            Odometry, ODOMETRY_TOPIC, self._state_callback, live
+        )
+        self.create_subscription(
+            TwistStamped, EXPERT_COMMAND_TOPIC, self._action_callback, live
+        )
+        self.create_subscription(
+            ControlMuxStatus, MUX_STATUS_TOPIC, self._mux_callback, live
+        )
+        self.create_subscription(
+            Px4FlightStatus, FLIGHT_STATUS_TOPIC, self._flight_callback, live
+        )
+        self.create_subscription(
+            PoseStamped, GOAL_TOPIC, self._goal_callback, durable
+        )
+        self._timer = self.create_timer(0.02, self._process_ready_images)
+        self.get_logger().info(
+            f"PHASE10A_RECORDER_READY root={self.dataset_root} "
+            f"rate={SAMPLE_RATE_HZ:.1f}Hz tolerance={self.tolerance_s:.3f}s"
+        )
+
+    def _write_initial_metadata(self) -> None:
+        manifest = contract_manifest()
+        manifest.update({
+            "created_utc": self.started_utc,
+            "episodes": [self.episode_id],
+            "episode_count": 0,
+            "sample_count": 0,
+            "status": "recording",
+        })
+        self.dataset_root.mkdir(parents=True, exist_ok=True)
+        _atomic_json(self.dataset_root / "dataset_manifest.json", manifest)
+        _atomic_json(self.episode_dir / "episode.json", {
+            "dataset_version": DATASET_VERSION,
+            "episode_id": self.episode_id,
+            "started_utc": self.started_utc,
+            "status": "recording",
+            "success": False,
+            "failure": "episode not finalized",
+        })
+
+    @staticmethod
+    def _timed(message) -> TimedValue | None:
+        try:
+            return TimedValue(timestamp_seconds(message.header.stamp), message)
+        except ValueError:
+            return None
+
+    def _state_callback(self, message: Odometry) -> None:
+        item = self._timed(message)
+        if item is not None and message.header.frame_id == "px4_ned":
+            self._states.append(item)
+
+    def _action_callback(self, message: TwistStamped) -> None:
+        item = self._timed(message)
+        if item is not None and message.header.frame_id == "px4_ned":
+            self._actions.append(item)
+
+    def _mux_callback(self, message: ControlMuxStatus) -> None:
+        item = self._timed(message)
+        if item is not None:
+            self._mux.append(item)
+
+    def _flight_callback(self, message: Px4FlightStatus) -> None:
+        item = self._timed(message)
+        if item is None:
+            return
+        self._flight.append(item)
+        self._last_status = message
+        self._observed_goal_reached |= bool(message.goal_reached)
+        self._observed_landing_commanded |= bool(message.landing_commanded)
+        self._observed_landed_after_landing |= bool(
+            message.landed and message.landing_commanded
+        )
+        if message.state != self._last_phase:
+            self._timeline.append({
+                "timestamp_s": item.timestamp_s,
+                "phase": message.state,
+                "altitude_m": float(message.altitude_m),
+                "goal_distance_m": float(message.goal_distance_m),
+                "offboard": bool(message.offboard_active),
+                "armed": bool(message.vehicle_armed),
+                "landed": bool(message.landed),
+            })
+            self._last_phase = message.state
+
+    def _goal_callback(self, message: PoseStamped) -> None:
+        if message.header.frame_id == "isaac_world":
+            self._goal = message
+
+    def _image_callback(self, message: CompressedImage) -> None:
+        item = self._timed(message)
+        if item is None:
+            self._rejections["invalid_image_timestamp"] += 1
+            return
+        self._images.append(TimedValue(item.timestamp_s, bytes(message.data)))
+
+    def _process_ready_images(self) -> None:
+        now = self.get_clock().now().nanoseconds / 1e9
+        while (
+            self._images
+            and now - self._images[0].timestamp_s >= self.tolerance_s
+        ):
+            self._process_image(self._images.popleft())
+
+    def _reject(self, reason: str) -> None:
+        self._rejections[reason] += 1
+
+    def _process_image(self, image: TimedValue) -> None:
+        if self._goal is None:
+            self._reject("goal_missing")
+            return
+        state = nearest(list(self._states), image.timestamp_s)
+        action = nearest(list(self._actions), image.timestamp_s)
+        mux = nearest(list(self._mux), image.timestamp_s)
+        flight = nearest(list(self._flight), image.timestamp_s)
+        joined = {
+            "state": state, "action": action, "mux": mux, "flight": flight
+        }
+        missing = next(
+            (name for name, item in joined.items() if item is None), None
+        )
+        if missing is not None:
+            self._reject(f"{missing}_missing")
+            return
+        for name, item in joined.items():
+            assert item is not None
+            if abs(item.timestamp_s - image.timestamp_s) > self.tolerance_s:
+                self._reject(f"{name}_over_tolerance")
+                return
+        assert state is not None and action is not None
+        assert mux is not None and flight is not None
+        mux_message = mux.value
+        flight_message = flight.value
+        if (
+            mux_message.active_source != "ASTAR_EXPERT"
+            or not mux_message.selected_command_valid
+            or mux_message.hold_active
+        ):
+            self._reject("mux_not_astar_expert")
+            return
+        if (
+            flight_message.state != "TRACKING"
+            or not flight_message.follower_command_valid
+            or not flight_message.astar_selected
+        ):
+            self._reject("not_tracking")
+            return
+        prior_action = previous(list(self._actions), action)
+        if prior_action is None:
+            self._reject("previous_action_missing")
+            return
+        prior_state = nearest(list(self._states), prior_action.timestamp_s)
+        if (
+            prior_state is None
+            or abs(prior_state.timestamp_s - prior_action.timestamp_s)
+            > self.tolerance_s
+        ):
+            self._reject("previous_action_state_over_tolerance")
+            return
+        try:
+            row = self._build_row(
+                image, state, action, prior_action, prior_state, flight
+            )
+        except (ValueError, TypeError, OverflowError) as error:
+            self.get_logger().warning(
+                f"rejecting invalid synchronized sample: {error}"
+            )
+            self._reject("invalid_values")
+            return
+        if not image.value.startswith(b"\xff\xd8"):
+            self._reject("image_not_jpeg")
+            return
+        sample_id = len(self._rows) + 1
+        relative = (
+            Path(self.episode_id)
+            / "images"
+            / f"frame_{sample_id:06d}.jpg"
+        )
+        output = self.dataset_root / relative
+        output.write_bytes(image.value)
+        row["sample_id"] = sample_id
+        row["image_path"] = str(relative)
+        self._rows.append(row)
+
+    def _build_row(
+        self,
+        image: TimedValue,
+        state: TimedValue,
+        action: TimedValue,
+        prior_action: TimedValue,
+        prior_state: TimedValue,
+        flight: TimedValue,
+    ) -> dict:
+        odometry = state.value
+        orientation = odometry.pose.pose.orientation
+        yaw = yaw_from_quaternion(
+            orientation.x, orientation.y, orientation.z, orientation.w
+        )
+        velocity = odometry.twist.twist.linear
+        velocity_body = ned_to_body(velocity.x, velocity.y, yaw)
+        goal = self._goal.pose.position
+        goal_body = goal_features(
+            odometry.pose.pose.position.x,
+            odometry.pose.pose.position.y,
+            goal.y,
+            goal.x,
+            yaw,
+        )
+        command = action.value.twist
+        expert_body = ned_to_body(command.linear.x, command.linear.y, yaw)
+        expert_physical = (expert_body[0], expert_body[1], command.angular.z)
+        expert_target = normalize_action(*expert_physical)
+
+        previous_odometry = prior_state.value
+        previous_orientation = previous_odometry.pose.pose.orientation
+        previous_yaw = yaw_from_quaternion(
+            previous_orientation.x,
+            previous_orientation.y,
+            previous_orientation.z,
+            previous_orientation.w,
+        )
+        prior_command = prior_action.value.twist
+        previous_body = ned_to_body(
+            prior_command.linear.x, prior_command.linear.y, previous_yaw
+        )
+        previous_physical = (
+            previous_body[0], previous_body[1], prior_command.angular.z
+        )
+        previous_target = normalize_action(*previous_physical)
+        values = (
+            image.timestamp_s,
+            state.timestamp_s,
+            action.timestamp_s,
+            prior_action.timestamp_s,
+            *velocity_body,
+            *goal_body,
+            *expert_physical,
+            *expert_target,
+            *previous_physical,
+            *previous_target,
+        )
+        if not all(math.isfinite(float(value)) for value in values):
+            raise ValueError("sample contains non-finite values")
+        position = odometry.pose.pose.position
+        return {
+            "episode_id": self.episode_id,
+            "sample_id": 0,
+            "image_timestamp_s": image.timestamp_s,
+            "image_path": "",
+            "state_timestamp_s": state.timestamp_s,
+            "expert_action_timestamp_s": action.timestamp_s,
+            "previous_action_timestamp_s": prior_action.timestamp_s,
+            "state_image_error_s": abs(state.timestamp_s - image.timestamp_s),
+            "expert_action_image_error_s": abs(
+                action.timestamp_s - image.timestamp_s
+            ),
+            "position_north_m": float(position.x),
+            "position_east_m": float(position.y),
+            "position_down_m": float(position.z),
+            "yaw_ned_rad": yaw,
+            "body_velocity_forward_mps": velocity_body[0],
+            "body_velocity_right_mps": velocity_body[1],
+            "goal_direction_forward": goal_body[0],
+            "goal_direction_right": goal_body[1],
+            "raw_goal_distance_m": goal_body[2],
+            "normalized_goal_distance": goal_body[3],
+            "expert_v_forward_mps": expert_physical[0],
+            "expert_v_right_mps": expert_physical[1],
+            "expert_yaw_rate_radps": expert_physical[2],
+            "expert_action_forward": expert_target[0],
+            "expert_action_right": expert_target[1],
+            "expert_action_yaw_rate": expert_target[2],
+            "previous_v_forward_mps": previous_physical[0],
+            "previous_v_right_mps": previous_physical[1],
+            "previous_yaw_rate_radps": previous_physical[2],
+            "previous_action_forward": previous_target[0],
+            "previous_action_right": previous_target[1],
+            "previous_action_yaw_rate": previous_target[2],
+            "mission_phase": flight.value.state,
+            "success": False,
+            "failure": "episode not finalized",
+        }
+
+    def finalize(self) -> None:
+        """Flush pending images and publish final episode metadata."""
+        if self._finalized:
+            return
+        self._finalized = True
+        while self._images:
+            self._process_image(self._images.popleft())
+        status = self._last_status
+        success = episode_outcome_success(
+            "" if status is None else status.state,
+            (
+                "flight status unavailable"
+                if status is None else status.failure_reason
+            ),
+            self._observed_goal_reached,
+            self._observed_landing_commanded,
+            self._observed_landed_after_landing,
+        )
+        failure = "" if success else (
+            "flight status unavailable" if status is None else
+            status.failure_reason
+            or f"terminal flight state was {status.state}"
+        )
+        for row in self._rows:
+            row["success"] = success
+            row["failure"] = failure
+        with (self.episode_dir / "samples.csv").open(
+            "w", newline="", encoding="utf-8"
+        ) as stream:
+            writer = csv.DictWriter(stream, fieldnames=CSV_FIELDS)
+            writer.writeheader()
+            writer.writerows(self._rows)
+        image_times = [float(row["image_timestamp_s"]) for row in self._rows]
+        rate = 0.0
+        if len(image_times) > 1 and image_times[-1] > image_times[0]:
+            rate = (len(image_times) - 1) / (image_times[-1] - image_times[0])
+        episode = {
+            "dataset_version": DATASET_VERSION,
+            "episode_id": self.episode_id,
+            "started_utc": self.started_utc,
+            "completed_utc": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+            ),
+            "status": "complete" if success else "failed",
+            "success": success,
+            "failure": failure,
+            "sample_count": len(self._rows),
+            "rejected_sample_count": sum(self._rejections.values()),
+            "rejections_by_reason": dict(sorted(self._rejections.items())),
+            "observed_sampling_rate_hz": rate,
+            "maximum_state_image_error_s": max(
+                (float(row["state_image_error_s"]) for row in self._rows),
+                default=None,
+            ),
+            "maximum_action_image_error_s": max(
+                (
+                    float(row["expert_action_image_error_s"])
+                    for row in self._rows
+                ),
+                default=None,
+            ),
+            "timeline": self._timeline,
+            "accumulated_flight_evidence": {
+                "goal_reached": self._observed_goal_reached,
+                "landing_commanded": self._observed_landing_commanded,
+                "landed_after_landing_command": (
+                    self._observed_landed_after_landing
+                ),
+                "terminal_complete": bool(
+                    status is not None and status.state == "COMPLETE"
+                ),
+            },
+            "terminal_flight_status": (
+                None if status is None else {
+                    "state": status.state,
+                    "goal_reached": bool(status.goal_reached),
+                    "landing_commanded": bool(status.landing_commanded),
+                    "landed": bool(status.landed),
+                    "offboard_active": bool(status.offboard_active),
+                    "vehicle_armed": bool(status.vehicle_armed),
+                    "failure_reason": status.failure_reason,
+                }
+            ),
+        }
+        _atomic_json(self.episode_dir / "episode.json", episode)
+        manifest = contract_manifest()
+        manifest.update({
+            "created_utc": self.started_utc,
+            "episodes": [self.episode_id],
+            "episode_count": 1,
+            "sample_count": len(self._rows),
+            "all_success": success,
+            "status": "complete" if success else "failed",
+        })
+        _atomic_json(self.dataset_root / "dataset_manifest.json", manifest)
+        self.get_logger().info(
+            f"PHASE10A_DATASET_FINALIZED success={str(success).lower()} "
+            f"samples={len(self._rows)} "
+            f"rejected={sum(self._rejections.values())}"
+        )
+
+    def destroy_node(self):
+        """Finalize the dataset before releasing ROS resources."""
+        self.finalize()
+        return super().destroy_node()
+
+
+def main(args=None) -> int:
+    """Run the finite episode recorder until the flight launch shuts down."""
+    rclpy.init(args=args)
+    node = ExpertDatasetRecorderNode()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    main()
