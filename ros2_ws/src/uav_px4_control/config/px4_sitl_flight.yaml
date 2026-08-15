@@ -41,3 +41,5 @@ px4_sitl_flight_supervisor:
     goal_east_m: 0.5
     expected_sitl_process_fragment: >-
       /PX4-Autopilot/build/px4_sitl_default/bin/px4
+    use_external_scene: false
+    external_runtime_timeout_s: 0.50

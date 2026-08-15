@@ -7,7 +7,7 @@ manual Pegasus UI sequence used by this project:
 1. load the default environment;
 2. spawn an Iris with the PX4 MAVLink backend;
 3. start the physics timeline (which auto-launches PX4 SITL);
-4. start the Isaac ROS 2 episode manager.
+4. start the narrow Phase 9 pose/scene/runtime bridge.
 
 The episode itself is still started by the external ROS 2 orchestrator, so
 booting Isaac Sim never arms the vehicle by itself.
@@ -25,16 +25,38 @@ import omni.kit.app
 import omni.usd
 
 from pegasus.simulator.logic.backends import PX4MavlinkBackend, PX4MavlinkBackendConfig
-from pegasus.simulator.logic.graphical_sensors.monocular_camera import MonocularCamera
 from pegasus.simulator.logic.interface.pegasus_interface import PegasusInterface
 from pegasus.simulator.logic.vehicles.multirotor import Multirotor, MultirotorConfig
 from pegasus.simulator.params import ROBOTS, SIMULATION_ENVIRONMENTS, WORLD_SETTINGS
 
+from pxr import Gf, UsdGeom, UsdPhysics
+
 
 SCRIPT_ROOT = Path.home() / "uav-project" / "ros2_isaac_scripts"
-MANAGER_SCRIPT = SCRIPT_ROOT / "6.isaac_ros2_episode_manager.py"
+RUNTIME_BRIDGE_SCRIPT = SCRIPT_ROOT / "8.isaac_runtime_bridge.py"
 PX4_ROOT = Path.home() / "PX4-Autopilot"
 VEHICLE_PRIM_PATH = "/World/quadrotor"
+PHASE9_ROOT = "/World/Phase9Runtime"
+
+
+def create_phase9_scene(stage) -> None:
+    """Create one deterministic, non-blocking collidable scene obstacle."""
+    root = UsdGeom.Xform.Define(stage, PHASE9_ROOT)
+    root.GetPrim().SetCustomDataByKey("phase9:scene_id", "phase9_fixed_scene_v1")
+
+    obstacle = UsdGeom.Cube.Define(stage, f"{PHASE9_ROOT}/Obstacle_001")
+    obstacle.CreateSizeAttr(1.0)
+    obstacle.AddTranslateOp().Set(Gf.Vec3d(-1.5, 1.5, 1.25))
+    obstacle.AddScaleOp().Set(Gf.Vec3d(0.6, 0.6, 2.5))
+    obstacle.CreateDisplayColorAttr([Gf.Vec3f(0.20, 0.35, 0.55)])
+    UsdPhysics.CollisionAPI.Apply(obstacle.GetPrim())
+
+    goal = UsdGeom.Cylinder.Define(stage, f"{PHASE9_ROOT}/Goal")
+    goal.CreateRadiusAttr(0.25)
+    goal.CreateHeightAttr(0.02)
+    goal.AddTranslateOp().Set(Gf.Vec3d(0.5, 3.0, 0.01))
+    goal.CreateDisplayColorAttr([Gf.Vec3f(0.20, 0.85, 0.25)])
+    print("[UAVBootstrap] Deterministic Phase 9 scene created.")
 
 
 async def wait_for_updates(count: int) -> None:
@@ -61,6 +83,7 @@ async def bootstrap() -> None:
             raise RuntimeError("Isaac Sim has no active USD stage after environment loading.")
 
         existing_vehicle = stage.GetPrimAtPath(VEHICLE_PRIM_PATH)
+        create_phase9_scene(stage)
         if not existing_vehicle or not existing_vehicle.IsValid():
             backend_config = PX4MavlinkBackendConfig({
                 "vehicle_id": 0,
@@ -71,9 +94,6 @@ async def bootstrap() -> None:
             })
             multirotor_config = MultirotorConfig()
             multirotor_config.backends = [PX4MavlinkBackend(config=backend_config)]
-            multirotor_config.graphical_sensors = [
-                MonocularCamera("camera", config={"update_rate": 60.0})
-            ]
             Multirotor(
                 VEHICLE_PRIM_PATH,
                 ROBOTS["Iris"],
@@ -91,10 +111,15 @@ async def bootstrap() -> None:
         await wait_for_updates(60)
         print("[UAVBootstrap] Physics timeline running; PX4 launch requested.")
 
-        if not MANAGER_SCRIPT.is_file():
-            raise FileNotFoundError(f"Episode manager not found: {MANAGER_SCRIPT}")
-        runpy.run_path(str(MANAGER_SCRIPT), run_name="__isaac_uav_episode_manager__")
-        print("[UAVBootstrap] Isaac ROS 2 episode manager started.")
+        if not RUNTIME_BRIDGE_SCRIPT.is_file():
+            raise FileNotFoundError(
+                f"Runtime bridge not found: {RUNTIME_BRIDGE_SCRIPT}"
+            )
+        runpy.run_path(
+            str(RUNTIME_BRIDGE_SCRIPT),
+            run_name="__isaac_runtime_bridge__",
+        )
+        print("[UAVBootstrap] Isaac ROS 2 runtime bridge started.")
     except Exception as exc:
         builtins._isaac_uav_bootstrap_error = f"{type(exc).__name__}: {exc}"
         print(f"[UAVBootstrap][ERROR] {builtins._isaac_uav_bootstrap_error}")
@@ -107,4 +132,3 @@ if old_task is not None and not old_task.done():
 
 builtins._isaac_uav_bootstrap_error = ""
 builtins._isaac_uav_bootstrap_task = asyncio.ensure_future(bootstrap())
-

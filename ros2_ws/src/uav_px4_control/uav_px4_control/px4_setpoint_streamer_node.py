@@ -73,6 +73,27 @@ def px4_output_qos() -> QoSProfile:
     )
 
 
+def pegasus_sitl_identity_matches(
+    expected_fragment: str,
+    executable: str,
+    command: str,
+    environment: set[bytes],
+) -> bool:
+    """Recognize only the audited Pegasus instance-zero PX4 launch shape."""
+    if not executable.endswith(expected_fragment):
+        return False
+    build_marker = "/build/px4_sitl_default/bin/px4"
+    if build_marker not in executable:
+        return False
+    px4_root = executable.split(build_marker, 1)[0]
+    rc_script = px4_root + "/ROMFS/px4fmu_common/init.d-posix/rcS"
+    required_arguments = f" -s {rc_script} -i 0 -d"
+    return bool(
+        required_arguments in command
+        and b"PX4_SIM_MODEL=gazebo-classic_iris" in environment
+    )
+
+
 def sitl_process_matches(expected_fragment: str) -> bool:
     """Return true only for a local PX4 SITL process with the expected path."""
     if not expected_fragment or "px4_sitl" not in expected_fragment:
@@ -125,6 +146,13 @@ def sitl_process_matches(expected_fragment: str) -> bool:
                 for item in environment
             )
         )
+        if pegasus_sitl_identity_matches(
+            expected_fragment,
+            executable,
+            command,
+            environment,
+        ):
+            return True
         expected_rootfs = executable.rsplit("/bin/px4", 1)[0] + "/rootfs"
         if (
             executable.endswith(expected_fragment)

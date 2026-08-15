@@ -74,6 +74,7 @@ Commands:
   px4-sitl-doctor     Read-only check of an already-running SITL/XRCE graph
   px4-sitl-stream-check  Explicitly stream to already-running SITL only
   px4-sitl-flight-check  Fly one guarded ASTAR_EXPERT mission in running SITL
+  isaac-runtime-flight-check  Require Isaac evidence for the guarded mission
   topics         Inspect the current ROS graph and reject /fmu/in/ topics
   interfaces     Show custom interfaces and planner topic contracts
   shell          Open a clean interactive ROS 2 workspace shell
@@ -111,6 +112,7 @@ Examples:
   ./uav px4-sitl-doctor
   ./uav px4-sitl-stream-check
   UAV_OFFLINE_TIMEOUT_SECONDS=150 ./uav px4-sitl-flight-check
+  UAV_OFFLINE_TIMEOUT_SECONDS=180 ./uav isaac-runtime-flight-check
   ./uav shell
 EOF
 }
@@ -683,6 +685,14 @@ if not payload.get("success"):
 PY
 }
 
+internal_isaac_runtime_flight_check() {
+    internal_px4_sitl_flight_check \
+        use_external_scene:=true \
+        require_isaac_evidence:=true \
+        start_delay_s:=5.0 \
+        "$@"
+}
+
 internal_dispatch() {
     local command_name="${1:-}"
     shift || true
@@ -741,6 +751,9 @@ internal_dispatch() {
             ;;
         px4-sitl-flight-check)
             internal_px4_sitl_flight_check "$@"
+            ;;
+        isaac-runtime-flight-check)
+            internal_isaac_runtime_flight_check "$@"
             ;;
         topics)
             clean_bootstrap required
@@ -1219,12 +1232,12 @@ main() {
             shift
             clean_environment_command px4-sitl-stream-check "$@"
             ;;
-        px4-sitl-flight-check)
+        px4-sitl-flight-check|isaac-runtime-flight-check)
             require_repository
             require_ros_base
             require_workspace_overlay
             shift
-            clean_environment_command px4-sitl-flight-check "$@"
+            clean_environment_command "$command_name" "$@"
             ;;
         topics)
             require_repository

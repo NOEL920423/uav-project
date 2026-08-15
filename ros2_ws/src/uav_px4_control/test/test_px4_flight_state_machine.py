@@ -100,10 +100,69 @@ def test_inflight_stream_loss_requests_land_and_finishes_failed():
     )
     decision = machine.step(1.0, airborne)
     assert decision.state == Px4FlightState.LANDING
-    assert decision.actions == ("STOP_TRACKING", "SEND_LAND")
+    assert decision.actions == (
+        "STOP_TRACKING",
+        "DISABLE_STREAM",
+        "DISABLE_OUTPUT_GATE",
+        "SEND_LAND",
+    )
     assert "safety chain" in decision.failure_reason
     landed = replace(airborne, vehicle_armed=False, landed=True)
     assert machine.step(2.0, landed).state == Px4FlightState.FAILED
+
+
+def test_inflight_external_environment_loss_requests_controlled_landing():
+    """A stale Isaac runtime cannot leave an armed vehicle tracking."""
+    machine = Px4FlightStateMachine()
+    machine.request_enable(True, 0.0)
+    machine.state = Px4FlightState.TRACKING
+    machine._state_started_s = 0.0
+    airborne = replace(
+        READY,
+        vehicle_armed=True,
+        offboard_active=True,
+        landed=False,
+        tracking_active=True,
+        environment_valid=False,
+    )
+    decision = machine.step(1.0, airborne)
+    assert decision.state == Px4FlightState.LANDING
+    assert decision.actions == (
+        "STOP_TRACKING",
+        "DISABLE_STREAM",
+        "DISABLE_OUTPUT_GATE",
+        "SEND_LAND",
+    )
+    assert "external simulator environment" in decision.failure_reason
+
+
+def test_prearm_external_environment_loss_fails_without_land_command():
+    """A lost Isaac heartbeat before arming closes outputs without NAV_LAND."""
+    machine = Px4FlightStateMachine()
+    machine.request_enable(True, 0.0)
+    decision = machine.step(
+        0.1, replace(READY, environment_valid=False)
+    )
+    assert decision.state == Px4FlightState.FAILED
+    assert "SEND_LAND" not in decision.actions
+    assert "DISABLE_STREAM" in decision.actions
+
+
+def test_landing_evaluates_completion_after_environment_loss():
+    """The original simulator fault cannot mask landing/disarm evidence."""
+    machine = Px4FlightStateMachine()
+    machine.request_enable(True, 0.0)
+    machine.state = Px4FlightState.LANDING
+    machine.failure_reason = "external simulator environment became stale"
+    landed = replace(
+        READY,
+        environment_valid=False,
+        vehicle_armed=False,
+        landed=True,
+    )
+    decision = machine.step(1.0, landed)
+    assert decision.state == Px4FlightState.FAILED
+    assert "DISABLE_STREAM" in decision.actions
 
 
 def test_prestream_timeout_fails_without_arm_or_land_command():

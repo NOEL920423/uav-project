@@ -88,6 +88,15 @@ class Px4FlightStateMachine:
             )
         if evidence.failsafe:
             return self._fail(now, evidence, "PX4 failsafe became active")
+        if (
+            not evidence.environment_valid
+            and self.state != Px4FlightState.LANDING
+        ):
+            return self._fail(
+                now,
+                evidence,
+                "external simulator environment became stale or invalid",
+            )
         if self.state in _AIRBORNE_STATES and evidence.vehicle_armed:
             if not evidence.telemetry_fresh:
                 return self._fail(now, evidence, "PX4 telemetry became stale")
@@ -303,7 +312,12 @@ class Px4FlightStateMachine:
         self.failure_reason = reason
         if evidence.vehicle_armed or not evidence.landed:
             self._set_state(Px4FlightState.LANDING, now)
-            return self._decision("STOP_TRACKING", "SEND_LAND")
+            return self._decision(
+                "STOP_TRACKING",
+                "DISABLE_STREAM",
+                "DISABLE_OUTPUT_GATE",
+                "SEND_LAND",
+            )
         self.mission_enable_requested = False
         self._set_state(Px4FlightState.FAILED, now)
         return self._decision(

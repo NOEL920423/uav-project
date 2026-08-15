@@ -79,6 +79,7 @@ class FlightEvidence:
     source_valid: bool = False
     failsafe: bool = False
     fatal_command_ack: str = ""
+    environment_valid: bool = True
 
 
 @dataclass(frozen=True, slots=True)

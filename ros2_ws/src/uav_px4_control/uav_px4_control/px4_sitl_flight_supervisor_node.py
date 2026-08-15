@@ -1,6 +1,7 @@
 """Explicitly sequence one ASTAR_EXPERT-controlled PX4 SITL flight."""
 
 import importlib
+import json
 import math
 
 from geometry_msgs.msg import PoseStamped
@@ -75,6 +76,10 @@ TRAJECTORY_TOPIC = "/uav/trajectory/candidate"
 SCENE_OBSTACLES_TOPIC = "/uav/scene/obstacles"
 SCENE_START_TOPIC = "/uav/scene/start"
 SCENE_GOAL_TOPIC = "/uav/scene/goal"
+EXTERNAL_SCENE_OBSTACLES_TOPIC = "/uav/isaac/scene/obstacles"
+EXTERNAL_SCENE_START_TOPIC = "/uav/isaac/scene/start"
+EXTERNAL_SCENE_GOAL_TOPIC = "/uav/isaac/scene/goal"
+ISAAC_BRIDGE_STATUS_TOPIC = "/uav/isaac/bridge_status"
 
 
 class Px4SitlFlightSupervisorNode(Node):
@@ -96,6 +101,8 @@ class Px4SitlFlightSupervisorNode(Node):
         self.declare_parameter("takeoff_path_north_m", 0.30)
         self.declare_parameter("goal_north_m", 3.0)
         self.declare_parameter("goal_east_m", 0.5)
+        self.declare_parameter("use_external_scene", False)
+        self.declare_parameter("external_runtime_timeout_s", 0.50)
         self.declare_parameter("expected_sitl_process_fragment", (
             "/PX4-Autopilot/build/px4_sitl_default/bin/px4"
         ))
@@ -114,6 +121,7 @@ class Px4SitlFlightSupervisorNode(Node):
         self._mux_status: ControlMuxStatus | None = None
         self._gate_status: Px4OutputGateStatus | None = None
         self._stream_status: Px4StreamStatus | None = None
+        self._last_stream_state = ""
         self._vehicle_status = None
         self._vehicle_status_receipt_s: float | None = None
         self._vehicle_odometry = None
@@ -129,6 +137,14 @@ class Px4SitlFlightSupervisorNode(Node):
         self._last_action_time: dict[str, float] = {}
         self._pending_services: dict[str, object] = {}
         self._landing_commanded = False
+        self._external_obstacles: ObstacleArray | None = None
+        self._external_start: PoseStamped | None = None
+        self._external_goal: PoseStamped | None = None
+        self._external_stamps: dict[str, tuple[int, int]] = {}
+        self._external_scene_id = ""
+        self._external_scene_revision = 0
+        self._external_bridge_ready = False
+        self._external_bridge_receipt_s: float | None = None
 
         qos = control_qos()
         self.create_subscription(
@@ -189,6 +205,30 @@ class Px4SitlFlightSupervisorNode(Node):
             self._ack_callback,
             telemetry_qos,
         )
+        self.create_subscription(
+            ObstacleArray,
+            EXTERNAL_SCENE_OBSTACLES_TOPIC,
+            self._external_obstacles_callback,
+            durable_qos(),
+        )
+        self.create_subscription(
+            PoseStamped,
+            EXTERNAL_SCENE_START_TOPIC,
+            self._external_start_callback,
+            durable_qos(),
+        )
+        self.create_subscription(
+            PoseStamped,
+            EXTERNAL_SCENE_GOAL_TOPIC,
+            self._external_goal_callback,
+            durable_qos(),
+        )
+        self.create_subscription(
+            String,
+            ISAAC_BRIDGE_STATUS_TOPIC,
+            self._external_bridge_status_callback,
+            qos,
+        )
 
         self._obstacles_publisher = self.create_publisher(
             ObstacleArray, SCENE_OBSTACLES_TOPIC, durable_qos()
@@ -243,6 +283,14 @@ class Px4SitlFlightSupervisorNode(Node):
                 "PX4 SITL/XRCE identity guard is not ready"
             )
             return response
+        if request.enable and not self._external_environment_valid(now):
+            response.accepted = False
+            response.mission_enable_requested = False
+            response.state = self.machine.state.value
+            response.status_message = (
+                "Isaac external scene/runtime is not ready"
+            )
+            return response
         accepted, message = self.machine.request_enable(request.enable, now)
         if accepted and request.enable:
             self._reset_mission_evidence()
@@ -294,6 +342,19 @@ class Px4SitlFlightSupervisorNode(Node):
 
     def _stream_callback(self, message: Px4StreamStatus) -> None:
         self._stream_status = message
+        if message.state != self._last_stream_state:
+            log = (
+                self.get_logger().warning
+                if message.state.startswith(("STOPPED_", "LATCHED_"))
+                else self.get_logger().info
+            )
+            log(
+                f"STREAM_TRANSITION {self._last_stream_state or 'NONE'}"
+                f"->{message.state} reason={message.stop_reason} "
+                f"rate={message.observed_rate_hz:.3f} "
+                f"max_gap={message.maximum_publish_gap:.3f}"
+            )
+            self._last_stream_state = message.state
 
     def _vehicle_status_callback(self, message) -> None:
         self._vehicle_status = message
@@ -305,6 +366,85 @@ class Px4SitlFlightSupervisorNode(Node):
 
     def _land_callback(self, message) -> None:
         self._land_detected = message
+
+    @staticmethod
+    def _message_stamp(message) -> tuple[int, int]:
+        return message.header.stamp.sec, message.header.stamp.nanosec
+
+    @staticmethod
+    def _isaac_pose_valid(message: PoseStamped) -> bool:
+        position = message.pose.position
+        return bool(
+            message.header.frame_id == "isaac_world"
+            and all(math.isfinite(float(value)) for value in (
+                position.x,
+                position.y,
+                position.z,
+            ))
+        )
+
+    def _external_obstacles_callback(self, message: ObstacleArray) -> None:
+        if message.header.frame_id != "isaac_world":
+            self._external_obstacles = None
+            return
+        self._external_obstacles = message
+        self._external_stamps["obstacles"] = self._message_stamp(message)
+
+    def _external_start_callback(self, message: PoseStamped) -> None:
+        if not self._isaac_pose_valid(message):
+            self._external_start = None
+            return
+        self._external_start = message
+        self._external_stamps["start"] = self._message_stamp(message)
+
+    def _external_goal_callback(self, message: PoseStamped) -> None:
+        if not self._isaac_pose_valid(message):
+            self._external_goal = None
+            return
+        self._external_goal = message
+        self._external_stamps["goal"] = self._message_stamp(message)
+
+    def _external_bridge_status_callback(self, message: String) -> None:
+        try:
+            status = json.loads(message.data)
+            ready = status.get("ready")
+            scene_id = str(status.get("scene_id", "")).strip()
+            revision = int(status.get("scene_revision", 0))
+            if not isinstance(ready, bool) or not scene_id or revision <= 0:
+                raise ValueError("invalid bridge status fields")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            self._external_bridge_ready = False
+            return
+        self._external_bridge_ready = ready
+        self._external_scene_id = scene_id
+        self._external_scene_revision = revision
+        self._external_bridge_receipt_s = self._now_seconds()
+
+    def _uses_external_scene(self) -> bool:
+        return bool(self.get_parameter("use_external_scene").value)
+
+    def _external_environment_valid(self, now: float) -> bool:
+        if not self._uses_external_scene():
+            return True
+        if (
+            self._external_obstacles is None
+            or self._external_start is None
+            or self._external_goal is None
+            or self._external_bridge_receipt_s is None
+            or not self._external_bridge_ready
+        ):
+            return False
+        stamps = set(self._external_stamps.values())
+        if len(stamps) != 1 or len(self._external_stamps) != 3:
+            return False
+        timeout = float(
+            self.get_parameter("external_runtime_timeout_s").value
+        )
+        return bool(
+            math.isfinite(timeout)
+            and timeout > 0.0
+            and now - self._external_bridge_receipt_s <= timeout
+        )
 
     def _ack_callback(self, message) -> None:
         watched = {
@@ -450,6 +590,7 @@ class Px4SitlFlightSupervisorNode(Node):
             source_valid=source_valid,
             failsafe=failsafe,
             fatal_command_ack=self._fatal_command_ack,
+            environment_valid=self._external_environment_valid(now),
         )
 
     def _goal_distance(self) -> float:
@@ -611,10 +752,53 @@ class Px4SitlFlightSupervisorNode(Node):
             return
         north = float(self._vehicle_odometry.position[0])
         east = float(self._vehicle_odometry.position[1])
+        if self._uses_external_scene():
+            self._publish_external_mission_scene(north, east)
+            return
         goal_north = float(self.get_parameter("goal_north_m").value)
         goal_east = float(self.get_parameter("goal_east_m").value)
         self._publish_scene(
             "mission", north, east, goal_north, goal_east
+        )
+
+    def _publish_external_mission_scene(
+        self, start_north: float, start_east: float
+    ) -> None:
+        now = self._now_seconds()
+        if not self._external_environment_valid(now):
+            return
+        assert self._external_goal is not None
+        assert self._external_obstacles is not None
+        goal = self._external_goal.pose.position
+        goal_north = float(goal.y)
+        goal_east = float(goal.x)
+        if self._ground_down_m is None:
+            return
+        target_down = -self.config.takeoff_altitude_m
+        self._scene_kind = "mission"
+        self._expected_goal = (goal_north, goal_east, target_down)
+        self._planner_path_valid = False
+        self._bspline_valid = False
+        self._trajectory_valid = False
+        self._trajectory_goal = None
+        stamp = self.get_clock().now().to_msg()
+        obstacles = ObstacleArray()
+        obstacles.header.stamp = stamp
+        obstacles.header.frame_id = "isaac_world"
+        obstacles.obstacles = self._external_obstacles.obstacles
+        self._obstacles_publisher.publish(obstacles)
+        self._start_publisher.publish(
+            self._scene_pose(start_north, start_east, target_down, stamp)
+        )
+        self._goal_publisher.publish(
+            self._scene_pose(goal_north, goal_east, target_down, stamp)
+        )
+        self.get_logger().info(
+            "SCENE kind=mission source=isaac "
+            f"id={self._external_scene_id} "
+            f"revision={self._external_scene_revision} "
+            f"obstacles={len(obstacles.obstacles)} "
+            f"goal=({goal_north:.3f},{goal_east:.3f})"
         )
 
     def _publish_scene(
@@ -705,10 +889,15 @@ class Px4SitlFlightSupervisorNode(Node):
         message.transition_count = self.machine.transition_count
         message.last_command_ack = self._last_command_ack
         message.failure_reason = self.machine.failure_reason
+        environment_valid = str(
+            self._external_environment_valid(self._now_seconds())
+        ).lower()
         message.status_message = (
             f"scene={self._scene_kind}|trajectory_source="
             f"{self._trajectory_source or 'none'}|sitl_guard="
-            f"{str(self._sitl_guard_valid()).lower()}"
+            f"{str(self._sitl_guard_valid()).lower()}|external_scene="
+            f"{str(self._uses_external_scene()).lower()}|environment_valid="
+            f"{environment_valid}"
         )
         return message
 
