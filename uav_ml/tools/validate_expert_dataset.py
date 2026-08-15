@@ -48,16 +48,20 @@ def _directory_size(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
-def validate(
+def validate_episode(
     dataset_root: Path,
     autoencoder_checkpoint: Path,
+    episode_id: str = "episode_000001",
     device: str = "auto",
     write_result: bool = True,
+    require_success: bool | None = True,
+    require_single_manifest: bool = True,
+    update_manifest: bool = True,
 ) -> dict:
-    """Validate one episode and rebuild every 72D observation/3D target."""
+    """Validate one V1 episode and rebuild every accepted observation/target."""
     dataset_root = dataset_root.resolve()
     manifest_path = dataset_root / "dataset_manifest.json"
-    episode_dir = dataset_root / "episode_000001"
+    episode_dir = dataset_root / episode_id
     episode_path = episode_dir / "episode.json"
     samples_path = episode_dir / "samples.csv"
     with manifest_path.open(encoding="utf-8") as stream:
@@ -66,16 +70,20 @@ def validate(
         episode = json.load(stream)
     if manifest.get("dataset_version") != DATASET_VERSION:
         raise ValueError("dataset manifest version mismatch")
-    if manifest.get("episodes") != ["episode_000001"]:
+    if require_single_manifest and manifest.get("episodes") != [episode_id]:
         raise ValueError("Phase 10A must contain exactly episode_000001")
-    if not episode.get("success") or episode.get("status") != "complete":
+    success = bool(episode.get("success"))
+    expected_status = "complete" if success else "failed"
+    if episode.get("status") != expected_status:
+        raise ValueError("episode status/success fields disagree")
+    if require_success is not None and success != require_success:
         raise ValueError(f"episode did not complete successfully: {episode.get('failure')}")
     with samples_path.open(newline="", encoding="utf-8") as stream:
         reader = csv.DictReader(stream)
         if tuple(reader.fieldnames or ()) != CSV_FIELDS:
             raise ValueError("samples.csv fields do not match the V1 contract")
         rows = list(reader)
-    if not rows:
+    if not rows and success:
         raise ValueError("episode contains no accepted samples")
     if len(rows) != int(episode.get("sample_count", -1)):
         raise ValueError("episode sample count does not match samples.csv")
@@ -92,11 +100,14 @@ def validate(
     observations: list[np.ndarray] = []
     targets: list[np.ndarray] = []
     for index, row in enumerate(rows, start=1):
-        if row["episode_id"] != "episode_000001":
+        if row["episode_id"] != episode_id:
             raise ValueError(f"sample {index} episode ID mismatch")
         if int(row["sample_id"]) != index:
             raise ValueError("sample IDs must be contiguous from one")
-        if row["success"].lower() != "true" or row["failure"]:
+        row_success = row["success"].lower() == "true"
+        if row_success != success or (success and row["failure"]) or (
+            not success and not row["failure"]
+        ):
             raise ValueError(f"sample {index} final outcome fields are invalid")
         image_path = dataset_root / row["image_path"]
         if not image_path.is_file() or not image_path.resolve().is_relative_to(dataset_root):
@@ -174,46 +185,71 @@ def validate(
         raise ValueError(f"observed dataset rate is unreasonable: {observed_rate:.3f} Hz")
     terminal = episode.get("terminal_flight_status") or {}
     accumulated = episode.get("accumulated_flight_evidence") or {}
-    required_accumulated = {
-        "goal_reached": True,
-        "landing_commanded": True,
-        "landed_after_landing_command": True,
-        "terminal_complete": True,
-    }
-    if terminal.get("state") != "COMPLETE" or any(
-        accumulated.get(name) != value
-        for name, value in required_accumulated.items()
-    ):
-        raise ValueError("terminal flight status lacks goal/landing success evidence")
+    if success:
+        required_accumulated = {
+            "goal_reached": True,
+            "landing_commanded": True,
+            "landed_after_landing_command": True,
+            "terminal_complete": True,
+        }
+        if terminal.get("state") != "COMPLETE" or any(
+            accumulated.get(name) != value
+            for name, value in required_accumulated.items()
+        ):
+            raise ValueError(
+                "terminal flight status lacks goal/landing success evidence"
+            )
+    else:
+        safety = episode.get("safe_terminal_evidence") or {}
+        if not (
+            safety.get("landed") is True
+            and safety.get("disarmed") is True
+            and safety.get("failsafe") is False
+        ):
+            raise ValueError("failed episode lacks landed/disarmed evidence")
 
-    observation_array = np.stack(observations)
-    target_array = np.stack(targets)
+    observation_array = (
+        np.stack(observations) if observations
+        else np.empty((0, 72), dtype=np.float32)
+    )
+    target_array = (
+        np.stack(targets) if targets
+        else np.empty((0, 3), dtype=np.float32)
+    )
     result = {
         "valid": True,
         "dataset_version": DATASET_VERSION,
-        "episode_id": "episode_000001",
-        "episode_success": True,
+        "episode_id": episode_id,
+        "episode_success": success,
         "sample_count": len(rows),
         "observed_sampling_rate_hz": observed_rate,
         "timestamps_strictly_monotonic": True,
-        "maximum_state_image_error_s": max(state_errors),
-        "maximum_action_image_error_s": max(action_errors),
+        "maximum_state_image_error_s": max(state_errors, default=None),
+        "maximum_action_image_error_s": max(action_errors, default=None),
         "synchronization_tolerance_s": SYNCHRONIZATION_TOLERANCE_S,
         "images_opened": len(rows),
         "image_resolution": [IMAGE_WIDTH, IMAGE_HEIGHT],
         "image_format": "JPEG",
         "image_luminance_mean_min_max": [
-            min(image_luminance_means), max(image_luminance_means)
+            min(image_luminance_means, default=None),
+            max(image_luminance_means, default=None),
         ],
         "image_dynamic_range_min_max": [
-            min(image_dynamic_ranges), max(image_dynamic_ranges)
+            min(image_dynamic_ranges, default=None),
+            max(image_dynamic_ranges, default=None),
         ],
-        "latent_dimension": int(observation_array.shape[1] - 8),
+        "latent_dimension": 64,
         "observation_dimension": int(observation_array.shape[1]),
         "target_dimension": int(target_array.shape[1]),
-        "latent_norm_min_max": [min(latent_norms), max(latent_norms)],
-        "target_min": target_array.min(axis=0).tolist(),
-        "target_max": target_array.max(axis=0).tolist(),
+        "latent_norm_min_max": [
+            min(latent_norms, default=None), max(latent_norms, default=None)
+        ],
+        "target_min": (
+            target_array.min(axis=0).tolist() if len(target_array) else None
+        ),
+        "target_max": (
+            target_array.max(axis=0).tolist() if len(target_array) else None
+        ),
         "dataset_disk_usage_bytes": _directory_size(dataset_root),
         "autoencoder_checkpoint": str(autoencoder_checkpoint.resolve()),
         "autoencoder_checkpoint_sha256": _sha256(autoencoder_checkpoint),
@@ -224,14 +260,34 @@ def validate(
         validation_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         result["dataset_disk_usage_bytes"] = _directory_size(dataset_root)
         validation_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-        manifest["validation"] = {
-            "valid": True,
-            "path": "episode_000001/validation.json",
-            "sample_count": len(rows),
-            "dataset_disk_usage_bytes": result["dataset_disk_usage_bytes"],
-        }
-        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        if update_manifest:
+            manifest["validation"] = {
+                "valid": True,
+                "path": f"{episode_id}/validation.json",
+                "sample_count": len(rows),
+                "dataset_disk_usage_bytes": result[
+                    "dataset_disk_usage_bytes"
+                ],
+            }
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+            )
     return result
+
+
+def validate(
+    dataset_root: Path,
+    autoencoder_checkpoint: Path,
+    device: str = "auto",
+    write_result: bool = True,
+) -> dict:
+    """Preserve the strict Phase 10A single-success validation entry point."""
+    return validate_episode(
+        dataset_root,
+        autoencoder_checkpoint,
+        device=device,
+        write_result=write_result,
+    )
 
 
 def main() -> None:

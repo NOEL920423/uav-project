@@ -39,6 +39,9 @@ def generate_launch_description() -> LaunchDescription:
     require_isaac_evidence = LaunchConfiguration("require_isaac_evidence")
     record_expert_dataset = LaunchConfiguration("record_expert_dataset")
     dataset_root = LaunchConfiguration("dataset_root")
+    episode_id = LaunchConfiguration("episode_id")
+    collection_mode = LaunchConfiguration("collection_mode")
+    random_seed = LaunchConfiguration("random_seed")
     return LaunchDescription([
         DeclareLaunchArgument(
             "evidence_path",
@@ -57,6 +60,9 @@ def generate_launch_description() -> LaunchDescription:
             "dataset_root",
             default_value="artifacts/datasets/bc_expert_v1",
         ),
+        DeclareLaunchArgument("episode_id", default_value="episode_000001"),
+        DeclareLaunchArgument("collection_mode", default_value="single"),
+        DeclareLaunchArgument("random_seed", default_value="0"),
         Node(
             package="uav_scene_bridge",
             executable="scene_bridge_node",
@@ -95,7 +101,9 @@ def generate_launch_description() -> LaunchDescription:
             executable="expert_dataset_recorder",
             parameters=[{
                 "dataset_root": dataset_root,
-                "episode_id": "episode_000001",
+                "episode_id": episode_id,
+                "collection_mode": collection_mode,
+                "random_seed": random_seed,
                 "synchronization_tolerance_s": 0.100,
             }],
             condition=IfCondition(record_expert_dataset),

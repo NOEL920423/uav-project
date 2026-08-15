@@ -9,3 +9,9 @@ Future owner of synchronized dataset, metadata, pose-log, and rosbag recording.
 - Phase 10A: `expert_dataset_recorder` is opt-in from the guarded flight launch,
   uses bounded synchronization queues, and writes one V1 episode only under a
   Git-ignored artifact root. See `docs/phase10a_expert_dataset.md`.
+- Phase 10B: batch mode keeps the BC V1 primary CSV contract unchanged, records
+  optional TOP RGB/depth joins separately, carries seed/scene/rejection/safety
+  metadata, and appends finalized episodes to the batch manifest. The guarded
+  `episode_scene_client` requires landed/disarmed/no-failsafe PX4 state before
+  requesting a seeded Isaac scene. See
+  `docs/phase10b_multiepisode_dataset.md`.

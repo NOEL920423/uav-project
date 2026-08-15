@@ -52,3 +52,22 @@ def test_isaac_adapter_uses_standard_ros_messages_only():
     assert "std_msgs.msg" in source
     assert "sensor_msgs.msg" in source
     assert "uav_interfaces" not in source
+
+
+def test_phase10b_scene_commands_do_not_control_or_teleport_vehicle():
+    """Scene resets may alter scene USD only after a landed-height check."""
+    source = BRIDGE.read_text(encoding="utf-8")
+    assert "/uav/isaac/episode_command" in source
+    assert "vehicle must be landed before scene reset" in source
+    assert "SetWorldPose" not in source
+    assert "set_world_pose" not in source
+    assert "/fmu/in/" not in source
+
+
+def test_phase10b_auxiliary_contract_is_opt_in_and_storage_free():
+    """The embedded bridge publishes optional sensors but never writes data."""
+    source = BRIDGE.read_text(encoding="utf-8")
+    assert 'os.environ.get("UAV_PHASE10B_SENSORS", "0") == "1"' in source
+    assert "/uav/isaac/top/image/compressed" in source
+    assert "/uav/isaac/fpv/depth/compressed" in source
+    assert "unit=millimeter" in source

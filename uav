@@ -9,9 +9,11 @@ WORKSPACE_SETUP="$ROS_WS/install/setup.bash"
 RUN_LOG_DIR="$REPO_ROOT/run_logs"
 SCRIPT_PATH="$REPO_ROOT/uav"
 ISAACLAB_SH="${UAV_ISAACLAB_ROOT:-$REPO_ROOT/../IsaacLab}/isaaclab.sh"
+PHASE10B_ISAAC_RELEASE="${UAV_ISAAC_SIM_RELEASE:-$HOME/isaacsim/_build/linux-x86_64/release}"
 
 readonly SCRIPT_DIR REPO_ROOT ROS_WS ROS_SETUP WORKSPACE_SETUP
 readonly RUN_LOG_DIR SCRIPT_PATH
+readonly PHASE10B_ISAAC_RELEASE
 
 info() {
     printf 'INFO: %s\n' "$*"
@@ -77,6 +79,8 @@ Commands:
   isaac-runtime-flight-check  Require Isaac evidence for the guarded mission
   phase10a-expert-episode  Record and validate one Phase 9 A* expert episode
   phase10a-dataset-check  Validate/rebuild the Phase 10A dataset artifact
+  phase10b-expert-pilot  Collect/validate a 10-episode seeded expert pilot
+  phase10b-dataset-check  Validate/rebuild the Phase 10B pilot artifact
   topics         Inspect the current ROS graph and reject /fmu/in/ topics
   interfaces     Show custom interfaces and planner topic contracts
   shell          Open a clean interactive ROS 2 workspace shell
@@ -117,6 +121,8 @@ Examples:
   UAV_OFFLINE_TIMEOUT_SECONDS=180 ./uav isaac-runtime-flight-check
   UAV_OFFLINE_TIMEOUT_SECONDS=180 ./uav phase10a-expert-episode
   ./uav phase10a-dataset-check
+  UAV_OFFLINE_TIMEOUT_SECONDS=180 ./uav phase10b-expert-pilot
+  ./uav phase10b-dataset-check
   ./uav shell
 EOF
 }
@@ -720,6 +726,118 @@ internal_phase10a_expert_episode() {
         "$@"
 }
 
+internal_phase10b_expert_episode() {
+    local episode_id="$1"
+    local random_seed="$2"
+    local scene_mode="$3"
+    local dataset_root="$4"
+    clean_bootstrap required
+    require_px4_msgs
+    local sensor_status
+    set +e
+    sensor_status="$(timeout 15s ros2 topic echo \
+        /uav/isaac/runtime_status std_msgs/msg/String \
+        --once --field data 2>/dev/null)"
+    local sensor_status_code=$?
+    set -e
+    if ((sensor_status_code != 0)) \
+        || [[ "$sensor_status" != *'"phase10a_camera_ready":true'* ]] \
+        || [[ "$sensor_status" != *'"phase10b_top_rgb_enabled":true'* ]] \
+        || [[ "$sensor_status" != *'"phase10b_fpv_depth_enabled":true'* ]]; then
+        die "Phase 10B Isaac sensor runtime is not ready; start with UAV_PHASE10B_SENSORS=1"
+        return 1
+    fi
+
+    ros2 run uav_data_recorder episode_scene_client --ros-args \
+        -p episode_id:="$episode_id" \
+        -p random_seed:="$random_seed" \
+        -p scene_mode:="$scene_mode" \
+        -p timeout_s:=20.0
+
+    local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-180}"
+    local timestamp evidence_path episode_evidence launch_status
+    timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    evidence_path="$RUN_LOG_DIR/phase10b-${episode_id}_${timestamp}.json"
+    mkdir -p "$RUN_LOG_DIR"
+    warn "AUTHORIZED PHASE10B SITL FLIGHT episode=$episode_id seed=$random_seed mode=$scene_mode"
+    set +e
+    timeout "${timeout_seconds}s" \
+        ros2 launch uav_px4_control px4_sitl_flight.launch.py \
+        evidence_path:="$evidence_path" \
+        timeout_s:="$((timeout_seconds - 10)).0" \
+        use_external_scene:=true \
+        require_isaac_evidence:=true \
+        record_expert_dataset:=true \
+        dataset_root:="$dataset_root" \
+        episode_id:="$episode_id" \
+        collection_mode:=batch \
+        random_seed:="$random_seed" \
+        start_delay_s:=5.0
+    launch_status=$?
+    set -e
+    [[ -f "$evidence_path" ]] || die \
+        "episode flight evidence missing (launch status $launch_status)"
+    [[ -d "$dataset_root/$episode_id" ]] || die \
+        "episode recorder output missing: $dataset_root/$episode_id"
+    episode_evidence="$dataset_root/$episode_id/flight_evidence.json"
+    cp -- "$evidence_path" "$episode_evidence"
+    info "Episode launch status=$launch_status evidence=$episode_evidence"
+}
+
+internal_phase10b_wait_runtime() {
+    clean_bootstrap required
+    require_px4_msgs
+    local deadline status
+    deadline=$((SECONDS + 120))
+    while ((SECONDS < deadline)); do
+        set +e
+        status="$(timeout 5s ros2 topic echo \
+            /uav/isaac/runtime_status std_msgs/msg/String \
+            --once --field data 2>/dev/null)"
+        local echo_status=$?
+        set -e
+        if ((echo_status == 0)) \
+            && [[ "$status" == *'"phase10a_camera_ready":true'* ]] \
+            && [[ "$status" == *'"phase10b_top_rgb_ready":true'* ]] \
+            && [[ "$status" == *'"phase10b_fpv_depth_ready":true'* ]]; then
+            if ros2 run uav_px4_control px4_sitl_doctor; then
+                info "Phase10B managed Isaac/PX4 runtime ready"
+                return 0
+            fi
+        fi
+        sleep 2
+    done
+    die "managed Isaac/PX4 runtime did not become ready within 120 seconds"
+}
+
+phase10b_stop_process_group() {
+    local process_id="$1"
+    local label="$2"
+    [[ "$process_id" =~ ^[1-9][0-9]*$ ]] || return 0
+    if kill -0 "$process_id" 2>/dev/null; then
+        info "Stopping managed $label process group $process_id"
+        kill -INT -- "-$process_id" 2>/dev/null || true
+        local attempt
+        for attempt in $(seq 1 20); do
+            kill -0 "$process_id" 2>/dev/null || break
+            sleep 0.5
+        done
+        if kill -0 "$process_id" 2>/dev/null; then
+            warn "$label did not exit after SIGINT; sending SIGTERM"
+            kill -TERM -- "-$process_id" 2>/dev/null || true
+            for attempt in $(seq 1 20); do
+                kill -0 "$process_id" 2>/dev/null || break
+                sleep 0.5
+            done
+        fi
+        if kill -0 "$process_id" 2>/dev/null; then
+            warn "$label did not exit after SIGTERM; sending SIGKILL"
+            kill -KILL -- "-$process_id" 2>/dev/null || true
+        fi
+    fi
+    wait "$process_id" 2>/dev/null || true
+}
+
 internal_dispatch() {
     local command_name="${1:-}"
     shift || true
@@ -784,6 +902,12 @@ internal_dispatch() {
             ;;
         phase10a-expert-episode)
             internal_phase10a_expert_episode "$@"
+            ;;
+        phase10b-expert-episode)
+            internal_phase10b_expert_episode "$@"
+            ;;
+        phase10b-wait-runtime)
+            internal_phase10b_wait_runtime
             ;;
         topics)
             clean_bootstrap required
@@ -1285,6 +1409,96 @@ main() {
             require_repository
             shift
             python3 -m uav_ml.tools.validate_expert_dataset "$@"
+            ;;
+        phase10b-expert-pilot)
+            require_repository
+            require_ros_base
+            require_workspace_overlay
+            shift
+            if (($# != 0)); then
+                die "phase10b-expert-pilot takes no arguments"
+                return 64
+            fi
+            local dataset_root base_seed episode_number episode_id seed mode
+            local expected evidence runtime_root pilot_timestamp
+            local agent_pid isaac_pid runtime_status episode_status
+            dataset_root="$REPO_ROOT/artifacts/datasets/bc_expert_v1_phase10b"
+            base_seed="${UAV_PHASE10B_BASE_SEED:-101000}"
+            [[ "$base_seed" =~ ^[0-9]+$ ]] || die \
+                "UAV_PHASE10B_BASE_SEED must be a nonnegative integer"
+            if [[ -e "$dataset_root" ]]; then
+                die "refusing to overwrite $dataset_root"
+                return 1
+            fi
+            [[ -x "$PHASE10B_ISAAC_RELEASE/isaac-sim.streaming.sh" ]] \
+                || die "Isaac streaming launcher missing: $PHASE10B_ISAAC_RELEASE"
+            command -v MicroXRCEAgent >/dev/null \
+                || die "MicroXRCEAgent is not available"
+            if pgrep -x MicroXRCEAgent >/dev/null \
+                || pgrep -f "$PHASE10B_ISAAC_RELEASE/kit/kit" >/dev/null \
+                || pgrep -f '/PX4-Autopilot/build/px4_sitl_default/bin/px4' \
+                    >/dev/null; then
+                die "Phase10B managed pilot requires no pre-existing Isaac/PX4/XRCE process"
+                return 1
+            fi
+            pilot_timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+            runtime_root="$RUN_LOG_DIR/phase10b-pilot_$pilot_timestamp"
+            mkdir -p "$runtime_root"
+            for episode_number in $(seq 1 10); do
+                printf -v episode_id 'episode_%06d' "$episode_number"
+                seed=$((base_seed + episode_number))
+                mode="normal"
+                expected="any"
+                if ((episode_number == 5)); then
+                    mode="blocked_goal"
+                    expected="failure"
+                fi
+                info "Phase10B pilot $episode_id/10 seed=$seed mode=$mode"
+                setsid MicroXRCEAgent udp4 -p 8888 \
+                    >"$runtime_root/${episode_id}_xrce.log" 2>&1 &
+                agent_pid=$!
+                setsid /usr/bin/bash -c '
+                    cd -- "$1"
+                    exec env -u DISPLAY -u WAYLAND_DISPLAY \
+                        UAV_PHASE10B_SENSORS=1 \
+                        ./isaac-sim.streaming.sh --livestream 2 --exec "$2"
+                ' phase10b-runtime "$PHASE10B_ISAAC_RELEASE" \
+                    "$REPO_ROOT/isaac/runtime/bootstrap.py" \
+                    >"$runtime_root/${episode_id}_isaac.log" 2>&1 &
+                isaac_pid=$!
+                set +e
+                clean_environment_command phase10b-wait-runtime
+                runtime_status=$?
+                if ((runtime_status == 0)); then
+                    clean_environment_command phase10b-expert-episode \
+                        "$episode_id" "$seed" "$mode" "$dataset_root"
+                    episode_status=$?
+                else
+                    episode_status=$runtime_status
+                fi
+                set -e
+                phase10b_stop_process_group "$isaac_pid" "Isaac/PX4"
+                phase10b_stop_process_group "$agent_pid" "XRCE agent"
+                if ((runtime_status != 0 || episode_status != 0)); then
+                    die "safety-critical managed runtime failure in $episode_id"
+                    return 1
+                fi
+                evidence="$dataset_root/$episode_id/flight_evidence.json"
+                python3 -m uav_ml.tools.finalize_expert_episode \
+                    --dataset "$dataset_root" \
+                    --episode "$episode_id" \
+                    --evidence "$evidence" \
+                    --expected "$expected"
+                python3 -m uav_ml.tools.validate_expert_batch \
+                    --dataset "$dataset_root" --episode "$episode_id"
+            done
+            python3 -m uav_ml.tools.validate_expert_batch \
+                --dataset "$dataset_root" --episodes 10
+            ;;
+        phase10b-dataset-check)
+            require_repository
+            shift
+            python3 -m uav_ml.tools.validate_expert_batch "$@"
             ;;
         topics)
             require_repository

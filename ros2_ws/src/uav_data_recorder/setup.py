@@ -27,6 +27,8 @@ setup(
             "data_recorder_node = uav_data_recorder.data_recorder_node:main",
             "expert_dataset_recorder = "
             "uav_data_recorder.expert_dataset_recorder_node:main",
+            "episode_scene_client = "
+            "uav_data_recorder.episode_scene_client:main",
         ],
     },
 )

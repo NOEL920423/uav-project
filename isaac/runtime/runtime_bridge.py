@@ -14,6 +14,8 @@ from io import BytesIO
 import json
 import math
 import os
+from pathlib import Path
+import sys
 import time
 
 from geometry_msgs.msg import PoseStamped
@@ -28,7 +30,14 @@ from std_msgs.msg import String
 
 from sensor_msgs.msg import CompressedImage
 
-from pxr import Gf, UsdGeom
+from pxr import Gf, UsdGeom, UsdPhysics
+
+
+SCRIPT_ROOT = Path(__file__).resolve().parent
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+
+from episode_scene import generate_episode_scene
 
 
 VEHICLE_BODY_PATH = "/World/quadrotor/body"
@@ -42,9 +51,18 @@ PUBLISH_PERIOD_S = 0.05
 CAMERA_PUBLISH_PERIOD_S = 0.20
 CAMERA_TOPIC = "/uav/isaac/fpv/image/compressed"
 CAMERA_PATH = "/World/Phase10A/FPVCamera"
+TOP_CAMERA_PATH = "/World/Phase10B/TopCamera"
+TOP_CAMERA_TOPIC = "/uav/isaac/top/image/compressed"
+DEPTH_TOPIC = "/uav/isaac/fpv/depth/compressed"
+EPISODE_COMMAND_TOPIC = "/uav/isaac/episode_command"
+SCENE_ROOT = "/World/Phase9Runtime"
 CAMERA_WIDTH = 320
 CAMERA_HEIGHT = 180
 JPEG_QUALITY = 85
+TOP_CAMERA_PUBLISH_PERIOD_S = 0.50
+DEPTH_PUBLISH_PERIOD_S = 0.20
+DEPTH_MIN_M = 0.05
+DEPTH_MAX_M = 30.0
 GOAL = (0.5, 3.0, 1.5)
 OBSTACLES = ({
     "name": "Building_Phase9_001",
@@ -94,15 +112,42 @@ class IsaacRuntimeBridge:
             String, STATUS_TOPIC, 10
         )
         self._camera_enabled = os.environ.get("UAV_PHASE10A_CAMERA", "0") == "1"
+        self._phase10b_enabled = (
+            os.environ.get("UAV_PHASE10B_SENSORS", "0") == "1"
+        )
+        self._camera_enabled = self._camera_enabled or self._phase10b_enabled
+        self._scene_id = SCENE_ID
+        self._scene_revision = SCENE_REVISION
+        self._goal = GOAL
+        self._obstacles = list(OBSTACLES)
+        self._episode_id = ""
+        self._random_seed = None
+        self._scene_configuration = None
+        self._episode_command_error = ""
         self._camera_publisher = None
+        self._top_camera_publisher = None
+        self._depth_publisher = None
         self._camera_transform = None
+        self._top_camera_transform = None
         self._rgb_annotator = None
+        self._top_rgb_annotator = None
+        self._depth_annotator = None
         self._render_product = None
+        self._top_render_product = None
         self._last_camera_publish_monotonic = 0.0
+        self._last_top_publish_monotonic = 0.0
+        self._last_depth_publish_monotonic = 0.0
         self._camera_frame_count = 0
+        self._top_frame_count = 0
+        self._depth_frame_count = 0
         self._camera_error = "disabled"
+        self._top_camera_error = "disabled"
+        self._depth_error = "disabled"
         if self._camera_enabled:
             self._setup_camera()
+        self._episode_command_subscription = self._node.create_subscription(
+            String, EPISODE_COMMAND_TOPIC, self._episode_command_callback, 10
+        )
         self._sequence = 0
         self._last_publish_monotonic = 0.0
         self._stopped = False
@@ -116,7 +161,8 @@ class IsaacRuntimeBridge:
         )
         print(
             "[IsaacRuntimeBridge] Started: pose/status at 20 Hz, "
-            f"Phase10A camera={'enabled' if self._camera_enabled else 'disabled'}"
+            f"FPV camera={'enabled' if self._camera_enabled else 'disabled'}, "
+            f"Phase10B auxiliary={'enabled' if self._phase10b_enabled else 'disabled'}"
         )
 
     def _setup_camera(self):
@@ -129,6 +175,7 @@ class IsaacRuntimeBridge:
         camera.GetFocalLengthAttr().Set(18.0)
         camera.GetHorizontalApertureAttr().Set(20.955)
         camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.05, 30.0))
+        camera.CreateExposureAttr().Set(2.0)
         self._camera_transform = UsdGeom.Xformable(
             camera.GetPrim()
         ).AddTransformOp()
@@ -141,10 +188,99 @@ class IsaacRuntimeBridge:
             CompressedImage, CAMERA_TOPIC, 10
         )
         self._camera_error = "warming"
+        if self._phase10b_enabled:
+            top_camera = UsdGeom.Camera.Define(self._stage, TOP_CAMERA_PATH)
+            top_camera.GetFocalLengthAttr().Set(18.0)
+            top_camera.GetHorizontalApertureAttr().Set(20.955)
+            top_camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.1, 50.0))
+            top_camera.CreateExposureAttr().Set(2.0)
+            self._top_camera_transform = UsdGeom.Xformable(
+                top_camera.GetPrim()
+            ).AddTransformOp()
+            self._top_render_product = rep.create.render_product(
+                TOP_CAMERA_PATH, (CAMERA_WIDTH, CAMERA_HEIGHT)
+            )
+            self._top_rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
+            self._top_rgb_annotator.attach([self._top_render_product])
+            self._depth_annotator = rep.AnnotatorRegistry.get_annotator(
+                "distance_to_camera"
+            )
+            self._depth_annotator.attach([self._render_product])
+            self._top_camera_publisher = self._node.create_publisher(
+                CompressedImage, TOP_CAMERA_TOPIC, 10
+            )
+            self._depth_publisher = self._node.create_publisher(
+                CompressedImage, DEPTH_TOPIC, 10
+            )
+            self._top_camera_error = "warming"
+            self._depth_error = "warming"
         print(
             f"[IsaacRuntimeBridge] Phase10A FPV render product: "
             f"{CAMERA_WIDTH}x{CAMERA_HEIGHT} JPEG quality {JPEG_QUALITY}"
         )
+
+    def _episode_command_callback(self, message):
+        """Apply one seeded scene only while the vehicle is safely landed."""
+        try:
+            command = json.loads(message.data)
+            if command.get("command") != "prepare_episode":
+                raise ValueError("unsupported episode command")
+            pose = _world_pose(self._stage, VEHICLE_BODY_PATH)
+            if pose is None or pose[2] > 0.25:
+                raise RuntimeError("vehicle must be landed before scene reset")
+            scene = generate_episode_scene(
+                str(command["episode_id"]),
+                int(command["random_seed"]),
+                pose[0],
+                pose[1],
+                str(command.get("mode", "normal")),
+            )
+            self._apply_scene(scene)
+            self._scene_revision += 1
+            self._scene_id = f"phase10b_{scene['episode_id']}_seed_{scene['random_seed']}"
+            self._episode_id = scene["episode_id"]
+            self._random_seed = scene["random_seed"]
+            self._goal = tuple(scene["goal"])
+            self._obstacles = list(scene["obstacles"])
+            self._scene_configuration = scene
+            self._episode_command_error = ""
+            print(
+                f"[IsaacRuntimeBridge] Prepared {self._scene_id} "
+                f"revision={self._scene_revision} obstacles={len(self._obstacles)}"
+            )
+        except Exception as error:
+            self._episode_command_error = f"{type(error).__name__}: {error}"
+            print(f"[IsaacRuntimeBridge][ERROR] {self._episode_command_error}")
+
+    def _apply_scene(self, scene):
+        if self._stage.GetPrimAtPath(SCENE_ROOT).IsValid():
+            self._stage.RemovePrim(SCENE_ROOT)
+        root = UsdGeom.Xform.Define(self._stage, SCENE_ROOT)
+        root.GetPrim().SetCustomDataByKey("phase10b:episode_id", scene["episode_id"])
+        root.GetPrim().SetCustomDataByKey("phase10b:seed", scene["random_seed"])
+        for index, source in enumerate(scene["obstacles"], start=1):
+            obstacle = UsdGeom.Cube.Define(
+                self._stage, f"{SCENE_ROOT}/Obstacle_{index:02d}"
+            )
+            obstacle.CreateSizeAttr(1.0)
+            obstacle.AddTranslateOp().Set(Gf.Vec3d(
+                source["x"], source["y"], source["z"]
+            ))
+            obstacle.AddScaleOp().Set(Gf.Vec3d(
+                source["radius"] * 2.0,
+                source["radius"] * 2.0,
+                source["height"],
+            ))
+            color = 0.25 + 0.12 * (index % 4)
+            obstacle.CreateDisplayColorAttr([Gf.Vec3f(color, 0.35, 0.70 - color / 2)])
+            UsdPhysics.CollisionAPI.Apply(obstacle.GetPrim())
+        goal = UsdGeom.Cylinder.Define(self._stage, f"{SCENE_ROOT}/Goal")
+        goal.CreateRadiusAttr(0.25)
+        goal.CreateHeightAttr(0.02)
+        goal.AddTranslateOp().Set(Gf.Vec3d(
+            scene["goal"][0], scene["goal"][1], 0.01
+        ))
+        goal.CreateDisplayColorAttr([Gf.Vec3f(0.20, 0.85, 0.25)])
 
     def _update_camera_pose(self):
         if self._camera_transform is None:
@@ -170,13 +306,45 @@ class IsaacRuntimeBridge:
         target = Gf.Vec3d(
             eye[0] + 4.0 * direction[0],
             eye[1] + 4.0 * direction[1],
-            eye[2] - 0.18,
+            eye[2] - 1.20,
         )
         transform = Gf.Matrix4d().SetLookAt(
             eye, target, Gf.Vec3d(0.0, 0.0, 1.0)
         ).GetInverse()
         self._camera_transform.Set(transform)
+        if self._top_camera_transform is not None:
+            top_eye = Gf.Vec3d(position[0], position[1], position[2] + 9.0)
+            top_target = Gf.Vec3d(position[0], position[1], position[2])
+            top_transform = Gf.Matrix4d().SetLookAt(
+                top_eye, top_target, Gf.Vec3d(0.0, 1.0, 0.0)
+            ).GetInverse()
+            self._top_camera_transform.Set(top_transform)
         return True
+
+    @staticmethod
+    def _jpeg_message(data, stamp, frame_id):
+        import numpy as np
+        from PIL import Image
+
+        if isinstance(data, dict):
+            data = data.get("data")
+        if data is None or getattr(data, "size", 0) == 0:
+            raise RuntimeError("RGB annotator has no frame")
+        rgb = np.asarray(data)[..., :3]
+        if rgb.shape != (CAMERA_HEIGHT, CAMERA_WIDTH, 3):
+            raise RuntimeError(f"unexpected RGB shape {rgb.shape}")
+        if rgb.dtype != np.uint8:
+            rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+        stream = BytesIO()
+        Image.fromarray(rgb, mode="RGB").save(
+            stream, format="JPEG", quality=JPEG_QUALITY
+        )
+        message = CompressedImage()
+        message.header.stamp = stamp
+        message.header.frame_id = frame_id
+        message.format = "jpeg; rgb8"
+        message.data = stream.getvalue()
+        return message
 
     def _publish_camera(self, stamp, now_monotonic):
         if (
@@ -189,33 +357,68 @@ class IsaacRuntimeBridge:
         try:
             if not self._update_camera_pose():
                 raise RuntimeError("vehicle pose unavailable")
-            data = self._rgb_annotator.get_data()
-            if isinstance(data, dict):
-                data = data.get("data")
-            if data is None or getattr(data, "size", 0) == 0:
-                raise RuntimeError("RGB annotator has no frame")
-            import numpy as np
-            from PIL import Image
-
-            rgb = np.asarray(data)[..., :3]
-            if rgb.shape != (CAMERA_HEIGHT, CAMERA_WIDTH, 3):
-                raise RuntimeError(f"unexpected RGB shape {rgb.shape}")
-            if rgb.dtype != np.uint8:
-                rgb = np.clip(rgb, 0, 255).astype(np.uint8)
-            stream = BytesIO()
-            Image.fromarray(rgb, mode="RGB").save(
-                stream, format="JPEG", quality=JPEG_QUALITY
+            message = self._jpeg_message(
+                self._rgb_annotator.get_data(), stamp, "isaac_fpv_optical"
             )
-            message = CompressedImage()
-            message.header.stamp = stamp
-            message.header.frame_id = "isaac_fpv_optical"
-            message.format = "jpeg; rgb8"
-            message.data = stream.getvalue()
             self._camera_publisher.publish(message)
             self._camera_frame_count += 1
             self._camera_error = ""
         except Exception as error:
             self._camera_error = f"{type(error).__name__}: {error}"
+
+        if (
+            self._phase10b_enabled
+            and now_monotonic - self._last_top_publish_monotonic
+            >= TOP_CAMERA_PUBLISH_PERIOD_S
+        ):
+            self._last_top_publish_monotonic = now_monotonic
+            try:
+                message = self._jpeg_message(
+                    self._top_rgb_annotator.get_data(),
+                    stamp,
+                    "isaac_top_optical",
+                )
+                self._top_camera_publisher.publish(message)
+                self._top_frame_count += 1
+                self._top_camera_error = ""
+            except Exception as error:
+                self._top_camera_error = f"{type(error).__name__}: {error}"
+
+        if (
+            self._phase10b_enabled
+            and now_monotonic - self._last_depth_publish_monotonic
+            >= DEPTH_PUBLISH_PERIOD_S
+        ):
+            self._last_depth_publish_monotonic = now_monotonic
+            try:
+                import numpy as np
+                from PIL import Image
+
+                depth = self._depth_annotator.get_data()
+                if isinstance(depth, dict):
+                    depth = depth.get("data")
+                depth = np.asarray(depth, dtype=np.float32).squeeze()
+                if depth.shape != (CAMERA_HEIGHT, CAMERA_WIDTH):
+                    raise RuntimeError(f"unexpected depth shape {depth.shape}")
+                valid = np.isfinite(depth) & (depth >= DEPTH_MIN_M)
+                depth_mm = np.zeros(depth.shape, dtype=np.uint16)
+                depth_mm[valid] = np.rint(
+                    np.clip(depth[valid], DEPTH_MIN_M, DEPTH_MAX_M) * 1000.0
+                ).astype(np.uint16)
+                stream = BytesIO()
+                Image.fromarray(depth_mm, mode="I;16").save(stream, format="PNG")
+                message = CompressedImage()
+                message.header.stamp = stamp
+                message.header.frame_id = "isaac_fpv_optical"
+                message.format = (
+                    "png; 16UC1; unit=millimeter; range=50..30000; invalid=0"
+                )
+                message.data = stream.getvalue()
+                self._depth_publisher.publish(message)
+                self._depth_frame_count += 1
+                self._depth_error = ""
+            except Exception as error:
+                self._depth_error = f"{type(error).__name__}: {error}"
 
     def _on_update(self, _event):
         if self._stopped:
@@ -251,18 +454,30 @@ class IsaacRuntimeBridge:
         status.data = json.dumps({
             "schema": SCHEMA,
             "sequence": self._sequence,
-            "scene_id": SCENE_ID,
-            "scene_revision": SCENE_REVISION,
+            "scene_id": self._scene_id,
+            "scene_revision": self._scene_revision,
             "timeline_playing": timeline_playing,
             "prim_valid": prim_valid,
             "pose_valid": pose_valid,
             "vehicle_prim_path": VEHICLE_BODY_PATH,
-            "goal": list(GOAL),
-            "obstacles": list(OBSTACLES),
+            "goal": list(self._goal),
+            "obstacles": list(self._obstacles),
+            "episode_id": self._episode_id,
+            "random_seed": self._random_seed,
+            "scene_configuration": self._scene_configuration,
+            "episode_command_error": self._episode_command_error,
             "phase10a_camera_enabled": self._camera_enabled,
             "phase10a_camera_ready": self._camera_frame_count > 0,
             "phase10a_camera_frame_count": self._camera_frame_count,
             "phase10a_camera_error": self._camera_error,
+            "phase10b_top_rgb_enabled": self._phase10b_enabled,
+            "phase10b_top_rgb_ready": self._top_frame_count > 0,
+            "phase10b_top_rgb_frame_count": self._top_frame_count,
+            "phase10b_top_rgb_error": self._top_camera_error,
+            "phase10b_fpv_depth_enabled": self._phase10b_enabled,
+            "phase10b_fpv_depth_ready": self._depth_frame_count > 0,
+            "phase10b_fpv_depth_frame_count": self._depth_frame_count,
+            "phase10b_fpv_depth_error": self._depth_error,
         }, sort_keys=True, separators=(",", ":"))
         self._status_publisher.publish(status)
 
@@ -277,6 +492,12 @@ class IsaacRuntimeBridge:
         if self._rgb_annotator is not None:
             self._rgb_annotator.detach()
             self._rgb_annotator = None
+        if self._top_rgb_annotator is not None:
+            self._top_rgb_annotator.detach()
+            self._top_rgb_annotator = None
+        if self._depth_annotator is not None:
+            self._depth_annotator.detach()
+            self._depth_annotator = None
         self._node.destroy_node()
         if self._owns_rclpy and rclpy.ok():
             rclpy.shutdown()

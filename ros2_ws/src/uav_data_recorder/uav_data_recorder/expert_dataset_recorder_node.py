@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import re
 import time
 from collections import Counter, deque
 from pathlib import Path
@@ -19,6 +20,8 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 from sensor_msgs.msg import CompressedImage
+
+from std_msgs.msg import String
 
 from uav_data_recorder.expert_dataset_contract import (
     CSV_FIELDS,
@@ -41,12 +44,23 @@ from uav_interfaces.msg import ControlMuxStatus, Px4FlightStatus
 
 
 IMAGE_TOPIC = "/uav/isaac/fpv/image/compressed"
+TOP_IMAGE_TOPIC = "/uav/isaac/top/image/compressed"
+DEPTH_TOPIC = "/uav/isaac/fpv/depth/compressed"
+RUNTIME_STATUS_TOPIC = "/uav/isaac/runtime_status"
 ODOMETRY_TOPIC = "/uav/vehicle/odometry"
 EXPERT_COMMAND_TOPIC = "/uav/control/astar_command"
 MUX_STATUS_TOPIC = "/uav/control/mux_status"
 FLIGHT_STATUS_TOPIC = "/uav/px4/flight_status"
 GOAL_TOPIC = "/uav/scene/goal"
 EPISODE_ID = "episode_000001"
+AUXILIARY_FIELDS = (
+    "episode_id", "sample_id", "primary_image_timestamp_s",
+    "top_rgb_available", "top_rgb_timestamp_s", "top_rgb_error_s",
+    "top_rgb_path", "top_rgb_status", "fpv_depth_available",
+    "fpv_depth_timestamp_s", "fpv_depth_error_s", "fpv_depth_path",
+    "fpv_depth_status",
+)
+TOP_SYNCHRONIZATION_TOLERANCE_S = 0.35
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -67,6 +81,8 @@ class ExpertDatasetRecorderNode(Node):
             "dataset_root", "artifacts/datasets/bc_expert_v1"
         )
         self.declare_parameter("episode_id", EPISODE_ID)
+        self.declare_parameter("collection_mode", "single")
+        self.declare_parameter("random_seed", 0)
         self.declare_parameter(
             "synchronization_tolerance_s", SYNCHRONIZATION_TOLERANCE_S
         )
@@ -74,11 +90,19 @@ class ExpertDatasetRecorderNode(Node):
             str(self.get_parameter("dataset_root").value)
         ).expanduser().resolve()
         self.episode_id = str(self.get_parameter("episode_id").value)
+        self.collection_mode = str(
+            self.get_parameter("collection_mode").value
+        )
+        self.random_seed = int(self.get_parameter("random_seed").value)
         self.tolerance_s = float(
             self.get_parameter("synchronization_tolerance_s").value
         )
-        if self.episode_id != EPISODE_ID:
-            raise ValueError("Phase 10A records exactly episode_000001")
+        if not re.fullmatch(r"episode_[0-9]{6}", self.episode_id):
+            raise ValueError("episode_id must use episode_NNNNNN")
+        if self.collection_mode not in {"single", "batch"}:
+            raise ValueError("collection_mode must be single or batch")
+        if self.collection_mode == "single" and self.episode_id != EPISODE_ID:
+            raise ValueError("Phase 10A single mode records episode_000001")
         if not math.isfinite(self.tolerance_s) or self.tolerance_s <= 0.0:
             raise ValueError("synchronization tolerance must be positive")
         if abs(self.tolerance_s - SYNCHRONIZATION_TOLERANCE_S) > 1e-9:
@@ -103,8 +127,11 @@ class ExpertDatasetRecorderNode(Node):
         self._mux: deque[TimedValue] = deque(maxlen=400)
         self._flight: deque[TimedValue] = deque(maxlen=400)
         self._images: deque[TimedValue] = deque(maxlen=20)
+        self._top_images: deque[TimedValue] = deque(maxlen=20)
+        self._depth_images: deque[TimedValue] = deque(maxlen=20)
         self._goal: PoseStamped | None = None
         self._rows: list[dict] = []
+        self._auxiliary_rows: list[dict] = []
         self._rejections: Counter[str] = Counter()
         self._timeline: list[dict] = []
         self._last_phase = ""
@@ -113,6 +140,8 @@ class ExpertDatasetRecorderNode(Node):
         self._observed_landing_commanded = False
         self._observed_landed_after_landing = False
         self._finalized = False
+        self._scene_configuration: dict | None = None
+        self._sensor_runtime_status: dict = {}
 
         live = QoSProfile(depth=50, reliability=ReliabilityPolicy.RELIABLE)
         durable = QoSProfile(
@@ -122,6 +151,15 @@ class ExpertDatasetRecorderNode(Node):
         )
         self.create_subscription(
             CompressedImage, IMAGE_TOPIC, self._image_callback, live
+        )
+        self.create_subscription(
+            CompressedImage, TOP_IMAGE_TOPIC, self._top_image_callback, live
+        )
+        self.create_subscription(
+            CompressedImage, DEPTH_TOPIC, self._depth_image_callback, live
+        )
+        self.create_subscription(
+            String, RUNTIME_STATUS_TOPIC, self._runtime_status_callback, live
         )
         self.create_subscription(
             Odometry, ODOMETRY_TOPIC, self._state_callback, live
@@ -140,24 +178,29 @@ class ExpertDatasetRecorderNode(Node):
         )
         self._timer = self.create_timer(0.02, self._process_ready_images)
         self.get_logger().info(
-            f"PHASE10A_RECORDER_READY root={self.dataset_root} "
+            f"EXPERT_RECORDER_READY root={self.dataset_root} "
+            f"episode={self.episode_id} mode={self.collection_mode} "
             f"rate={SAMPLE_RATE_HZ:.1f}Hz tolerance={self.tolerance_s:.3f}s"
         )
 
     def _write_initial_metadata(self) -> None:
-        manifest = contract_manifest()
-        manifest.update({
-            "created_utc": self.started_utc,
-            "episodes": [self.episode_id],
-            "episode_count": 0,
-            "sample_count": 0,
-            "status": "recording",
-        })
         self.dataset_root.mkdir(parents=True, exist_ok=True)
-        _atomic_json(self.dataset_root / "dataset_manifest.json", manifest)
+        manifest_path = self.dataset_root / "dataset_manifest.json"
+        if self.collection_mode == "single" or not manifest_path.exists():
+            manifest = contract_manifest()
+            manifest.update({
+                "created_utc": self.started_utc,
+                "collection_mode": self.collection_mode,
+                "episodes": [],
+                "episode_count": 0,
+                "sample_count": 0,
+                "status": "recording",
+            })
+            _atomic_json(manifest_path, manifest)
         _atomic_json(self.episode_dir / "episode.json", {
             "dataset_version": DATASET_VERSION,
             "episode_id": self.episode_id,
+            "random_seed": self.random_seed,
             "started_utc": self.started_utc,
             "status": "recording",
             "success": False,
@@ -219,6 +262,43 @@ class ExpertDatasetRecorderNode(Node):
             self._rejections["invalid_image_timestamp"] += 1
             return
         self._images.append(TimedValue(item.timestamp_s, bytes(message.data)))
+
+    def _top_image_callback(self, message: CompressedImage) -> None:
+        item = self._timed(message)
+        if item is not None:
+            self._top_images.append(TimedValue(
+                item.timestamp_s, (bytes(message.data), message.format)
+            ))
+
+    def _depth_image_callback(self, message: CompressedImage) -> None:
+        item = self._timed(message)
+        if item is not None:
+            self._depth_images.append(TimedValue(
+                item.timestamp_s, (bytes(message.data), message.format)
+            ))
+
+    def _runtime_status_callback(self, message: String) -> None:
+        try:
+            status = json.loads(message.data)
+        except (TypeError, json.JSONDecodeError):
+            return
+        if not isinstance(status, dict):
+            return
+        self._sensor_runtime_status = {
+            key: status.get(key) for key in (
+                "phase10a_camera_enabled", "phase10a_camera_ready",
+                "phase10a_camera_error", "phase10b_top_rgb_enabled",
+                "phase10b_top_rgb_ready", "phase10b_top_rgb_error",
+                "phase10b_fpv_depth_enabled", "phase10b_fpv_depth_ready",
+                "phase10b_fpv_depth_error",
+            )
+        }
+        if (
+            status.get("episode_id") == self.episode_id
+            and status.get("random_seed") == self.random_seed
+            and isinstance(status.get("scene_configuration"), dict)
+        ):
+            self._scene_configuration = status["scene_configuration"]
 
     def _process_ready_images(self) -> None:
         now = self.get_clock().now().nanoseconds / 1e9
@@ -307,6 +387,58 @@ class ExpertDatasetRecorderNode(Node):
         row["sample_id"] = sample_id
         row["image_path"] = str(relative)
         self._rows.append(row)
+        self._record_auxiliary(image, sample_id)
+
+    def _record_auxiliary(self, image: TimedValue, sample_id: int) -> None:
+        row = {
+            "episode_id": self.episode_id,
+            "sample_id": sample_id,
+            "primary_image_timestamp_s": image.timestamp_s,
+        }
+        specifications = (
+            (
+                "top_rgb", self._top_images,
+                TOP_SYNCHRONIZATION_TOLERANCE_S, b"\xff\xd8", ".jpg",
+            ),
+            (
+                "fpv_depth", self._depth_images,
+                self.tolerance_s, b"\x89PNG\r\n\x1a\n", ".png",
+            ),
+        )
+        for name, buffer, tolerance, signature, suffix in specifications:
+            selected = nearest(list(buffer), image.timestamp_s)
+            error = (
+                None if selected is None
+                else abs(selected.timestamp_s - image.timestamp_s)
+            )
+            available = bool(
+                selected is not None
+                and error is not None
+                and error <= tolerance
+                and selected.value[0].startswith(signature)
+            )
+            row[f"{name}_available"] = available
+            row[f"{name}_timestamp_s"] = (
+                "" if selected is None else selected.timestamp_s
+            )
+            row[f"{name}_error_s"] = "" if error is None else error
+            row[f"{name}_path"] = ""
+            if available:
+                directory = self.episode_dir / name
+                directory.mkdir(exist_ok=True)
+                relative = Path(self.episode_id) / name / (
+                    f"frame_{sample_id:06d}{suffix}"
+                )
+                (self.dataset_root / relative).write_bytes(selected.value[0])
+                row[f"{name}_path"] = str(relative)
+                row[f"{name}_status"] = "matched"
+            elif selected is None:
+                row[f"{name}_status"] = "stream_unavailable"
+            elif error is not None and error > tolerance:
+                row[f"{name}_status"] = "over_tolerance"
+            else:
+                row[f"{name}_status"] = "invalid_format"
+        self._auxiliary_rows.append(row)
 
     def _build_row(
         self,
@@ -439,13 +571,43 @@ class ExpertDatasetRecorderNode(Node):
             writer = csv.DictWriter(stream, fieldnames=CSV_FIELDS)
             writer.writeheader()
             writer.writerows(self._rows)
+        with (self.episode_dir / "auxiliary.csv").open(
+            "w", newline="", encoding="utf-8"
+        ) as stream:
+            writer = csv.DictWriter(stream, fieldnames=AUXILIARY_FIELDS)
+            writer.writeheader()
+            writer.writerows(self._auxiliary_rows)
         image_times = [float(row["image_timestamp_s"]) for row in self._rows]
         rate = 0.0
         if len(image_times) > 1 and image_times[-1] > image_times[0]:
             rate = (len(image_times) - 1) / (image_times[-1] - image_times[0])
+        state_errors = [
+            float(row["state_image_error_s"]) for row in self._rows
+        ]
+        action_errors = [
+            float(row["expert_action_image_error_s"]) for row in self._rows
+        ]
+        path_length = sum(
+            math.hypot(
+                float(right["position_north_m"])
+                - float(left["position_north_m"]),
+                float(right["position_east_m"])
+                - float(left["position_east_m"]),
+            )
+            for left, right in zip(self._rows, self._rows[1:])
+        )
+
+        def percentile95(values: list[float]) -> float | None:
+            if not values:
+                return None
+            ordered = sorted(values)
+            return ordered[math.ceil(0.95 * len(ordered)) - 1]
+
         episode = {
             "dataset_version": DATASET_VERSION,
             "episode_id": self.episode_id,
+            "random_seed": self.random_seed,
+            "scene_configuration": self._scene_configuration,
             "started_utc": self.started_utc,
             "completed_utc": time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
@@ -457,6 +619,53 @@ class ExpertDatasetRecorderNode(Node):
             "rejected_sample_count": sum(self._rejections.values()),
             "rejections_by_reason": dict(sorted(self._rejections.items())),
             "observed_sampling_rate_hz": rate,
+            "path_length_m": path_length,
+            "final_tracking_goal_distance_m": (
+                None if not self._rows
+                else float(self._rows[-1]["raw_goal_distance_m"])
+            ),
+            "synchronization_statistics_s": {
+                "state": {
+                    "mean": (
+                        None if not state_errors
+                        else sum(state_errors) / len(state_errors)
+                    ),
+                    "p95": percentile95(state_errors),
+                    "max": max(state_errors, default=None),
+                },
+                "expert_action": {
+                    "mean": (
+                        None if not action_errors
+                        else sum(action_errors) / len(action_errors)
+                    ),
+                    "p95": percentile95(action_errors),
+                    "max": max(action_errors, default=None),
+                },
+            },
+            "available_sensor_streams": {
+                "fpv_rgb": {
+                    "required": True,
+                    "accepted": len(self._rows),
+                },
+                "top_rgb": {
+                    "required": False,
+                    "matched": sum(
+                        row["top_rgb_available"]
+                        for row in self._auxiliary_rows
+                    ),
+                },
+                "fpv_depth": {
+                    "required": False,
+                    "encoding": (
+                        "PNG uint16 millimetres, clip [50,30000], invalid 0"
+                    ),
+                    "matched": sum(
+                        row["fpv_depth_available"]
+                        for row in self._auxiliary_rows
+                    ),
+                },
+                "runtime_status": self._sensor_runtime_status,
+            },
             "maximum_state_image_error_s": max(
                 (float(row["state_image_error_s"]) for row in self._rows),
                 default=None,
@@ -492,18 +701,33 @@ class ExpertDatasetRecorderNode(Node):
             ),
         }
         _atomic_json(self.episode_dir / "episode.json", episode)
-        manifest = contract_manifest()
+        episode["episode_disk_usage_bytes"] = sum(
+            item.stat().st_size
+            for item in self.episode_dir.rglob("*")
+            if item.is_file()
+        )
+        _atomic_json(self.episode_dir / "episode.json", episode)
+        manifest_path = self.dataset_root / "dataset_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        episodes = list(manifest.get("episodes", []))
+        if self.episode_id not in episodes:
+            episodes.append(self.episode_id)
         manifest.update({
-            "created_utc": self.started_utc,
-            "episodes": [self.episode_id],
-            "episode_count": 1,
-            "sample_count": len(self._rows),
-            "all_success": success,
-            "status": "complete" if success else "failed",
+            "episodes": episodes,
+            "episode_count": len(episodes),
+            "sample_count": int(manifest.get("sample_count", 0))
+            + len(self._rows),
+            "status": (
+                "complete" if self.collection_mode == "single"
+                else "collecting"
+            ),
         })
+        if self.collection_mode == "single":
+            manifest["all_success"] = success
         _atomic_json(self.dataset_root / "dataset_manifest.json", manifest)
         self.get_logger().info(
-            f"PHASE10A_DATASET_FINALIZED success={str(success).lower()} "
+            f"EXPERT_DATASET_FINALIZED episode={self.episode_id} "
+            f"success={str(success).lower()} "
             f"samples={len(self._rows)} "
             f"rejected={sum(self._rejections.values())}"
         )
