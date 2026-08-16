@@ -13,25 +13,37 @@ committed.
 
 ## Commands
 
-Start a new 100-episode collection:
+Add 100 episodes to a new dataset:
 
 ```bash
 ./uav expert-collect --episodes 100
 ```
 
-Resume after an operator interrupt or an infrastructure stop:
+If that 100-episode run is interrupted, resume it with the same count:
 
 ```bash
 ./uav expert-collect --episodes 100 --resume
 ```
 
-`--episodes` is the desired total episode count. On resume it may equal the
-existing target or increase it. For example, a completed 10-episode collection
-can be extended in place to 100 episodes with the command above; episodes
-11–100 and seeds 103011–103100 are appended to the manifest. Shrinking the
-target is rejected. Completed episode directories are never overwritten. Any
-incomplete directory is moved to the Git-ignored recovery log before that
-episode is retried with its original seed.
+`--episodes` is the number of episodes to add in the current run, not a fixed
+dataset-wide target. After a run completes, any positive count can be appended
+without `--resume`. For example, this adds 5 episodes to an existing dataset:
+
+```bash
+./uav expert-collect --episodes 5
+```
+
+If that 5-episode run stops partway through, use
+`./uav expert-collect --episodes 5 --resume`. The resume count must match the
+unfinished run so the tool cannot accidentally create a second plan or skip
+episodes. When no run is unfinished, `--resume` is also accepted and starts a
+new append run. There is no configured total-episode ceiling; IDs retain at
+least six digits and expand naturally after `episode_999999`.
+
+The manifest's accumulated `target_episodes` grows after each append. Completed
+episode directories are never overwritten. Any incomplete directory is moved
+to the Git-ignored recovery log before that episode is retried with its
+original seed.
 
 Inspect command options or validate an existing completed collection:
 
@@ -82,8 +94,8 @@ readiness failure, or loss of process ownership is an infrastructure failure;
 the batch stops and leaves a resumable manifest.
 
 `collection_manifest.json` is the resume source of truth. It stores the
-append-only episode/seed plan, target-extension history, per-episode lifecycle
-status, accepted/rejected counts,
+append-only episode/seed plan, collection-run and append history, per-episode
+lifecycle status, accepted/rejected counts,
 terminal reason, outcome, dataset bytes, Visual QA status, and final aggregate
 validation. `dataset_manifest.json` retains the unchanged BC dataset contract.
 

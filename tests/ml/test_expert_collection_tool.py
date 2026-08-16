@@ -90,6 +90,10 @@ class ExpertCollectionToolTest(unittest.TestCase):
             (dataset / "collection_manifest.json").read_text(encoding="utf-8")
         )
         self.assertEqual(manifest["status"], "complete")
+        self.assertEqual(manifest["target_episodes"], 3)
+        self.assertEqual(
+            manifest["collection_runs"][0]["requested_episodes"], 3
+        )
         self.assertEqual(
             [entry["seed"] for entry in manifest["episodes"]],
             [103001, 103002, 103003],
@@ -125,7 +129,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         seeds = {entry["seed"] for entry in after["episodes"]}
         self.assertEqual(len(seeds), 3)
 
-    def test_resume_can_extend_completed_collection_total(self) -> None:
+    def test_completed_collection_appends_requested_episode_count(self) -> None:
         dataset = self.root / "dataset"
         with contextlib.redirect_stdout(io.StringIO()):
             self._collector(dataset, DryRunBackend()).run()
@@ -137,7 +141,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         extended = InterruptingBackend(interrupt_index=99)
         with contextlib.redirect_stdout(io.StringIO()):
             self._collector(
-                dataset, extended, resume=True, episodes=5
+                dataset, extended, resume=True, episodes=2
             ).run()
         self.assertEqual(
             extended.seen,
@@ -154,6 +158,27 @@ class ExpertCollectionToolTest(unittest.TestCase):
         )
         self.assertEqual(after["target_extensions"][0]["from_episodes"], 3)
         self.assertEqual(after["target_extensions"][0]["to_episodes"], 5)
+        self.assertEqual(
+            after["target_extensions"][0]["additional_episodes"], 2
+        )
+        self.assertEqual(
+            [run["requested_episodes"] for run in after["collection_runs"]],
+            [3, 2],
+        )
+
+    def test_completed_collection_appends_without_resume_flag(self) -> None:
+        dataset = self.root / "dataset"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self._collector(dataset, DryRunBackend()).run()
+
+        appended = InterruptingBackend(interrupt_index=99)
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = self._collector(
+                dataset, appended, episodes=1
+            ).run()
+
+        self.assertEqual(appended.seen, [("episode_000004", 103004)])
+        self.assertEqual(result["episode_count"], 4)
 
     def test_new_collection_never_overwrites_existing_directory(self) -> None:
         dataset = self.root / "dataset"
@@ -204,12 +229,12 @@ class ExpertCollectionToolTest(unittest.TestCase):
             manifest["episodes"][0]["status"], "infrastructure_failure"
         )
 
-    def test_shrink_does_not_corrupt_manifest_status(self) -> None:
+    def test_resume_count_mismatch_does_not_corrupt_manifest(self) -> None:
         dataset = self.root / "dataset"
         store = CollectionManifestStore(dataset)
         store.create(3, 103000)
-        store.set_collection_state("complete")
-        with self.assertRaises(ValueError):
+        store.set_collection_state("interrupted")
+        with self.assertRaisesRegex(ValueError, "unfinished collection run"):
             self._collector(
                 dataset, DryRunBackend(), resume=True, episodes=2
             ).run()
@@ -217,7 +242,57 @@ class ExpertCollectionToolTest(unittest.TestCase):
             (dataset / "collection_manifest.json").read_text(encoding="utf-8")
         )
         self.assertEqual(manifest["target_episodes"], 3)
+        self.assertEqual(manifest["status"], "interrupted")
+        self.assertEqual(len(manifest["episodes"]), 3)
+
+    def test_resume_finishes_interrupted_validation_without_append(self) -> None:
+        dataset = self.root / "dataset"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self._collector(dataset, DryRunBackend()).run()
+        store = CollectionManifestStore(dataset)
+        store.data = json.loads(
+            store.path.read_text(encoding="utf-8")
+        )
+        store.set_collection_state("interrupted", "validation interrupted")
+
+        resumed = InterruptingBackend(interrupt_index=99)
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = self._collector(
+                dataset, resumed, resume=True, episodes=3
+            ).run()
+
+        self.assertEqual(resumed.seen, [])
+        self.assertEqual(result["episode_count"], 3)
+        manifest = json.loads(store.path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["target_episodes"], 3)
+        self.assertEqual(len(manifest["collection_runs"]), 1)
         self.assertEqual(manifest["status"], "complete")
+
+    def test_completed_legacy_manifest_is_migrated_before_append(self) -> None:
+        dataset = self.root / "dataset"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self._collector(dataset, DryRunBackend()).run()
+        path = dataset / "collection_manifest.json"
+        legacy = json.loads(path.read_text(encoding="utf-8"))
+        legacy.pop("collection_runs")
+        legacy.pop("active_run_number")
+        legacy["status"] = "stopped_infrastructure_failure"
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        appended = InterruptingBackend(interrupt_index=99)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self._collector(dataset, appended, episodes=2).run()
+
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["target_episodes"], 5)
+        self.assertEqual(appended.seen, [
+            ("episode_000004", 103004),
+            ("episode_000005", 103005),
+        ])
+        self.assertEqual(
+            [run["requested_episodes"] for run in manifest["collection_runs"]],
+            [3, 2],
+        )
 
     def test_scene_validator_enforces_frozen_highrise_contract(self) -> None:
         scene = generate_episode_scene("episode_000001", 103001, 0.0, 0.0)
@@ -228,6 +303,12 @@ class ExpertCollectionToolTest(unittest.TestCase):
         changed["obstacles"][0]["width"] = 0.9
         with self.assertRaisesRegex(ValueError, "out of range"):
             validate_highrise_scene(changed, "episode_000001", 103001)
+
+    def test_episode_id_has_no_six_digit_ceiling(self) -> None:
+        scene = generate_episode_scene(
+            "episode_1000000", 1103000, 0.0, 0.0
+        )
+        self.assertEqual(scene["episode_id"], "episode_1000000")
 
     def test_success_metadata_requires_paths_and_stream_rates(self) -> None:
         episode_id = "episode_000001"

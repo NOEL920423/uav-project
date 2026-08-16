@@ -98,8 +98,10 @@ class ExpertDatasetRecorderNode(Node):
         self.tolerance_s = float(
             self.get_parameter("synchronization_tolerance_s").value
         )
-        if not re.fullmatch(r"episode_[0-9]{6}", self.episode_id):
-            raise ValueError("episode_id must use episode_NNNNNN")
+        if not re.fullmatch(r"episode_[0-9]{6,}", self.episode_id):
+            raise ValueError(
+                "episode_id must use episode_ followed by at least six digits"
+            )
         if self.collection_mode not in {"single", "batch"}:
             raise ValueError("collection_mode must be single or batch")
         if self.collection_mode == "single" and self.episode_id != EPISODE_ID:

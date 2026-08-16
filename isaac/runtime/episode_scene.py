@@ -307,8 +307,10 @@ def generate_episode_scene(
     mode: str = "normal",
 ) -> dict:
     """Generate the canonical eight-building distribution for one safe reset."""
-    if not re.fullmatch(r"episode_[0-9]{6}", episode_id):
-        raise ValueError("episode_id must use the episode_NNNNNN form")
+    if not re.fullmatch(r"episode_[0-9]{6,}", episode_id):
+        raise ValueError(
+            "episode_id must use episode_ followed by at least six digits"
+        )
     if mode not in {"normal", "blocked_goal"}:
         raise ValueError(f"unsupported scene mode: {mode}")
     reset = (float(reset_east_m), float(reset_north_m))

@@ -171,6 +171,39 @@ class CollectionManifestStore:
         self.path = self.dataset_root / COLLECTION_MANIFEST
         self.data: dict = {}
 
+    @staticmethod
+    def _episode_entry(index: int, base_seed: int) -> dict:
+        """Build one deterministic append-only episode-plan entry."""
+        return {
+            "index": index,
+            "episode_id": f"episode_{index:06d}",
+            "seed": base_seed + index,
+            "status": "pending",
+            "success": None,
+            "accepted_samples": 0,
+            "rejected_samples": 0,
+            "terminal_reason": "",
+        }
+
+    @staticmethod
+    def _run_entry(
+        run_number: int,
+        requested_episodes: int,
+        first_index: int,
+        last_index: int,
+        *,
+        status: str,
+    ) -> dict:
+        """Build an audit record for one invocation's requested append."""
+        return {
+            "run_number": run_number,
+            "requested_episodes": requested_episodes,
+            "first_episode_index": first_index,
+            "last_episode_index": last_index,
+            "status": status,
+            "created_utc": _utc_now(),
+        }
+
     def create(self, episodes: int, base_seed: int) -> dict:
         """Create a new immutable episode and seed plan."""
         if self.dataset_root.exists():
@@ -189,25 +222,22 @@ class CollectionManifestStore:
             "created_utc": _utc_now(),
             "updated_utc": _utc_now(),
             "episodes": [
-                {
-                    "index": index,
-                    "episode_id": f"episode_{index:06d}",
-                    "seed": base_seed + index,
-                    "status": "pending",
-                    "success": None,
-                    "accepted_samples": 0,
-                    "rejected_samples": 0,
-                    "terminal_reason": "",
-                }
+                self._episode_entry(index, base_seed)
                 for index in range(1, episodes + 1)
             ],
+            "collection_runs": [
+                self._run_entry(
+                    1, episodes, 1, episodes, status="prepared"
+                )
+            ],
+            "active_run_number": 1,
             "visual_qa": [],
         }
         self.save()
         return self.data
 
-    def load_for_resume(self, episodes: int) -> dict:
-        """Load a plan and optionally extend it to a larger total target."""
+    def load_for_collection(self, episodes: int, resume: bool) -> dict:
+        """Resume an unfinished run or append a new run to the dataset."""
         if not self.path.is_file():
             raise FileNotFoundError(
                 f"resume manifest does not exist: {self.path}"
@@ -218,11 +248,6 @@ class CollectionManifestStore:
         existing_target = int(self.data.get("target_episodes", -1))
         if existing_target <= 0:
             raise ValueError("collection manifest target is invalid")
-        if episodes < existing_target:
-            raise ValueError(
-                "--episodes cannot shrink the existing collection target "
-                f"({existing_target})"
-            )
         entries = self.data.get("episodes")
         if not isinstance(entries, list) or len(entries) != existing_target:
             raise ValueError("collection manifest episode plan is invalid")
@@ -235,36 +260,115 @@ class CollectionManifestStore:
         seeds = [entry.get("seed") for entry in entries]
         if len(set(seeds)) != existing_target:
             raise ValueError("collection manifest contains duplicate seeds")
-        if episodes > existing_target:
-            base_seed = int(self.data["base_seed"])
-            new_entries = [
-                {
-                    "index": index,
-                    "episode_id": f"episode_{index:06d}",
-                    "seed": base_seed + index,
-                    "status": "pending",
-                    "success": None,
-                    "accepted_samples": 0,
-                    "rejected_samples": 0,
-                    "terminal_reason": "",
-                }
-                for index in range(existing_target + 1, episodes + 1)
+
+        unfinished_entries = [
+            entry for entry in entries
+            if entry.get("status") not in TERMINAL_STATES
+        ]
+        runs = self.data.get("collection_runs")
+        if runs is not None and not isinstance(runs, list):
+            raise ValueError("collection manifest run history is invalid")
+        active_run = None
+        if runs:
+            active_number = int(
+                self.data.get("active_run_number", len(runs))
+            )
+            active_runs = [
+                item for item in runs
+                if int(item.get("run_number", -1)) == active_number
             ]
-            extended_seeds = seeds + [entry["seed"] for entry in new_entries]
-            if len(set(extended_seeds)) != episodes:
+            if len(active_runs) != 1:
+                raise ValueError("collection manifest active run is invalid")
+            active_run = active_runs[0]
+        unfinished_run = bool(unfinished_entries) or (
+            active_run is not None and active_run.get("status") != "complete"
+        )
+        if not runs and not unfinished_entries:
+            validation = self.data.get("validation", {})
+            legacy_valid = (
+                isinstance(validation, dict)
+                and validation.get("valid") is True
+            )
+            unfinished_run = (
+                self.data.get("status") != "complete" and not legacy_valid
+            )
+
+        if unfinished_run:
+            if not resume:
                 raise ValueError(
-                    "target expansion would create duplicate seeds"
+                    "collection has an unfinished run; rerun with --resume"
                 )
-            entries.extend(new_entries)
-            self.data["target_episodes"] = episodes
-            self.data.setdefault("target_extensions", []).append({
-                "from_episodes": existing_target,
-                "to_episodes": episodes,
-                "extended_utc": _utc_now(),
-            })
-            self.data.pop("completed_utc", None)
-            self.data.pop("validation", None)
-            self.save()
+            if active_run is not None:
+                requested = int(active_run["requested_episodes"])
+            else:
+                # A v1 manifest predating run history represents one run.
+                requested = existing_target
+            if episodes != requested:
+                raise ValueError(
+                    "--episodes must match the unfinished collection run "
+                    f"({requested})"
+                )
+            if not runs:
+                self.data["collection_runs"] = [
+                    self._run_entry(
+                        1,
+                        existing_target,
+                        1,
+                        existing_target,
+                        status="interrupted",
+                    )
+                ]
+                self.data["active_run_number"] = 1
+                self.save()
+            return self.data
+
+        if not runs:
+            # Preserve the completed legacy plan as the first historical run.
+            legacy = self._run_entry(
+                1,
+                existing_target,
+                1,
+                existing_target,
+                status="complete",
+            )
+            legacy["completed_utc"] = self.data.get(
+                "completed_utc", self.data.get("updated_utc", _utc_now())
+            )
+            runs = [legacy]
+            self.data["collection_runs"] = runs
+
+        run_number = max(
+            int(item.get("run_number", 0)) for item in runs
+        ) + 1
+        new_target = existing_target + episodes
+        base_seed = int(self.data["base_seed"])
+        new_entries = [
+            self._episode_entry(index, base_seed)
+            for index in range(existing_target + 1, new_target + 1)
+        ]
+        extended_seeds = seeds + [entry["seed"] for entry in new_entries]
+        if len(set(extended_seeds)) != new_target:
+            raise ValueError("episode append would create duplicate seeds")
+        entries.extend(new_entries)
+        runs.append(self._run_entry(
+            run_number,
+            episodes,
+            existing_target + 1,
+            new_target,
+            status="prepared",
+        ))
+        self.data["active_run_number"] = run_number
+        self.data["target_episodes"] = new_target
+        self.data.setdefault("target_extensions", []).append({
+            "run_number": run_number,
+            "additional_episodes": episodes,
+            "from_episodes": existing_target,
+            "to_episodes": new_target,
+            "extended_utc": _utc_now(),
+        })
+        self.data.pop("completed_utc", None)
+        self.data.pop("validation", None)
+        self.save()
         return self.data
 
     def save(self) -> None:
@@ -276,6 +380,17 @@ class CollectionManifestStore:
         """Update the batch-level lifecycle state."""
         self.data["status"] = state
         self.data["status_detail"] = detail
+        active_number = self.data.get("active_run_number")
+        for run in self.data.get("collection_runs", []):
+            if run.get("run_number") != active_number:
+                continue
+            run["status"] = state
+            run["status_detail"] = detail
+            if state == "collecting":
+                run.setdefault("started_utc", _utc_now())
+            elif state == "complete":
+                run["completed_utc"] = _utc_now()
+            break
         self.save()
 
     def update_episode(self, index: int, **changes: object) -> dict:
@@ -548,14 +663,19 @@ class ExpertCollector:
         self._manifest_prepared = False
 
     def _prepare(self) -> None:
-        if self.resume:
-            data = self.store.load_for_resume(self.episodes)
+        if self.store.path.is_file() or self.resume:
+            data = self.store.load_for_collection(
+                self.episodes, self.resume
+            )
             self.base_seed = int(data["base_seed"])
             self._manifest_prepared = True
             self._recover_incomplete_episodes()
         else:
             self.store.create(self.episodes, self.base_seed)
             self._manifest_prepared = True
+        self.display = ProgressDisplay(
+            int(self.store.data["target_episodes"])
+        )
         self.runtime_root.mkdir(parents=True, exist_ok=True)
         unfinished = any(
             entry.get("status") not in TERMINAL_STATES
@@ -942,7 +1062,9 @@ class ExpertCollector:
                 validation = validate_collection(
                     self.dataset_root,
                     self.autoencoder,
-                    expected_episodes=self.episodes,
+                    expected_episodes=int(
+                        self.store.data["target_episodes"]
+                    ),
                     device=self.device,
                 )
             else:
@@ -952,7 +1074,9 @@ class ExpertCollector:
                 validation = {
                     "valid": True,
                     "dry_run": True,
-                    "episode_count": self.episodes,
+                    "episode_count": int(
+                        self.store.data["target_episodes"]
+                    ),
                     "successful_episodes": success_count,
                     "failed_episodes": failure_count,
                     "accepted_samples_total": samples,
@@ -1004,16 +1128,16 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         type=int,
         help=(
-            "desired total episode count; --resume may extend an existing "
-            "collection to a larger total"
+            "number of episodes to add in this run; after an interruption, "
+            "pass the same value again with --resume"
         ),
     )
     parser.add_argument(
         "--resume",
         action="store_true",
         help=(
-            "resume or extend the existing total target without overwriting "
-            "completed episodes"
+            "resume an unfinished run without overwriting completed episodes; "
+            "when no run is unfinished, append a new run"
         ),
     )
     parser.add_argument(

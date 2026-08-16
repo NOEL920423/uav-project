@@ -23,12 +23,14 @@ bootstrap is `isaac/runtime/bootstrap.py`.
 The formal resumable expert dataset workflow is:
 
 ```bash
-./uav expert-collect --episodes 100
-./uav expert-collect --episodes 100 --resume
+./uav expert-collect --episodes 100           # append 100 episodes
+./uav expert-collect --episodes 100 --resume  # resume that run if interrupted
 ./uav expert-collect --help
 ```
 
-It writes only to `artifacts/datasets/bc_expert_highrise_v1/`. See
+Each completed invocation may append any positive episode count; there is no
+fixed total target. It writes only to
+`artifacts/datasets/bc_expert_highrise_v1/`. See
 [`docs/expert_dataset_collection.md`](docs/expert_dataset_collection.md) for
 the frozen scene/camera/data contracts, progress, resume, QA, and validation.
 
