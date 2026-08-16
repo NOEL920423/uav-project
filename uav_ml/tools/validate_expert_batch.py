@@ -31,15 +31,22 @@ def _validate_auxiliary(dataset_root: Path, episode_id: str) -> dict:
     with (episode_dir / "auxiliary.csv").open(
         newline="", encoding="utf-8"
     ) as stream:
-        rows = list(csv.DictReader(stream))
+        reader = csv.DictReader(stream)
+        auxiliary_fields = set(reader.fieldnames or ())
+        rows = list(reader)
     if len(rows) != len(sample_rows):
         raise ValueError(f"{episode_id}: auxiliary row count mismatch")
     counts = Counter()
     for index, row in enumerate(rows, start=1):
         if row["episode_id"] != episode_id or int(row["sample_id"]) != index:
             raise ValueError(f"{episode_id}: auxiliary identity mismatch")
+        observer_name = (
+            "observer_rgb"
+            if "observer_rgb_available" in auxiliary_fields
+            else "top_rgb"
+        )
         for name, tolerance, expected_format in (
-            ("top_rgb", 0.35, "JPEG"),
+            (observer_name, 0.35, "JPEG"),
             ("fpv_depth", 0.10, "PNG"),
         ):
             available = row[f"{name}_available"].lower() == "true"

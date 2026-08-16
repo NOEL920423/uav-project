@@ -7,6 +7,10 @@ from pathlib import Path
 ROOT = Path(__file__).parents[2]
 BOOTSTRAP = ROOT / "isaac" / "runtime" / "bootstrap.py"
 BRIDGE = ROOT / "isaac" / "runtime" / "runtime_bridge.py"
+VISUAL_QA_CAPTURE = (
+    ROOT / "ros2_ws" / "src" / "uav_data_recorder" /
+    "uav_data_recorder" / "visual_qa_capture.py"
+)
 
 
 def test_embedded_runtime_scripts_parse():
@@ -64,10 +68,49 @@ def test_phase10b_scene_commands_do_not_control_or_teleport_vehicle():
     assert "/fmu/in/" not in source
 
 
-def test_phase10b_auxiliary_contract_is_opt_in_and_storage_free():
-    """The embedded bridge publishes optional sensors but never writes data."""
+def test_phase10c_recovered_camera_contract_is_opt_in_and_storage_free():
+    """The bridge publishes legacy FPV/Observer sensors but never writes data."""
     source = BRIDGE.read_text(encoding="utf-8")
     assert 'os.environ.get("UAV_PHASE10B_SENSORS", "0") == "1"' in source
-    assert "/uav/isaac/top/image/compressed" in source
+    assert "/uav/isaac/observer/image/compressed" in source
     assert "/uav/isaac/fpv/depth/compressed" in source
     assert "unit=millimeter" in source
+    assert "FPV_FOCAL_LENGTH = 12.0" in source
+    assert "FPV_HORIZONTAL_APERTURE = 28.0" in source
+    assert "FPV_LOOK_DOWN_M = -0.8" in source
+    assert 'OBSERVER_MODE = "TOP"' in source
+    assert "OBSERVER_TOP_HEIGHT_M = 9.0" in source
+    assert "self._fpv_camera_position = fpv_eye" in source
+    assert "write_bytes" not in source
+
+
+def test_phase10c_runtime_creates_canonical_highrise_hierarchy_and_lights():
+    """USD application owns canonical buildings while planner sees one each."""
+    source = BRIDGE.read_text(encoding="utf-8")
+    apply_scene = source.split("def _apply_scene", 1)[1].split(
+        "def _update_camera_pose", 1
+    )[0]
+    assert 'SCENE_ROOT = "/World/GeneratedEpisode"' in source
+    assert "UsdGeom.Cube.Define" in apply_scene
+    assert "UsdGeom.Cylinder.Define" in apply_scene
+    assert "/Body" in apply_scene
+    assert "/Windows" in apply_scene
+    assert "/Roof" in apply_scene
+    assert "/Crown" in apply_scene
+    assert "/Antenna" in apply_scene
+    assert "UsdLux.DomeLight.Define" in apply_scene
+    assert "UsdLux.DistantLight.Define" in apply_scene
+    assert "collision=True" in apply_scene
+
+
+def test_phase10c_capture_is_read_only_and_collects_three_flight_phases():
+    """Visual QA must observe path/images/status without commanding flight."""
+    source = VISUAL_QA_CAPTURE.read_text(encoding="utf-8")
+    ast.parse(source)
+    assert 'CAPTURE_PHASES = ("start", "mid_flight", "near_goal")' in source
+    assert 'PATH_TOPIC = "/uav/planner/path"' in source
+    assert '"look_down_m": -0.8' in source
+    assert '"mode": "TOP"' in source
+    assert '"position_smoothing": "disabled_rigid_body_mount"' in source
+    assert "create_publisher" not in source
+    assert "/fmu/in/" not in source

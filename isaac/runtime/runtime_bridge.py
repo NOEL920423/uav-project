@@ -30,7 +30,7 @@ from std_msgs.msg import String
 
 from sensor_msgs.msg import CompressedImage
 
-from pxr import Gf, UsdGeom, UsdPhysics
+from pxr import Gf, UsdGeom, UsdLux, UsdPhysics
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
@@ -51,18 +51,37 @@ PUBLISH_PERIOD_S = 0.05
 CAMERA_PUBLISH_PERIOD_S = 0.20
 CAMERA_TOPIC = "/uav/isaac/fpv/image/compressed"
 CAMERA_PATH = "/World/Phase10A/FPVCamera"
-TOP_CAMERA_PATH = "/World/Phase10B/TopCamera"
-TOP_CAMERA_TOPIC = "/uav/isaac/top/image/compressed"
+OBSERVER_CAMERA_PATH = "/World/Phase10C/ObserverCamera"
+OBSERVER_CAMERA_TOPIC = "/uav/isaac/observer/image/compressed"
 DEPTH_TOPIC = "/uav/isaac/fpv/depth/compressed"
 EPISODE_COMMAND_TOPIC = "/uav/isaac/episode_command"
-SCENE_ROOT = "/World/Phase9Runtime"
+PHASE9_ROOT = "/World/Phase9Runtime"
+SCENE_ROOT = "/World/GeneratedEpisode"
 CAMERA_WIDTH = 320
 CAMERA_HEIGHT = 180
 JPEG_QUALITY = 85
-TOP_CAMERA_PUBLISH_PERIOD_S = 0.50
+OBSERVER_CAMERA_PUBLISH_PERIOD_S = 0.50
 DEPTH_PUBLISH_PERIOD_S = 0.20
 DEPTH_MIN_M = 0.05
 DEPTH_MAX_M = 30.0
+FPV_FORWARD_OFFSET_M = 0.45
+FPV_HEIGHT_M = 0.12
+FPV_LOOK_AHEAD_M = 3.5
+FPV_LOOK_DOWN_M = -0.8
+FPV_FOCAL_LENGTH = 12.0
+FPV_HORIZONTAL_APERTURE = 28.0
+OBSERVER_MODE = "TOP"
+OBSERVER_BACK_DISTANCE_M = 3.2
+OBSERVER_HEIGHT_M = 5.2
+OBSERVER_SIDE_OFFSET_M = 2.2
+OBSERVER_LOOK_AHEAD_M = 2.5
+OBSERVER_LOOK_AT_HEIGHT_M = -1.2
+OBSERVER_TOP_HEIGHT_M = 9.0
+OBSERVER_TOP_LOOK_AT_HEIGHT_M = 0.0
+OBSERVER_FOCAL_LENGTH = 18.0
+OBSERVER_HORIZONTAL_APERTURE = 22.0
+CAMERA_CLIPPING_RANGE = (0.05, 10000.0)
+CAMERA_SMOOTHING = 0.18
 GOAL = (0.5, 3.0, 1.5)
 OBSTACLES = ({
     "name": "Building_Phase9_001",
@@ -125,24 +144,26 @@ class IsaacRuntimeBridge:
         self._scene_configuration = None
         self._episode_command_error = ""
         self._camera_publisher = None
-        self._top_camera_publisher = None
+        self._observer_camera_publisher = None
         self._depth_publisher = None
         self._camera_transform = None
-        self._top_camera_transform = None
+        self._observer_camera_transform = None
         self._rgb_annotator = None
-        self._top_rgb_annotator = None
+        self._observer_rgb_annotator = None
         self._depth_annotator = None
         self._render_product = None
-        self._top_render_product = None
+        self._observer_render_product = None
         self._last_camera_publish_monotonic = 0.0
-        self._last_top_publish_monotonic = 0.0
+        self._last_observer_publish_monotonic = 0.0
         self._last_depth_publish_monotonic = 0.0
         self._camera_frame_count = 0
-        self._top_frame_count = 0
+        self._observer_frame_count = 0
         self._depth_frame_count = 0
         self._camera_error = "disabled"
-        self._top_camera_error = "disabled"
+        self._observer_camera_error = "disabled"
         self._depth_error = "disabled"
+        self._fpv_camera_position = None
+        self._observer_camera_position = None
         if self._camera_enabled:
             self._setup_camera()
         self._episode_command_subscription = self._node.create_subscription(
@@ -172,10 +193,9 @@ class IsaacRuntimeBridge:
         if existing and existing.IsValid():
             self._stage.RemovePrim(CAMERA_PATH)
         camera = UsdGeom.Camera.Define(self._stage, CAMERA_PATH)
-        camera.GetFocalLengthAttr().Set(18.0)
-        camera.GetHorizontalApertureAttr().Set(20.955)
-        camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.05, 30.0))
-        camera.CreateExposureAttr().Set(2.0)
+        camera.GetFocalLengthAttr().Set(FPV_FOCAL_LENGTH)
+        camera.GetHorizontalApertureAttr().Set(FPV_HORIZONTAL_APERTURE)
+        camera.GetClippingRangeAttr().Set(Gf.Vec2f(*CAMERA_CLIPPING_RANGE))
         self._camera_transform = UsdGeom.Xformable(
             camera.GetPrim()
         ).AddTransformOp()
@@ -189,30 +209,39 @@ class IsaacRuntimeBridge:
         )
         self._camera_error = "warming"
         if self._phase10b_enabled:
-            top_camera = UsdGeom.Camera.Define(self._stage, TOP_CAMERA_PATH)
-            top_camera.GetFocalLengthAttr().Set(18.0)
-            top_camera.GetHorizontalApertureAttr().Set(20.955)
-            top_camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.1, 50.0))
-            top_camera.CreateExposureAttr().Set(2.0)
-            self._top_camera_transform = UsdGeom.Xformable(
-                top_camera.GetPrim()
-            ).AddTransformOp()
-            self._top_render_product = rep.create.render_product(
-                TOP_CAMERA_PATH, (CAMERA_WIDTH, CAMERA_HEIGHT)
+            observer_camera = UsdGeom.Camera.Define(
+                self._stage, OBSERVER_CAMERA_PATH
             )
-            self._top_rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
-            self._top_rgb_annotator.attach([self._top_render_product])
+            observer_camera.GetFocalLengthAttr().Set(OBSERVER_FOCAL_LENGTH)
+            observer_camera.GetHorizontalApertureAttr().Set(
+                OBSERVER_HORIZONTAL_APERTURE
+            )
+            observer_camera.GetClippingRangeAttr().Set(
+                Gf.Vec2f(*CAMERA_CLIPPING_RANGE)
+            )
+            self._observer_camera_transform = UsdGeom.Xformable(
+                observer_camera.GetPrim()
+            ).AddTransformOp()
+            self._observer_render_product = rep.create.render_product(
+                OBSERVER_CAMERA_PATH, (CAMERA_WIDTH, CAMERA_HEIGHT)
+            )
+            self._observer_rgb_annotator = (
+                rep.AnnotatorRegistry.get_annotator("rgb")
+            )
+            self._observer_rgb_annotator.attach([
+                self._observer_render_product
+            ])
             self._depth_annotator = rep.AnnotatorRegistry.get_annotator(
                 "distance_to_camera"
             )
             self._depth_annotator.attach([self._render_product])
-            self._top_camera_publisher = self._node.create_publisher(
-                CompressedImage, TOP_CAMERA_TOPIC, 10
+            self._observer_camera_publisher = self._node.create_publisher(
+                CompressedImage, OBSERVER_CAMERA_TOPIC, 10
             )
             self._depth_publisher = self._node.create_publisher(
                 CompressedImage, DEPTH_TOPIC, 10
             )
-            self._top_camera_error = "warming"
+            self._observer_camera_error = "warming"
             self._depth_error = "warming"
         print(
             f"[IsaacRuntimeBridge] Phase10A FPV render product: "
@@ -253,34 +282,217 @@ class IsaacRuntimeBridge:
             print(f"[IsaacRuntimeBridge][ERROR] {self._episode_command_error}")
 
     def _apply_scene(self, scene):
+        if self._stage.GetPrimAtPath(PHASE9_ROOT).IsValid():
+            self._stage.RemovePrim(PHASE9_ROOT)
         if self._stage.GetPrimAtPath(SCENE_ROOT).IsValid():
             self._stage.RemovePrim(SCENE_ROOT)
         root = UsdGeom.Xform.Define(self._stage, SCENE_ROOT)
         root.GetPrim().SetCustomDataByKey("phase10b:episode_id", scene["episode_id"])
         root.GetPrim().SetCustomDataByKey("phase10b:seed", scene["random_seed"])
+        root.GetPrim().SetCustomDataByKey(
+            "phase10c:generator", scene["generator"]
+        )
+        self._create_episode_lighting(scene["lighting"])
+        UsdGeom.Xform.Define(self._stage, f"{SCENE_ROOT}/Obstacles")
         for index, source in enumerate(scene["obstacles"], start=1):
-            obstacle = UsdGeom.Cube.Define(
-                self._stage, f"{SCENE_ROOT}/Obstacle_{index:02d}"
+            building = self._create_highrise_building(source, index)
+            building.SetCustomDataByKey(
+                "episode:shape", "high_rise_building"
             )
-            obstacle.CreateSizeAttr(1.0)
-            obstacle.AddTranslateOp().Set(Gf.Vec3d(
-                source["x"], source["y"], source["z"]
-            ))
-            obstacle.AddScaleOp().Set(Gf.Vec3d(
-                source["radius"] * 2.0,
-                source["radius"] * 2.0,
-                source["height"],
-            ))
-            color = 0.25 + 0.12 * (index % 4)
-            obstacle.CreateDisplayColorAttr([Gf.Vec3f(color, 0.35, 0.70 - color / 2)])
-            UsdPhysics.CollisionAPI.Apply(obstacle.GetPrim())
-        goal = UsdGeom.Cylinder.Define(self._stage, f"{SCENE_ROOT}/Goal")
-        goal.CreateRadiusAttr(0.25)
-        goal.CreateHeightAttr(0.02)
-        goal.AddTranslateOp().Set(Gf.Vec3d(
-            scene["goal"][0], scene["goal"][1], 0.01
+            building.SetCustomDataByKey(
+                "episode:radius", float(source["radius"])
+            )
+            building.SetCustomDataByKey(
+                "episode:height", float(source["height"])
+            )
+            building.SetCustomDataByKey(
+                "episode:width", float(source["width"])
+            )
+            building.SetCustomDataByKey(
+                "episode:depth", float(source["depth"])
+            )
+            building.SetCustomDataByKey(
+                "episode:yaw_deg", float(source["yaw_deg"])
+            )
+        start = UsdGeom.Cylinder.Define(
+            self._stage, f"{SCENE_ROOT}/Start/StartDisk"
+        )
+        start.CreateRadiusAttr(0.5)
+        start.CreateHeightAttr(0.05)
+        start.AddTranslateOp().Set(Gf.Vec3d(
+            scene["start"][0], scene["start"][1], 0.025
         ))
-        goal.CreateDisplayColorAttr([Gf.Vec3f(0.20, 0.85, 0.25)])
+        start.CreateDisplayColorAttr([Gf.Vec3f(0.0, 0.3, 1.0)])
+        goal = UsdGeom.Cylinder.Define(
+            self._stage, f"{SCENE_ROOT}/Target/TargetDisk"
+        )
+        goal.CreateRadiusAttr(0.5)
+        goal.CreateHeightAttr(0.05)
+        goal.AddTranslateOp().Set(Gf.Vec3d(
+            scene["target_marker"][0], scene["target_marker"][1], 0.025
+        ))
+        goal.CreateDisplayColorAttr([Gf.Vec3f(1.0, 0.0, 0.0)])
+
+    @staticmethod
+    def _set_prim_transform(prim, position, rotation_deg=None, scale=None):
+        xformable = UsdGeom.Xformable(prim)
+        xformable.ClearXformOpOrder()
+        xformable.AddTranslateOp().Set(Gf.Vec3d(*map(float, position)))
+        if rotation_deg is not None:
+            xformable.AddRotateXYZOp().Set(
+                Gf.Vec3f(*map(float, rotation_deg))
+            )
+        if scale is not None:
+            xformable.AddScaleOp().Set(Gf.Vec3f(*map(float, scale)))
+
+    @staticmethod
+    def _set_display_color(prim, color):
+        UsdGeom.Gprim(prim).CreateDisplayColorAttr([
+            Gf.Vec3f(*map(float, color))
+        ])
+
+    def _create_box(self, path, size, position, color, collision=False):
+        cube = UsdGeom.Cube.Define(self._stage, path)
+        cube.CreateSizeAttr(1.0)
+        prim = cube.GetPrim()
+        self._set_prim_transform(prim, position, scale=size)
+        self._set_display_color(prim, color)
+        if collision:
+            UsdPhysics.CollisionAPI.Apply(prim)
+        return prim
+
+    def _create_episode_lighting(self, lighting):
+        light_root = f"{SCENE_ROOT}/Lights"
+        UsdGeom.Xform.Define(self._stage, light_root)
+        dome_spec = lighting["dome"]
+        dome = UsdLux.DomeLight.Define(self._stage, f"{light_root}/Dome")
+        dome.CreateIntensityAttr(float(dome_spec["intensity"]))
+        dome.CreateExposureAttr(float(dome_spec["exposure"]))
+        dome.CreateColorAttr(Gf.Vec3f(*map(float, dome_spec["color"])))
+        for name in ("key", "fill"):
+            spec = lighting[name]
+            light = UsdLux.DistantLight.Define(
+                self._stage, f"{light_root}/{name.title()}"
+            )
+            light.CreateIntensityAttr(float(spec["intensity"]))
+            light.CreateAngleAttr(float(spec["angle_deg"]))
+            light.CreateColorAttr(Gf.Vec3f(*map(float, spec["color"])))
+            self._set_prim_transform(
+                light.GetPrim(),
+                (0.0, 0.0, 8.0),
+                rotation_deg=spec["rotation_deg"],
+            )
+
+    def _create_highrise_building(self, source, index):
+        name = str(source.get("name") or f"Building_{index:03d}")
+        path = f"{SCENE_ROOT}/Obstacles/{name}"
+        building = UsdGeom.Xform.Define(self._stage, path).GetPrim()
+        self._set_prim_transform(
+            building,
+            (source["x"], source["y"], 0.0),
+            rotation_deg=(0.0, 0.0, source["yaw_deg"]),
+        )
+        width = float(source["width"])
+        depth = float(source["depth"])
+        height = float(source["height"])
+        self._create_box(
+            f"{path}/Body",
+            (width, depth, height),
+            (0.0, 0.0, 0.5 * height),
+            source["facade_color"],
+            collision=True,
+        )
+        self._create_building_windows(path, source)
+        roof_path = f"{path}/Roof"
+        UsdGeom.Xform.Define(self._stage, roof_path)
+        roof_style = str(source["roof_style"])
+        roof_height = float(source["roof_height"])
+        crown_scale = 0.82 if roof_style == "flat" else 0.58
+        roof_color = [
+            max(0.02, float(value) * 0.65)
+            for value in source["facade_color"]
+        ]
+        self._create_box(
+            f"{roof_path}/Crown",
+            (width * crown_scale, depth * crown_scale, roof_height),
+            (0.0, 0.0, height + 0.5 * roof_height),
+            roof_color,
+            collision=False,
+        )
+        if roof_style == "antenna":
+            antenna_height = float(source["antenna_height"])
+            antenna = UsdGeom.Cylinder.Define(
+                self._stage, f"{roof_path}/Antenna"
+            )
+            antenna.CreateRadiusAttr(max(0.018, min(width, depth) * 0.045))
+            antenna.CreateHeightAttr(antenna_height)
+            self._set_prim_transform(
+                antenna.GetPrim(),
+                (0.0, 0.0, height + roof_height + 0.5 * antenna_height),
+            )
+            self._set_display_color(
+                antenna.GetPrim(), (0.12, 0.12, 0.14)
+            )
+        return building
+
+    def _create_building_windows(self, building_path, source):
+        windows = source["windows"]
+        window_root = f"{building_path}/Windows"
+        UsdGeom.Xform.Define(self._stage, window_root)
+        width = float(source["width"])
+        depth = float(source["depth"])
+        height = float(source["height"])
+        row_count = int(windows["row_count"])
+        columns_x = int(windows["columns_x"])
+        columns_y = int(windows["columns_y"])
+        thickness = float(windows["thickness_m"])
+        margin = float(windows["margin_m"])
+        window_height = min(
+            float(windows["height_m"]), height / (row_count + 2)
+        )
+        usable_height = max(window_height, height - 2.0 * margin)
+        row_spacing = usable_height / max(1, row_count)
+        window_width_x = max(
+            0.07, (width - 2.0 * margin) / max(1, columns_x) * 0.62
+        )
+        window_width_y = max(
+            0.07, (depth - 2.0 * margin) / max(1, columns_y) * 0.62
+        )
+        pattern = iter(windows["on_pattern"])
+        for row in range(row_count):
+            z = margin + (row + 0.5) * row_spacing
+            for column in range(columns_x):
+                x = -0.5 * width + (column + 0.5) * width / columns_x
+                for face_name, y in (
+                    ("North", 0.5 * depth + 0.5 * thickness),
+                    ("South", -0.5 * depth - 0.5 * thickness),
+                ):
+                    color = (
+                        source["window_on_color"] if next(pattern)
+                        else source["window_off_color"]
+                    )
+                    self._create_box(
+                        f"{window_root}/{face_name}_R{row:02d}_C{column:02d}",
+                        (window_width_x, thickness, window_height),
+                        (x, y, z),
+                        color,
+                    )
+            for column in range(columns_y):
+                y = -0.5 * depth + (column + 0.5) * depth / columns_y
+                for face_name, x in (
+                    ("East", 0.5 * width + 0.5 * thickness),
+                    ("West", -0.5 * width - 0.5 * thickness),
+                ):
+                    color = (
+                        source["window_on_color"] if next(pattern)
+                        else source["window_off_color"]
+                    )
+                    self._create_box(
+                        f"{window_root}/{face_name}_R{row:02d}_C{column:02d}",
+                        (thickness, window_width_y, window_height),
+                        (x, y, z),
+                        color,
+                    )
 
     def _update_camera_pose(self):
         if self._camera_transform is None:
@@ -291,35 +503,79 @@ class IsaacRuntimeBridge:
         matrix = omni.usd.get_world_transform_matrix(prim)
         position = matrix.ExtractTranslation()
         forward = matrix.TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-        # Match the already-proven legacy FPV mount: keep the view horizontal
-        # and place it beyond the Iris body/propeller envelope.
         forward = Gf.Vec3d(forward[0], forward[1], 0.0)
         length = math.hypot(float(forward[0]), float(forward[1]))
         if length <= 1e-6:
             return False
         direction = Gf.Vec3d(*(float(value) / length for value in forward))
-        eye = Gf.Vec3d(
-            position[0] + 0.45 * direction[0],
-            position[1] + 0.45 * direction[1],
-            position[2] + 0.12,
+        fpv_eye = Gf.Vec3d(
+            position[0] + FPV_FORWARD_OFFSET_M * direction[0],
+            position[1] + FPV_FORWARD_OFFSET_M * direction[1],
+            position[2] + FPV_HEIGHT_M,
         )
-        target = Gf.Vec3d(
-            eye[0] + 4.0 * direction[0],
-            eye[1] + 4.0 * direction[1],
-            eye[2] - 1.20,
+        fpv_target = Gf.Vec3d(
+            position[0] + FPV_LOOK_AHEAD_M * direction[0],
+            position[1] + FPV_LOOK_AHEAD_M * direction[1],
+            position[2] + FPV_LOOK_DOWN_M,
         )
+        # FPV is a rigid body mount. World-space interpolation makes the eye
+        # lag behind the current body pose/yaw while the look target does not,
+        # which can put the UAV itself between eye and target during flight.
+        self._fpv_camera_position = fpv_eye
         transform = Gf.Matrix4d().SetLookAt(
-            eye, target, Gf.Vec3d(0.0, 0.0, 1.0)
+            self._fpv_camera_position,
+            fpv_target,
+            Gf.Vec3d(0.0, 0.0, 1.0),
         ).GetInverse()
         self._camera_transform.Set(transform)
-        if self._top_camera_transform is not None:
-            top_eye = Gf.Vec3d(position[0], position[1], position[2] + 9.0)
-            top_target = Gf.Vec3d(position[0], position[1], position[2])
-            top_transform = Gf.Matrix4d().SetLookAt(
-                top_eye, top_target, Gf.Vec3d(0.0, 1.0, 0.0)
+        if self._observer_camera_transform is not None:
+            if OBSERVER_MODE == "TOP":
+                observer_eye = Gf.Vec3d(
+                    position[0],
+                    position[1],
+                    position[2] + OBSERVER_TOP_HEIGHT_M,
+                )
+                observer_target = Gf.Vec3d(
+                    position[0],
+                    position[1],
+                    position[2] + OBSERVER_TOP_LOOK_AT_HEIGHT_M,
+                )
+                observer_up = Gf.Vec3d(0.0, 1.0, 0.0)
+            else:
+                right = Gf.Vec3d(direction[1], -direction[0], 0.0)
+                observer_eye = Gf.Vec3d(
+                    position[0] - direction[0] * OBSERVER_BACK_DISTANCE_M
+                    + right[0] * OBSERVER_SIDE_OFFSET_M,
+                    position[1] - direction[1] * OBSERVER_BACK_DISTANCE_M
+                    + right[1] * OBSERVER_SIDE_OFFSET_M,
+                    position[2] + OBSERVER_HEIGHT_M,
+                )
+                observer_target = Gf.Vec3d(
+                    position[0] + direction[0] * OBSERVER_LOOK_AHEAD_M,
+                    position[1] + direction[1] * OBSERVER_LOOK_AHEAD_M,
+                    position[2] + OBSERVER_LOOK_AT_HEIGHT_M,
+                )
+                observer_up = Gf.Vec3d(0.0, 0.0, 1.0)
+            self._observer_camera_position = self._smooth_position(
+                self._observer_camera_position, observer_eye
+            )
+            observer_transform = Gf.Matrix4d().SetLookAt(
+                self._observer_camera_position,
+                observer_target,
+                observer_up,
             ).GetInverse()
-            self._top_camera_transform.Set(top_transform)
+            self._observer_camera_transform.Set(observer_transform)
         return True
+
+    @staticmethod
+    def _smooth_position(current, target):
+        if current is None:
+            return target
+        return Gf.Vec3d(*(
+            current[index] * (1.0 - CAMERA_SMOOTHING)
+            + target[index] * CAMERA_SMOOTHING
+            for index in range(3)
+        ))
 
     @staticmethod
     def _jpeg_message(data, stamp, frame_id):
@@ -368,21 +624,23 @@ class IsaacRuntimeBridge:
 
         if (
             self._phase10b_enabled
-            and now_monotonic - self._last_top_publish_monotonic
-            >= TOP_CAMERA_PUBLISH_PERIOD_S
+            and now_monotonic - self._last_observer_publish_monotonic
+            >= OBSERVER_CAMERA_PUBLISH_PERIOD_S
         ):
-            self._last_top_publish_monotonic = now_monotonic
+            self._last_observer_publish_monotonic = now_monotonic
             try:
                 message = self._jpeg_message(
-                    self._top_rgb_annotator.get_data(),
+                    self._observer_rgb_annotator.get_data(),
                     stamp,
-                    "isaac_top_optical",
+                    "isaac_observer_optical",
                 )
-                self._top_camera_publisher.publish(message)
-                self._top_frame_count += 1
-                self._top_camera_error = ""
+                self._observer_camera_publisher.publish(message)
+                self._observer_frame_count += 1
+                self._observer_camera_error = ""
             except Exception as error:
-                self._top_camera_error = f"{type(error).__name__}: {error}"
+                self._observer_camera_error = (
+                    f"{type(error).__name__}: {error}"
+                )
 
         if (
             self._phase10b_enabled
@@ -470,10 +728,11 @@ class IsaacRuntimeBridge:
             "phase10a_camera_ready": self._camera_frame_count > 0,
             "phase10a_camera_frame_count": self._camera_frame_count,
             "phase10a_camera_error": self._camera_error,
-            "phase10b_top_rgb_enabled": self._phase10b_enabled,
-            "phase10b_top_rgb_ready": self._top_frame_count > 0,
-            "phase10b_top_rgb_frame_count": self._top_frame_count,
-            "phase10b_top_rgb_error": self._top_camera_error,
+            "phase10c_observer_rgb_enabled": self._phase10b_enabled,
+            "phase10c_observer_rgb_ready": self._observer_frame_count > 0,
+            "phase10c_observer_rgb_frame_count": self._observer_frame_count,
+            "phase10c_observer_rgb_error": self._observer_camera_error,
+            "phase10c_observer_mode": OBSERVER_MODE.lower(),
             "phase10b_fpv_depth_enabled": self._phase10b_enabled,
             "phase10b_fpv_depth_ready": self._depth_frame_count > 0,
             "phase10b_fpv_depth_frame_count": self._depth_frame_count,
@@ -492,9 +751,9 @@ class IsaacRuntimeBridge:
         if self._rgb_annotator is not None:
             self._rgb_annotator.detach()
             self._rgb_annotator = None
-        if self._top_rgb_annotator is not None:
-            self._top_rgb_annotator.detach()
-            self._top_rgb_annotator = None
+        if self._observer_rgb_annotator is not None:
+            self._observer_rgb_annotator.detach()
+            self._observer_rgb_annotator = None
         if self._depth_annotator is not None:
             self._depth_annotator.detach()
             self._depth_annotator = None

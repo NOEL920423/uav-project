@@ -29,6 +29,8 @@ setup(
             "uav_data_recorder.expert_dataset_recorder_node:main",
             "episode_scene_client = "
             "uav_data_recorder.episode_scene_client:main",
+            "visual_qa_capture = "
+            "uav_data_recorder.visual_qa_capture:main",
         ],
     },
 )

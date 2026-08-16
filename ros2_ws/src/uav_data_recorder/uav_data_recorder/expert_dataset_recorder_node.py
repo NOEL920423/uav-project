@@ -44,7 +44,7 @@ from uav_interfaces.msg import ControlMuxStatus, Px4FlightStatus
 
 
 IMAGE_TOPIC = "/uav/isaac/fpv/image/compressed"
-TOP_IMAGE_TOPIC = "/uav/isaac/top/image/compressed"
+OBSERVER_IMAGE_TOPIC = "/uav/isaac/observer/image/compressed"
 DEPTH_TOPIC = "/uav/isaac/fpv/depth/compressed"
 RUNTIME_STATUS_TOPIC = "/uav/isaac/runtime_status"
 ODOMETRY_TOPIC = "/uav/vehicle/odometry"
@@ -55,12 +55,13 @@ GOAL_TOPIC = "/uav/scene/goal"
 EPISODE_ID = "episode_000001"
 AUXILIARY_FIELDS = (
     "episode_id", "sample_id", "primary_image_timestamp_s",
-    "top_rgb_available", "top_rgb_timestamp_s", "top_rgb_error_s",
-    "top_rgb_path", "top_rgb_status", "fpv_depth_available",
+    "observer_rgb_available", "observer_rgb_timestamp_s",
+    "observer_rgb_error_s", "observer_rgb_path", "observer_rgb_status",
+    "fpv_depth_available",
     "fpv_depth_timestamp_s", "fpv_depth_error_s", "fpv_depth_path",
     "fpv_depth_status",
 )
-TOP_SYNCHRONIZATION_TOLERANCE_S = 0.35
+OBSERVER_SYNCHRONIZATION_TOLERANCE_S = 0.35
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -127,7 +128,7 @@ class ExpertDatasetRecorderNode(Node):
         self._mux: deque[TimedValue] = deque(maxlen=400)
         self._flight: deque[TimedValue] = deque(maxlen=400)
         self._images: deque[TimedValue] = deque(maxlen=20)
-        self._top_images: deque[TimedValue] = deque(maxlen=20)
+        self._observer_images: deque[TimedValue] = deque(maxlen=20)
         self._depth_images: deque[TimedValue] = deque(maxlen=20)
         self._goal: PoseStamped | None = None
         self._rows: list[dict] = []
@@ -153,7 +154,10 @@ class ExpertDatasetRecorderNode(Node):
             CompressedImage, IMAGE_TOPIC, self._image_callback, live
         )
         self.create_subscription(
-            CompressedImage, TOP_IMAGE_TOPIC, self._top_image_callback, live
+            CompressedImage,
+            OBSERVER_IMAGE_TOPIC,
+            self._observer_image_callback,
+            live,
         )
         self.create_subscription(
             CompressedImage, DEPTH_TOPIC, self._depth_image_callback, live
@@ -263,10 +267,10 @@ class ExpertDatasetRecorderNode(Node):
             return
         self._images.append(TimedValue(item.timestamp_s, bytes(message.data)))
 
-    def _top_image_callback(self, message: CompressedImage) -> None:
+    def _observer_image_callback(self, message: CompressedImage) -> None:
         item = self._timed(message)
         if item is not None:
-            self._top_images.append(TimedValue(
+            self._observer_images.append(TimedValue(
                 item.timestamp_s, (bytes(message.data), message.format)
             ))
 
@@ -287,8 +291,9 @@ class ExpertDatasetRecorderNode(Node):
         self._sensor_runtime_status = {
             key: status.get(key) for key in (
                 "phase10a_camera_enabled", "phase10a_camera_ready",
-                "phase10a_camera_error", "phase10b_top_rgb_enabled",
-                "phase10b_top_rgb_ready", "phase10b_top_rgb_error",
+                "phase10a_camera_error", "phase10c_observer_rgb_enabled",
+                "phase10c_observer_rgb_ready", "phase10c_observer_rgb_error",
+                "phase10c_observer_mode",
                 "phase10b_fpv_depth_enabled", "phase10b_fpv_depth_ready",
                 "phase10b_fpv_depth_error",
             )
@@ -397,8 +402,8 @@ class ExpertDatasetRecorderNode(Node):
         }
         specifications = (
             (
-                "top_rgb", self._top_images,
-                TOP_SYNCHRONIZATION_TOLERANCE_S, b"\xff\xd8", ".jpg",
+                "observer_rgb", self._observer_images,
+                OBSERVER_SYNCHRONIZATION_TOLERANCE_S, b"\xff\xd8", ".jpg",
             ),
             (
                 "fpv_depth", self._depth_images,
@@ -647,10 +652,13 @@ class ExpertDatasetRecorderNode(Node):
                     "required": True,
                     "accepted": len(self._rows),
                 },
-                "top_rgb": {
+                "observer_rgb": {
                     "required": False,
+                    "geometry": (
+                        "canonical legacy Episode Manager TOP observer"
+                    ),
                     "matched": sum(
-                        row["top_rgb_available"]
+                        row["observer_rgb_available"]
                         for row in self._auxiliary_rows
                     ),
                 },

@@ -1,5 +1,12 @@
 # Phase 10B: multi-episode expert dataset collection
 
+> **Status after Phase 10C:** this ten-episode result is retained as an
+> engineering pilot for automation and synchronization only. Its simplified
+> scene/camera distribution is not an approved training dataset. Phase 10C
+> replaces that runtime distribution with the canonical later high-rise scene,
+> exact episode lighting, FPV geometry, and TOP Observer camera; it does not
+> retroactively alter this artifact.
+
 ## Boundary and result
 
 Phase 10B extends the Phase 10A recorder into an unattended, seeded ten-episode

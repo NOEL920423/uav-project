@@ -12,10 +12,17 @@ Phase 9 runtime. Set `UAV_PHASE10A_CAMERA=1` before starting the same bootstrap.
 Dataset storage and timestamp synchronization stay in the external ROS 2
 recorder; the embedded bridge never writes dataset files.
 
-Phase 10B uses the same runtime with `UAV_PHASE10B_SENSORS=1`. This enables the
-required FPV JPEG plus optional TOP RGB JPEG and FPV uint16-millimetre PNG depth
-topics. `runtime/episode_scene.py` provides deterministic seeded scene
-descriptions, while a guarded ROS client applies them only from a landed,
-disarmed, no-failsafe reset state. See
-`docs/phase10b_multiepisode_dataset.md`; generated sensor data remains outside
-Git.
+Phase 10C uses the same `UAV_PHASE10B_SENSORS=1` switch, but restores the
+canonical later legacy scene and camera contracts. `runtime/episode_scene.py`
+generates eight decorated high-rise buildings, including two guaranteed direct
+path blockers, and exact legacy episode lighting. The auxiliary camera uses the
+Episode Manager's effective `TOP` Observer override and publishes on
+`/uav/isaac/observer/image/compressed`. FPV uses body +X and the effective
+`-0.8 m` look-down override. Its eye is applied as a rigid mount so publish-rate
+world smoothing cannot put the UAV body in the FPV image. FPV remains 320x180
+JPEG quality 85 and FPV depth remains uint16-millimetre PNG.
+
+A guarded ROS client still applies scenes only from a landed, disarmed,
+no-failsafe reset state. Generated sensor data remains outside Git. See
+`docs/phase10c_scene_camera_recovery.md` for the exact legacy parameters and the
+three-scene visual QA contract.
