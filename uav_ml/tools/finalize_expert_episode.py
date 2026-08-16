@@ -48,6 +48,22 @@ def finalize(
         "minimum_goal_distance_m": evidence.get("minimum_goal_distance_m"),
         "isaac": evidence.get("isaac"),
     }
+    episode["flight_duration_s"] = evidence.get("elapsed_s")
+    episode["terminal_reason"] = (
+        "goal_reached_and_landed"
+        if actual_success else evidence.get("detail") or episode.get("failure")
+    )
+    episode["goal_distance_m"] = episode.get(
+        "final_tracking_goal_distance_m"
+    )
+    episode_path.write_text(
+        json.dumps(episode, indent=2) + "\n", encoding="utf-8"
+    )
+    episode["episode_disk_usage_bytes"] = sum(
+        item.stat().st_size
+        for item in episode_path.parent.rglob("*")
+        if item.is_file()
+    )
     episode_path.write_text(
         json.dumps(episode, indent=2) + "\n", encoding="utf-8"
     )

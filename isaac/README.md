@@ -26,3 +26,9 @@ A guarded ROS client still applies scenes only from a landed, disarmed,
 no-failsafe reset state. Generated sensor data remains outside Git. See
 `docs/phase10c_scene_camera_recovery.md` for the exact legacy parameters and the
 three-scene visual QA contract.
+
+For formal expert collection, users do not start the sensor runtime or invoke
+the scene client manually. `./uav expert-collect --episodes N` owns a fresh
+Isaac/PX4/XRCE process group for each seed, enables these unchanged streams,
+performs the safe scene request and flight, and cleans the group before the
+next episode. See `docs/expert_dataset_collection.md`.

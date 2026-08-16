@@ -21,3 +21,8 @@ Future owner of synchronized dataset, metadata, pose-log, and rosbag recording.
   previews at start, mid-flight, and near-goal ASTAR tracking phases. It never
   commands PX4 and is not a dataset collector. See
   `docs/phase10c_scene_camera_recovery.md`.
+- Formal expert collection: the same recorder additionally publishes a 1 Hz
+  file-based progress snapshot and records A* path plus raw stream counts. The
+  one-command orchestration, resume manifest, aggregate validation, and 20
+  episode Visual QA cadence are documented in
+  `docs/expert_dataset_collection.md`. The recorder still never commands PX4.

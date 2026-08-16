@@ -12,7 +12,7 @@ from pathlib import Path
 
 from geometry_msgs.msg import PoseStamped, TwistStamped
 
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path as PathMessage
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -143,6 +143,16 @@ class ExpertDatasetRecorderNode(Node):
         self._finalized = False
         self._scene_configuration: dict | None = None
         self._sensor_runtime_status: dict = {}
+        self._planner_path: dict | None = None
+        self._planner_status = ""
+        self._fpv_rgb_received = 0
+        self._observer_rgb_received = 0
+        self._fpv_depth_received = 0
+        self._stream_time_bounds: dict[str, list[float | None]] = {
+            "fpv_rgb": [None, None],
+            "observer_rgb": [None, None],
+            "fpv_depth": [None, None],
+        }
 
         live = QoSProfile(depth=50, reliability=ReliabilityPolicy.RELIABLE)
         durable = QoSProfile(
@@ -180,7 +190,20 @@ class ExpertDatasetRecorderNode(Node):
         self.create_subscription(
             PoseStamped, GOAL_TOPIC, self._goal_callback, durable
         )
+        self.create_subscription(
+            PathMessage,
+            "/uav/planner/path",
+            self._planner_path_callback,
+            durable,
+        )
+        self.create_subscription(
+            String,
+            "/uav/planner/status",
+            self._planner_status_callback,
+            durable,
+        )
         self._timer = self.create_timer(0.02, self._process_ready_images)
+        self._progress_timer = self.create_timer(1.0, self._write_progress)
         self.get_logger().info(
             f"EXPERT_RECORDER_READY root={self.dataset_root} "
             f"episode={self.episode_id} mode={self.collection_mode} "
@@ -261,22 +284,28 @@ class ExpertDatasetRecorderNode(Node):
             self._goal = message
 
     def _image_callback(self, message: CompressedImage) -> None:
+        self._fpv_rgb_received += 1
         item = self._timed(message)
         if item is None:
             self._rejections["invalid_image_timestamp"] += 1
             return
+        self._observe_stream_time("fpv_rgb", item.timestamp_s)
         self._images.append(TimedValue(item.timestamp_s, bytes(message.data)))
 
     def _observer_image_callback(self, message: CompressedImage) -> None:
+        self._observer_rgb_received += 1
         item = self._timed(message)
         if item is not None:
+            self._observe_stream_time("observer_rgb", item.timestamp_s)
             self._observer_images.append(TimedValue(
                 item.timestamp_s, (bytes(message.data), message.format)
             ))
 
     def _depth_image_callback(self, message: CompressedImage) -> None:
+        self._fpv_depth_received += 1
         item = self._timed(message)
         if item is not None:
+            self._observe_stream_time("fpv_depth", item.timestamp_s)
             self._depth_images.append(TimedValue(
                 item.timestamp_s, (bytes(message.data), message.format)
             ))
@@ -304,6 +333,59 @@ class ExpertDatasetRecorderNode(Node):
             and isinstance(status.get("scene_configuration"), dict)
         ):
             self._scene_configuration = status["scene_configuration"]
+
+    def _planner_path_callback(self, message: PathMessage) -> None:
+        points = [pose.pose.position for pose in message.poses]
+        path_length = sum(
+            math.hypot(right.x - left.x, right.y - left.y)
+            for left, right in zip(points, points[1:])
+        )
+        self._planner_path = {
+            "frame_id": message.header.frame_id,
+            "point_count": len(points),
+            "path_length_xy_m": path_length,
+            "start": (
+                None if not points
+                else [points[0].x, points[0].y, points[0].z]
+            ),
+            "goal": (
+                None if not points
+                else [points[-1].x, points[-1].y, points[-1].z]
+            ),
+        }
+
+    def _planner_status_callback(self, message: String) -> None:
+        self._planner_status = message.data
+
+    def _observe_stream_time(self, name: str, timestamp_s: float) -> None:
+        bounds = self._stream_time_bounds[name]
+        if bounds[0] is None:
+            bounds[0] = timestamp_s
+        bounds[1] = timestamp_s
+
+    def _stream_rate(self, name: str, count: int) -> float:
+        first, last = self._stream_time_bounds[name]
+        if count < 2 or first is None or last is None or last <= first:
+            return 0.0
+        return (count - 1) / (last - first)
+
+    def _write_progress(self) -> None:
+        if self._finalized:
+            return
+        status = self._last_status
+        _atomic_json(self.episode_dir / "progress.json", {
+            "episode_id": self.episode_id,
+            "state": "INITIALIZING" if status is None else status.state,
+            "goal_distance_m": (
+                None if status is None else float(status.goal_distance_m)
+            ),
+            "accepted_samples": len(self._rows),
+            "rejected_samples": sum(self._rejections.values()),
+            "rejections_by_reason": dict(sorted(self._rejections.items())),
+            "fpv_rgb_received": self._fpv_rgb_received,
+            "observer_rgb_received": self._observer_rgb_received,
+            "fpv_depth_received": self._fpv_depth_received,
+        })
 
     def _process_ready_images(self) -> None:
         now = self.get_clock().now().nanoseconds / 1e9
@@ -625,6 +707,10 @@ class ExpertDatasetRecorderNode(Node):
             "rejections_by_reason": dict(sorted(self._rejections.items())),
             "observed_sampling_rate_hz": rate,
             "path_length_m": path_length,
+            "astar_path_information": {
+                "validated_path": self._planner_path,
+                "planner_status": self._planner_status,
+            },
             "final_tracking_goal_distance_m": (
                 None if not self._rows
                 else float(self._rows[-1]["raw_goal_distance_m"])
@@ -651,6 +737,10 @@ class ExpertDatasetRecorderNode(Node):
                 "fpv_rgb": {
                     "required": True,
                     "accepted": len(self._rows),
+                    "received": self._fpv_rgb_received,
+                    "observed_rate_hz": self._stream_rate(
+                        "fpv_rgb", self._fpv_rgb_received
+                    ),
                 },
                 "observer_rgb": {
                     "required": False,
@@ -661,6 +751,10 @@ class ExpertDatasetRecorderNode(Node):
                         row["observer_rgb_available"]
                         for row in self._auxiliary_rows
                     ),
+                    "received": self._observer_rgb_received,
+                    "observed_rate_hz": self._stream_rate(
+                        "observer_rgb", self._observer_rgb_received
+                    ),
                 },
                 "fpv_depth": {
                     "required": False,
@@ -670,6 +764,10 @@ class ExpertDatasetRecorderNode(Node):
                     "matched": sum(
                         row["fpv_depth_available"]
                         for row in self._auxiliary_rows
+                    ),
+                    "received": self._fpv_depth_received,
+                    "observed_rate_hz": self._stream_rate(
+                        "fpv_depth", self._fpv_depth_received
                     ),
                 },
                 "runtime_status": self._sensor_runtime_status,
@@ -709,6 +807,17 @@ class ExpertDatasetRecorderNode(Node):
             ),
         }
         _atomic_json(self.episode_dir / "episode.json", episode)
+        _atomic_json(self.episode_dir / "progress.json", {
+            "episode_id": self.episode_id,
+            "state": "DATASET_VALIDATION_PENDING",
+            "goal_distance_m": episode["final_tracking_goal_distance_m"],
+            "accepted_samples": len(self._rows),
+            "rejected_samples": sum(self._rejections.values()),
+            "rejections_by_reason": dict(sorted(self._rejections.items())),
+            "fpv_rgb_received": self._fpv_rgb_received,
+            "observer_rgb_received": self._observer_rgb_received,
+            "fpv_depth_received": self._fpv_depth_received,
+        })
         episode["episode_disk_usage_bytes"] = sum(
             item.stat().st_size
             for item in self.episode_dir.rglob("*")

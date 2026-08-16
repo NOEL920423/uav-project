@@ -60,11 +60,20 @@ help_output="$("$UAV" help)"
     fail "trajectory-check is missing from help"
 [[ "$help_output" == *"pipeline-check"* ]] || \
     fail "pipeline-check is missing from help"
+[[ "$help_output" == *"expert-collect"* ]] || \
+    fail "expert-collect is missing from help"
+expert_help="$($UAV expert-collect --help)"
+[[ "$expert_help" == *"--episodes EPISODES"* ]] || \
+    fail "expert-collect help is missing --episodes"
+[[ "$expert_help" == *"--resume"* ]] || \
+    fail "expert-collect help is missing --resume"
 
 git -C "$REPO_ROOT" check-ignore -q ros2_ws/build/example
 git -C "$REPO_ROOT" check-ignore -q ros2_ws/install/example
 git -C "$REPO_ROOT" check-ignore -q ros2_ws/log/example
 git -C "$REPO_ROOT" check-ignore -q run_logs/example.log
+git -C "$REPO_ROOT" check-ignore -q \
+    artifacts/datasets/bc_expert_highrise_v1/episode_000001/images/frame.jpg
 
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck "$UAV" "$REPO_ROOT/tests/test_uav_wrapper.sh"
