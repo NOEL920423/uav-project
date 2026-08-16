@@ -25,10 +25,13 @@ Resume after an operator interrupt or an infrastructure stop:
 ./uav expert-collect --episodes 100 --resume
 ```
 
-The resume episode count must match the original manifest. Completed episode
-directories are never overwritten. Any incomplete directory is moved to the
-Git-ignored recovery log before that episode is retried with its original
-seed.
+`--episodes` is the desired total episode count. On resume it may equal the
+existing target or increase it. For example, a completed 10-episode collection
+can be extended in place to 100 episodes with the command above; episodes
+11–100 and seeds 103011–103100 are appended to the manifest. Shrinking the
+target is rejected. Completed episode directories are never overwritten. Any
+incomplete directory is moved to the Git-ignored recovery log before that
+episode is retried with its original seed.
 
 Inspect command options or validate an existing completed collection:
 
@@ -78,8 +81,9 @@ stop later episodes. Missing recorder/evidence, unsafe terminal state, runtime
 readiness failure, or loss of process ownership is an infrastructure failure;
 the batch stops and leaves a resumable manifest.
 
-`collection_manifest.json` is the resume source of truth. It stores the fixed
-episode/seed plan, per-episode lifecycle status, accepted/rejected counts,
+`collection_manifest.json` is the resume source of truth. It stores the
+append-only episode/seed plan, target-extension history, per-episode lifecycle
+status, accepted/rejected counts,
 terminal reason, outcome, dataset bytes, Visual QA status, and final aggregate
 validation. `dataset_manifest.json` retains the unchanged BC dataset contract.
 

@@ -207,7 +207,7 @@ class CollectionManifestStore:
         return self.data
 
     def load_for_resume(self, episodes: int) -> dict:
-        """Load and validate the plan used by an interrupted collection."""
+        """Load a plan and optionally extend it to a larger total target."""
         if not self.path.is_file():
             raise FileNotFoundError(
                 f"resume manifest does not exist: {self.path}"
@@ -215,17 +215,56 @@ class CollectionManifestStore:
         self.data = _read_json(self.path)
         if self.data.get("tool_version") != TOOL_VERSION:
             raise ValueError("collection manifest tool version mismatch")
-        if int(self.data.get("target_episodes", -1)) != episodes:
+        existing_target = int(self.data.get("target_episodes", -1))
+        if existing_target <= 0:
+            raise ValueError("collection manifest target is invalid")
+        if episodes < existing_target:
             raise ValueError(
-                "--episodes must match the existing collection target "
-                f"({self.data.get('target_episodes')})"
+                "--episodes cannot shrink the existing collection target "
+                f"({existing_target})"
             )
         entries = self.data.get("episodes")
-        if not isinstance(entries, list) or len(entries) != episodes:
+        if not isinstance(entries, list) or len(entries) != existing_target:
             raise ValueError("collection manifest episode plan is invalid")
+        expected_ids = [
+            f"episode_{index:06d}"
+            for index in range(1, existing_target + 1)
+        ]
+        if [entry.get("episode_id") for entry in entries] != expected_ids:
+            raise ValueError("collection manifest episode IDs are invalid")
         seeds = [entry.get("seed") for entry in entries]
-        if len(set(seeds)) != episodes:
+        if len(set(seeds)) != existing_target:
             raise ValueError("collection manifest contains duplicate seeds")
+        if episodes > existing_target:
+            base_seed = int(self.data["base_seed"])
+            new_entries = [
+                {
+                    "index": index,
+                    "episode_id": f"episode_{index:06d}",
+                    "seed": base_seed + index,
+                    "status": "pending",
+                    "success": None,
+                    "accepted_samples": 0,
+                    "rejected_samples": 0,
+                    "terminal_reason": "",
+                }
+                for index in range(existing_target + 1, episodes + 1)
+            ]
+            extended_seeds = seeds + [entry["seed"] for entry in new_entries]
+            if len(set(extended_seeds)) != episodes:
+                raise ValueError(
+                    "target expansion would create duplicate seeds"
+                )
+            entries.extend(new_entries)
+            self.data["target_episodes"] = episodes
+            self.data.setdefault("target_extensions", []).append({
+                "from_episodes": existing_target,
+                "to_episodes": episodes,
+                "extended_utc": _utc_now(),
+            })
+            self.data.pop("completed_utc", None)
+            self.data.pop("validation", None)
+            self.save()
         return self.data
 
     def save(self) -> None:
@@ -506,14 +545,17 @@ class ExpertCollector:
         )
         self.store = CollectionManifestStore(self.dataset_root)
         self.display = ProgressDisplay(episodes)
+        self._manifest_prepared = False
 
     def _prepare(self) -> None:
         if self.resume:
             data = self.store.load_for_resume(self.episodes)
             self.base_seed = int(data["base_seed"])
+            self._manifest_prepared = True
             self._recover_incomplete_episodes()
         else:
             self.store.create(self.episodes, self.base_seed)
+            self._manifest_prepared = True
         self.runtime_root.mkdir(parents=True, exist_ok=True)
         unfinished = any(
             entry.get("status") not in TERMINAL_STATES
@@ -921,19 +963,20 @@ class ExpertCollector:
             return validation
         except KeyboardInterrupt:
             self.backend.cleanup()
-            if current_index is not None:
+            if self._manifest_prepared and current_index is not None:
                 self.store.update_episode(
                     current_index,
                     status="interrupted",
                     terminal_reason="operator_interrupt",
                 )
-            self.store.set_collection_state(
-                "interrupted", "operator interrupt; resume is safe"
-            )
+            if self._manifest_prepared:
+                self.store.set_collection_state(
+                    "interrupted", "operator interrupt; resume is safe"
+                )
             raise
         except Exception as error:
             self.backend.cleanup()
-            if self.store.data:
+            if self._manifest_prepared and self.store.data:
                 if current_index is not None:
                     entry = self.store.data["episodes"][current_index - 1]
                     if entry.get("status") not in TERMINAL_STATES:
@@ -956,13 +999,21 @@ def _parser() -> argparse.ArgumentParser:
             "The default dataset is artifacts/datasets/bc_expert_highrise_v1/."
         ),
     )
-    parser.add_argument("--episodes", required=True, type=int)
+    parser.add_argument(
+        "--episodes",
+        required=True,
+        type=int,
+        help=(
+            "desired total episode count; --resume may extend an existing "
+            "collection to a larger total"
+        ),
+    )
     parser.add_argument(
         "--resume",
         action="store_true",
         help=(
-            "resume the existing manifest without overwriting completed "
-            "episodes"
+            "resume or extend the existing total target without overwriting "
+            "completed episodes"
         ),
     )
     parser.add_argument(

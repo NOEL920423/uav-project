@@ -125,6 +125,36 @@ class ExpertCollectionToolTest(unittest.TestCase):
         seeds = {entry["seed"] for entry in after["episodes"]}
         self.assertEqual(len(seeds), 3)
 
+    def test_resume_can_extend_completed_collection_total(self) -> None:
+        dataset = self.root / "dataset"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self._collector(dataset, DryRunBackend()).run()
+        before = json.loads(
+            (dataset / "collection_manifest.json").read_text(encoding="utf-8")
+        )
+        first_three = [dict(entry) for entry in before["episodes"]]
+
+        extended = InterruptingBackend(interrupt_index=99)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self._collector(
+                dataset, extended, resume=True, episodes=5
+            ).run()
+        self.assertEqual(
+            extended.seen,
+            [("episode_000004", 103004), ("episode_000005", 103005)],
+        )
+        after = json.loads(
+            (dataset / "collection_manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(after["target_episodes"], 5)
+        self.assertEqual(after["episodes"][:3], first_three)
+        self.assertEqual(
+            [entry["seed"] for entry in after["episodes"]],
+            [103001, 103002, 103003, 103004, 103005],
+        )
+        self.assertEqual(after["target_extensions"][0]["from_episodes"], 3)
+        self.assertEqual(after["target_extensions"][0]["to_episodes"], 5)
+
     def test_new_collection_never_overwrites_existing_directory(self) -> None:
         dataset = self.root / "dataset"
         dataset.mkdir()
@@ -174,11 +204,20 @@ class ExpertCollectionToolTest(unittest.TestCase):
             manifest["episodes"][0]["status"], "infrastructure_failure"
         )
 
-    def test_resume_target_must_match_manifest(self) -> None:
+    def test_shrink_does_not_corrupt_manifest_status(self) -> None:
         dataset = self.root / "dataset"
-        CollectionManifestStore(dataset).create(3, 103000)
+        store = CollectionManifestStore(dataset)
+        store.create(3, 103000)
+        store.set_collection_state("complete")
         with self.assertRaises(ValueError):
-            CollectionManifestStore(dataset).load_for_resume(4)
+            self._collector(
+                dataset, DryRunBackend(), resume=True, episodes=2
+            ).run()
+        manifest = json.loads(
+            (dataset / "collection_manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["target_episodes"], 3)
+        self.assertEqual(manifest["status"], "complete")
 
     def test_scene_validator_enforces_frozen_highrise_contract(self) -> None:
         scene = generate_episode_scene("episode_000001", 103001, 0.0, 0.0)
