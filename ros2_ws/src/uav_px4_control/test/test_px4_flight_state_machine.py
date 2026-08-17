@@ -7,6 +7,7 @@ from uav_px4_control.px4_flight_models import (
     Px4FlightConfig,
     Px4FlightState,
     altitude_above_ground,
+    planner_status_allows_final_path,
     vehicle_command_was_accepted,
 )
 from uav_px4_control.px4_flight_state_machine import Px4FlightStateMachine
@@ -201,6 +202,49 @@ def test_flight_altitude_uses_enable_time_local_ground_datum():
     """Reported climb is relative to the enable-time local ground datum."""
     ground_down = 0.73
     assert altitude_above_ground(ground_down, -1.27) == 2.0
+
+
+def test_safe_astar_fallback_is_usable_without_valid_bspline():
+    """A collision-rejected B-spline may use the validated A* final path."""
+    status = (
+        "SUCCESS|astar_success=true|bspline_valid=false|"
+        "bspline_selected=false|final_source=ASTAR_FALLBACK|"
+        "final_points=10"
+    )
+    assert planner_status_allows_final_path(status, bspline_valid=False)
+
+
+def test_bspline_source_still_requires_independent_validity_evidence():
+    """Selecting B-spline never bypasses its separate validity topic."""
+    status = (
+        "SUCCESS|astar_success=true|bspline_valid=true|"
+        "bspline_selected=true|final_source=BSPLINE|final_points=12"
+    )
+    assert not planner_status_allows_final_path(
+        status, bspline_valid=False
+    )
+    assert planner_status_allows_final_path(status, bspline_valid=True)
+    assert not planner_status_allows_final_path(
+        "FAILED|reason=no path", bspline_valid=True
+    )
+
+
+def test_takeoff_boundary_matches_follower_terminal_tolerance():
+    """A safely settled 1.25 m takeoff advances toward mission planning."""
+    config = Px4FlightConfig(
+        takeoff_altitude_m=1.5,
+        takeoff_altitude_tolerance_m=0.25,
+    )
+    machine = Px4FlightStateMachine(config)
+    machine.request_enable(True, 0.0)
+    machine.state = Px4FlightState.TAKEOFF
+    machine._state_started_s = 0.0
+    below = replace(READY, altitude_m=1.249)
+    assert machine.step(0.1, below).state == Px4FlightState.TAKEOFF
+    boundary = replace(READY, altitude_m=1.25)
+    decision = machine.step(0.2, boundary)
+    assert decision.state == Px4FlightState.REPLANNING
+    assert decision.actions == ("STOP_TRACKING", "PUBLISH_MISSION_SCENE")
 
 
 def test_land_retry_stops_only_after_exact_accepted_ack():

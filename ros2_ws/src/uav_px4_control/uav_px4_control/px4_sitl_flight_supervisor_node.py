@@ -46,6 +46,7 @@ from uav_px4_control.px4_flight_models import (
     FlightEvidence,
     Px4FlightConfig,
     altitude_above_ground,
+    planner_status_allows_final_path,
     vehicle_command_was_accepted,
 )
 from uav_px4_control.px4_flight_state_machine import Px4FlightStateMachine
@@ -113,6 +114,7 @@ class Px4SitlFlightSupervisorNode(Node):
         self.machine = Px4FlightStateMachine(self.config)
 
         self._planner_path_valid = False
+        self._planner_status = ""
         self._bspline_valid = False
         self._trajectory_valid = False
         self._trajectory_source = ""
@@ -319,6 +321,7 @@ class Px4SitlFlightSupervisorNode(Node):
         self._landing_commanded = False
 
     def _planner_callback(self, message: String) -> None:
+        self._planner_status = message.data
         self._planner_path_valid = message.data.startswith("SUCCESS|")
 
     def _bspline_callback(self, message: Bool) -> None:
@@ -492,8 +495,9 @@ class Px4SitlFlightSupervisorNode(Node):
 
     def _pipeline_ready(self) -> bool:
         return bool(
-            self._planner_path_valid
-            and self._bspline_valid
+            planner_status_allows_final_path(
+                self._planner_status, self._bspline_valid
+            )
             and self._trajectory_valid
             and self._trajectory_source == "PHASE4_TIME_PARAMETERIZED"
             and self._goal_matches_expected()
@@ -778,6 +782,7 @@ class Px4SitlFlightSupervisorNode(Node):
         self._scene_kind = "mission"
         self._expected_goal = (goal_north, goal_east, target_down)
         self._planner_path_valid = False
+        self._planner_status = ""
         self._bspline_valid = False
         self._trajectory_valid = False
         self._trajectory_goal = None
@@ -819,6 +824,7 @@ class Px4SitlFlightSupervisorNode(Node):
             target_down,
         )
         self._planner_path_valid = False
+        self._planner_status = ""
         self._bspline_valid = False
         self._trajectory_valid = False
         self._trajectory_goal = None

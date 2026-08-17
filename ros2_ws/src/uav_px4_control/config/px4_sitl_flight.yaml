@@ -25,7 +25,9 @@ px4_sitl_flight_supervisor:
   ros__parameters:
     minimum_stream_rate_hz: 19.0
     takeoff_altitude_m: 1.5
-    takeoff_altitude_tolerance_m: 0.20
+    # Match the trajectory follower's terminal position tolerance so a
+    # settled takeoff trajectory cannot remain below the supervisor boundary.
+    takeoff_altitude_tolerance_m: 0.25
     goal_tolerance_m: 0.35
     pipeline_timeout_s: 20.0
     prestream_timeout_s: 15.0

@@ -33,7 +33,7 @@ class Px4FlightConfig:
 
     minimum_stream_rate_hz: float = 19.0
     takeoff_altitude_m: float = 2.0
-    takeoff_altitude_tolerance_m: float = 0.20
+    takeoff_altitude_tolerance_m: float = 0.25
     goal_tolerance_m: float = 0.35
     pipeline_timeout_s: float = 20.0
     prestream_timeout_s: float = 15.0
@@ -90,6 +90,29 @@ class FlightDecision:
     actions: tuple[str, ...]
     failure_reason: str
     transition_count: int
+
+
+def planner_status_allows_final_path(
+    status: str, bspline_valid: bool
+) -> bool:
+    """Accept either a validated B-spline or the planner's safe A* fallback."""
+    fields: dict[str, str] = {}
+    parts = str(status).split("|")
+    if not parts or parts[0] != "SUCCESS":
+        return False
+    for part in parts[1:]:
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        fields[key] = value
+    if fields.get("astar_success") != "true":
+        return False
+    final_source = fields.get("final_source")
+    if final_source == "BSPLINE":
+        return bool(
+            bspline_valid and fields.get("bspline_selected") == "true"
+        )
+    return final_source in {"ASTAR_FALLBACK", "ASTAR_SIMPLIFIED"}
 
 
 def altitude_above_ground(

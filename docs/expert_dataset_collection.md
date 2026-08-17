@@ -93,6 +93,13 @@ stop later episodes. Missing recorder/evidence, unsafe terminal state, runtime
 readiness failure, or loss of process ownership is an infrastructure failure;
 the batch stops and leaves a resumable manifest.
 
+Planner readiness accepts both a separately validated B-spline and the
+planner's collision-checked `ASTAR_FALLBACK` final path. A rejected B-spline
+therefore does not discard a valid A* route. The formal takeoff supervisor's
+0.25 m altitude tolerance also matches the trajectory follower's 0.25 m
+terminal-position tolerance, preventing a settled takeoff trajectory from
+remaining just below the mission-transition boundary.
+
 `collection_manifest.json` is the resume source of truth. It stores the
 append-only episode/seed plan, collection-run and append history, per-episode
 lifecycle status, accepted/rejected counts,

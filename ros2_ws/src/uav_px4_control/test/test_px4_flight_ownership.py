@@ -6,6 +6,7 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).parents[1] / "uav_px4_control"
 SUPERVISOR = PACKAGE / "px4_sitl_flight_supervisor_node.py"
+FLIGHT_CONFIG = PACKAGE.parent / "config" / "px4_sitl_flight.yaml"
 
 
 def _publisher_topics(source: Path) -> list[str]:
@@ -63,3 +64,10 @@ def test_supervisor_accepts_existing_phase4_trajectory_provenance():
     marker = '"PHASE4_TIME_PARAMETERIZED"'
     assert marker in parameterizer.read_text(encoding="utf-8")
     assert marker in SUPERVISOR.read_text(encoding="utf-8")
+
+
+def test_takeoff_acceptance_matches_follower_terminal_tolerance():
+    """The follower cannot settle below the supervisor takeoff boundary."""
+    config = FLIGHT_CONFIG.read_text(encoding="utf-8")
+    assert "goal_position_tolerance_m: 0.25" in config
+    assert "takeoff_altitude_tolerance_m: 0.25" in config
