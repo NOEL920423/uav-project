@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import sys
 import time
 from typing import Callable, Protocol
 
@@ -138,6 +139,12 @@ class BcPolicyRuntime:
         encoder_override: Path | None = None,
     ) -> None:
         checkpoint_path = checkpoint_path.resolve()
+        # Training may use NumPy 2 while Isaac Sim 5.1 embeds NumPy 1.x. Older
+        # checkpoints therefore refer to numpy._core during torch unpickling.
+        if not hasattr(np, "_core"):
+            sys.modules.setdefault("numpy._core", np.core)
+            sys.modules.setdefault("numpy._core.multiarray", np.core.multiarray)
+            sys.modules.setdefault("numpy._core.numeric", np.core.numeric)
         payload = torch.load(
             checkpoint_path, map_location=device, weights_only=False
         )

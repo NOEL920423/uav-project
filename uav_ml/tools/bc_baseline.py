@@ -418,8 +418,10 @@ def _checkpoint(
         "epoch": epoch,
         "validation_metrics": validation_metrics,
         "training_config": asdict(config),
-        "observation_mean": observation_mean,
-        "observation_std": observation_std,
+        # Tensors avoid NumPy 2.x pickle module names that Isaac Sim's bundled
+        # NumPy 1.x cannot import. The evaluator still supports earlier runs.
+        "observation_mean": torch.from_numpy(observation_mean.copy()),
+        "observation_std": torch.from_numpy(observation_std.copy()),
         "dataset_root": audit["dataset_root"],
         "dataset_manifest": audit["collection_manifest"],
         "dataset_manifest_sha256": audit["collection_manifest_sha256"],

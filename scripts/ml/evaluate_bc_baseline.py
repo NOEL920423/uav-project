@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import traceback
 import time
 from pathlib import Path
 
@@ -28,8 +29,11 @@ parser.add_argument("--output")
 parser.add_argument("--seed-base", type=int)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+if args.episodes <= 0:
+    parser.error("--episodes must be a positive integer")
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
+print("BC evaluator: Isaac application initialized", flush=True)
 
 from uav_ml.isaac.fixed_height_city_env import (  # noqa: E402
     IsaacFixedHeightCityEnv,
@@ -42,9 +46,12 @@ from uav_ml.tools.bc_evaluation import (  # noqa: E402
 )
 from uav_ml.train_bc import resolve_device  # noqa: E402
 
+print(f"BC evaluator: dependencies loaded ({__name__})", flush=True)
+
 
 def main() -> None:
     """Load the trained baseline and give it exclusive environment control."""
+    print("BC evaluator: validating checkpoint and unseen seeds", flush=True)
     dataset_root = Path(args.dataset).resolve()
     checkpoint = resolve_checkpoint(
         Path(args.checkpoint) if args.checkpoint else None,
@@ -92,5 +99,13 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    finally:
-        simulation_app.close(wait_for_replicator=False, skip_cleanup=True)
+    except BaseException:  # Isaac exceptions must survive application shutdown.
+        traceback.print_exc()
+        # Let interpreter teardown clean up Kit. Calling SimulationApp.close()
+        # here raises SystemExit(0) and would mask the original failure.
+        raise
+    else:
+        simulation_app.close(
+            wait_for_replicator=False,
+            skip_cleanup=True,
+        )

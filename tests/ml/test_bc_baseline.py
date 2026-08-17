@@ -231,6 +231,8 @@ class BcBaselineTests(unittest.TestCase):
                 output / "best.pt", map_location="cpu", weights_only=False
             )
             self.assertTrue(checkpoint["encoder_frozen"])
+            self.assertIsInstance(checkpoint["observation_mean"], torch.Tensor)
+            self.assertIsInstance(checkpoint["observation_std"], torch.Tensor)
             self.assertEqual(checkpoint["model_config"]["observation_dimension"], 72)
             self.assertEqual(checkpoint["model_config"]["action_dimension"], 3)
             runtime = BcPolicyRuntime(output / "best.pt", torch.device("cpu"))
