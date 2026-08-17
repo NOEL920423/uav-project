@@ -162,6 +162,8 @@ class IsaacFixedHeightCityEnv(gym.Env):
             "building_count": len(self.core.buildings),
             "city_generation_attempt": self.core.city_generation_attempt,
             "debug_markers_visible": False,
+            "goal_distance_m": float(state["goal_distance_m"]),
+            "position_xy": state["position_xy"].copy(),
         }
 
     def step(
@@ -179,6 +181,7 @@ class IsaacFixedHeightCityEnv(gym.Env):
                 "sim_time_s": self.core.step_index * self.core.config.control_dt_s,
                 "synchronized": True,
                 "debug_markers_visible": False,
+                "position_xy": state["position_xy"].copy(),
             }
         )
         return self._observation(state), reward, terminated, truncated, info

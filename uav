@@ -70,7 +70,8 @@ Commands:
   dataset-generate-synthetic  Create a labeled software-only BC fixture
   dataset-check   Validate a versioned BC dataset and print statistics
   bc-smoke-test   Run the mandatory tiny-overfit/checkpoint smoke test
-  bc-train        Train BcPolicyV0 without ROS 2
+  bc-train        Train and offline-evaluate the formal BC baseline
+  bc-eval         Evaluate the trained BC baseline closed-loop on unseen seeds
   ml-test         Run ROS/Isaac-independent ML regression tests
   px4-stream-offline-check  Validate the PX4-independent stream boundary
   px4-sitl-doctor     Read-only check of an already-running SITL/XRCE graph
@@ -116,7 +117,8 @@ Examples:
   ./uav dataset-generate-synthetic --output datasets/bc_v0 --episodes 8
   ./uav dataset-check --dataset datasets/bc_v0
   ./uav bc-smoke-test --device cpu
-  ./uav bc-train --dataset datasets/bc_v0 --epochs 10
+  ./uav bc-train
+  ./uav bc-eval --episodes 20
   ./uav ml-test
   ./uav px4-stream-offline-check
   ./uav px4-sitl-doctor
@@ -1354,7 +1356,19 @@ main() {
         bc-train)
             require_repository
             shift
-            python3 -m uav_ml.train_bc "$@"
+            python3 -m uav_ml.tools.bc_baseline "$@"
+            ;;
+        bc-eval)
+            require_repository
+            shift
+            if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+                python3 -m uav_ml.tools.bc_evaluation --help
+                return
+            fi
+            [[ -x "$ISAACLAB_SH" ]] || die "IsaacLab launcher is missing: $ISAACLAB_SH"
+            TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p \
+                scripts/ml/evaluate_bc_baseline.py \
+                --headless --enable_cameras "$@"
             ;;
         ml-test)
             require_repository

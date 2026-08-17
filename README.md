@@ -50,25 +50,27 @@ the frozen scene/camera/data contracts, progress, resume, QA, and validation.
 Generated datasets, rosbags, logs, images, and videos are excluded from Git.
 Large Isaac Sim assets should be backed up separately.
 
-## Behavior Cloning ML Phase 1
+## Behavior Cloning baseline
 
-The ROS-independent BC v0 pipeline lives in `uav_ml/`. It uses a 64x64 depth
-observation plus vehicle velocity and goal direction to imitate the existing
-bounded A*/B-spline trajectory follower command. Generated datasets,
-checkpoints, and training runs are not committed.
+The formal BC baseline uses the validated high-rise expert dataset, the frozen
+64D FPV RGB encoder, the existing 72D `LatentBcPolicy`, deterministic
+episode-level splits, best/last checkpoints, held-out offline metrics, and a
+policy-only Isaac closed-loop evaluation. Generated datasets, checkpoints,
+metrics, and plots are not committed.
 
 ```bash
 ./uav ml-doctor
-./uav dataset-generate-synthetic --output datasets/bc_v0 --episodes 8
-./uav dataset-check --dataset datasets/bc_v0
-./uav bc-smoke-test --device cpu
-./uav bc-train --dataset datasets/bc_v0 --epochs 10 --device auto
+./uav bc-train --help
+./uav bc-train
+./uav bc-eval --help
+./uav bc-eval --episodes 20
 ./uav ml-test
 ```
 
-The synthetic generator is only a software fixture. See
-`docs/ml_training_architecture.md` and `docs/ml_phase1_results.md` for the real
-Isaac bridge boundary and current evidence.
+See [`docs/bc_baseline.md`](docs/bc_baseline.md) for eligibility rules,
+observation/action contracts, artifacts, offline versus closed-loop metrics,
+and remaining runtime risks. The older depth-based software fixture remains a
+legacy regression utility and is not used by the formal `bc-train` command.
 
 ## ROS 2 developer workflow
 
