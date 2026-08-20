@@ -1,4 +1,4 @@
-"""Validate the formal canonical high-rise expert dataset collection."""
+"""Validate the formal canonical cylinder expert dataset collection."""
 
 from __future__ import annotations
 
@@ -12,18 +12,18 @@ from pathlib import Path
 import numpy as np
 
 from isaac.runtime.episode_scene import (
-    BUILDING_DEPTH_MAX,
-    BUILDING_DEPTH_MIN,
-    BUILDING_HEIGHT_MAX,
-    BUILDING_HEIGHT_MIN,
-    BUILDING_WIDTH_MAX,
-    BUILDING_WIDTH_MIN,
-    BUILDING_YAW_MAX_DEG,
-    BUILDING_YAW_MIN_DEG,
+    CYLINDER_HEIGHT_MAX,
+    CYLINDER_HEIGHT_MIN,
+    OBSTACLE_YAW_MAX_DEG,
+    OBSTACLE_YAW_MIN_DEG,
     DIRECT_PATH_BLOCKER_COUNT,
     LIGHTING_CONTRACT,
     MIN_OBSTACLE_GAP,
     NUM_OBSTACLES,
+    RADIUS_BASIS_DEPTH_MAX,
+    RADIUS_BASIS_DEPTH_MIN,
+    RADIUS_BASIS_WIDTH_MAX,
+    RADIUS_BASIS_WIDTH_MIN,
     START_POS,
     TARGET_POS,
 )
@@ -34,7 +34,7 @@ from uav_ml.tools.validate_expert_dataset import (
 )
 
 
-DEFAULT_DATASET = Path("artifacts/datasets/bc_expert_highrise_v1")
+DEFAULT_DATASET = Path("artifacts/datasets/bc_expert_cylinder_v1")
 DEFAULT_AUTOENCODER = Path(
     "autoencoder_runs/rgb_ae_v0_baseline_20260811/best.pt"
 )
@@ -54,7 +54,7 @@ def _positive_finite(value: object) -> bool:
     return math.isfinite(number) and number > 0.0
 
 
-def validate_highrise_scene(
+def validate_cylinder_scene(
     scene: dict, episode_id: str, seed: int
 ) -> dict:
     """Enforce the frozen scene without regenerating or changing it."""
@@ -62,7 +62,7 @@ def validate_highrise_scene(
         raise ValueError(f"{episode_id}: scene identity mismatch")
     if scene.get("random_seed") != seed:
         raise ValueError(f"{episode_id}: scene seed mismatch")
-    if scene.get("generator") != "canonical_highrise_scene_generator_v1":
+    if scene.get("generator") != "canonical_cylinder_scene_generator_v1":
         raise ValueError(f"{episode_id}: wrong scene generator")
     if scene.get("mode") != "normal":
         raise ValueError(
@@ -79,31 +79,41 @@ def validate_highrise_scene(
         or scene.get("obstacle_count") != NUM_OBSTACLES
         or scene.get("normal_obstacle_count") != NUM_OBSTACLES
     ):
-        raise ValueError(f"{episode_id}: expected exactly eight buildings")
+        raise ValueError(
+            f"{episode_id}: expected exactly {NUM_OBSTACLES} obstacles"
+        )
     blockers = 0
-    for index, building in enumerate(obstacles, start=1):
-        if building.get("shape") != "high_rise_building":
+    for index, obstacle in enumerate(obstacles, start=1):
+        if obstacle.get("shape") != "cylinder":
             raise ValueError(
-                f"{episode_id}: obstacle {index} is not a building"
+                f"{episode_id}: obstacle {index} is not a cylinder"
             )
         for name, lower, upper in (
-            ("width", BUILDING_WIDTH_MIN, BUILDING_WIDTH_MAX),
-            ("depth", BUILDING_DEPTH_MIN, BUILDING_DEPTH_MAX),
-            ("height", BUILDING_HEIGHT_MIN, BUILDING_HEIGHT_MAX),
-            ("yaw_deg", BUILDING_YAW_MIN_DEG, BUILDING_YAW_MAX_DEG),
+            (
+                "radius_basis_width",
+                RADIUS_BASIS_WIDTH_MIN,
+                RADIUS_BASIS_WIDTH_MAX,
+            ),
+            (
+                "radius_basis_depth",
+                RADIUS_BASIS_DEPTH_MIN,
+                RADIUS_BASIS_DEPTH_MAX,
+            ),
+            ("height", CYLINDER_HEIGHT_MIN, CYLINDER_HEIGHT_MAX),
+            ("yaw_deg", OBSTACLE_YAW_MIN_DEG, OBSTACLE_YAW_MAX_DEG),
         ):
             try:
-                value = float(building[name])
+                value = float(obstacle[name])
             except (KeyError, TypeError, ValueError) as error:
                 raise ValueError(
-                    f"{episode_id}: building {index} has invalid {name}"
+                    f"{episode_id}: obstacle {index} has invalid {name}"
                 ) from error
             if not math.isfinite(value) or not lower <= value <= upper:
                 raise ValueError(
-                    f"{episode_id}: building {index} {name} is out of range"
+                    f"{episode_id}: obstacle {index} {name} is out of range"
                 )
         blockers += (
-            building.get("placement_mode")
+            obstacle.get("placement_mode")
             == "guaranteed_direct_path_blocker"
         )
     if blockers != DIRECT_PATH_BLOCKER_COUNT or scene.get(
@@ -123,12 +133,12 @@ def validate_highrise_scene(
             )
             if separation + 1e-6 < required:
                 raise ValueError(
-                    f"{episode_id}: minimum building gap violated"
+                    f"{episode_id}: minimum obstacle gap violated"
                 )
     if scene.get("lighting") != LIGHTING_CONTRACT:
         raise ValueError(f"{episode_id}: canonical lighting changed")
     return {
-        "building_count": len(obstacles),
+        "obstacle_count": len(obstacles),
         "direct_path_blocker_count": blockers,
         "minimum_gap_m": MIN_OBSTACLE_GAP,
     }
@@ -145,7 +155,7 @@ def validate_episode_metadata(episode: dict, validation: dict) -> dict:
             "reason": terminal_reason,
         }
     else:
-        scene_result = validate_highrise_scene(
+        scene_result = validate_cylinder_scene(
             episode["scene_configuration"],
             episode_id,
             int(episode["random_seed"]),

@@ -9,11 +9,11 @@ WORKSPACE_SETUP="$ROS_WS/install/setup.bash"
 RUN_LOG_DIR="$REPO_ROOT/run_logs"
 SCRIPT_PATH="$REPO_ROOT/uav"
 ISAACLAB_SH="${UAV_ISAACLAB_ROOT:-$REPO_ROOT/../IsaacLab}/isaaclab.sh"
-PHASE10B_ISAAC_RELEASE="${UAV_ISAAC_SIM_RELEASE:-$HOME/isaacsim/_build/linux-x86_64/release}"
+ISAAC_SIM_RELEASE="${UAV_ISAAC_SIM_RELEASE:-$HOME/isaacsim/_build/linux-x86_64/release}"
 
 readonly SCRIPT_DIR REPO_ROOT ROS_WS ROS_SETUP WORKSPACE_SETUP
 readonly RUN_LOG_DIR SCRIPT_PATH
-readonly PHASE10B_ISAAC_RELEASE
+readonly ISAAC_SIM_RELEASE
 
 info() {
     printf 'INFO: %s\n' "$*"
@@ -84,8 +84,9 @@ Commands:
   phase10b-dataset-check  Validate/rebuild the Phase 10B pilot artifact
   phase10c-visual-qa  Capture three canonical high-rise flight visual-QA sets
   phase10c-visual-qa-check  Validate an existing three-scene preview artifact
-  expert-collect  Collect a resumable canonical high-rise expert dataset
-  expert-validate  Validate the formal high-rise expert dataset
+  expert-collect  Collect a resumable canonical cylinder expert dataset
+  expert-scene-preview  Preview one formal expert scene over WebRTC
+  expert-validate  Validate the formal cylinder expert dataset
   topics         Inspect the current ROS graph and reject /fmu/in/ topics
   interfaces     Show custom interfaces and planner topic contracts
   shell          Open a clean interactive ROS 2 workspace shell
@@ -133,6 +134,7 @@ Examples:
   ./uav phase10c-visual-qa-check
   ./uav expert-collect --episodes 100
   ./uav expert-collect --episodes 100 --resume
+  ./uav expert-scene-preview --seed 103001
   ./uav expert-validate --episodes 100
   ./uav shell
 EOF
@@ -808,9 +810,9 @@ internal_phase10b_wait_runtime() {
         local echo_status=$?
         set -e
         if ((echo_status == 0)) \
-            && [[ "$status" == *'"phase10a_camera_ready":true'* ]] \
-            && [[ "$status" == *'"phase10c_observer_rgb_ready":true'* ]] \
-            && [[ "$status" == *'"phase10b_fpv_depth_ready":true'* ]]; then
+            && [[ "$status" == *'"fpv_rgb_ready":true'* ]] \
+            && [[ "$status" == *'"observer_rgb_ready":true'* ]] \
+            && [[ "$status" == *'"fpv_depth_ready":true'* ]]; then
             if ros2 run uav_px4_control px4_sitl_doctor; then
                 info "Phase10B managed Isaac/PX4 runtime ready"
                 return 0
@@ -880,9 +882,9 @@ internal_expert_wait_runtime() {
         echo_status=$?
         set -e
         if ((echo_status == 0)) \
-            && [[ "$status" == *'"phase10a_camera_ready":true'* ]] \
-            && [[ "$status" == *'"phase10c_observer_rgb_ready":true'* ]] \
-            && [[ "$status" == *'"phase10b_fpv_depth_ready":true'* ]]; then
+            && [[ "$status" == *'"fpv_rgb_ready":true'* ]] \
+            && [[ "$status" == *'"observer_rgb_ready":true'* ]] \
+            && [[ "$status" == *'"fpv_depth_ready":true'* ]]; then
             if ros2 run uav_px4_control px4_sitl_doctor; then
                 info "Expert collection Isaac/PX4 runtime ready"
                 return 0
@@ -891,6 +893,18 @@ internal_expert_wait_runtime() {
         sleep 2
     done
     die "expert collection runtime did not become ready within 120 seconds"
+}
+
+internal_expert_prepare_scene() {
+    local episode_id="$1"
+    local random_seed="$2"
+    clean_bootstrap required
+    require_px4_msgs
+    ros2 run uav_data_recorder episode_scene_client --ros-args \
+        -p episode_id:="$episode_id" \
+        -p random_seed:="$random_seed" \
+        -p scene_mode:=normal \
+        -p timeout_s:=20.0
 }
 
 internal_expert_run_episode() {
@@ -907,9 +921,9 @@ internal_expert_run_episode() {
     sensor_status_code=$?
     set -e
     if ((sensor_status_code != 0)) \
-        || [[ "$sensor_status" != *'"phase10a_camera_ready":true'* ]] \
-        || [[ "$sensor_status" != *'"phase10c_observer_rgb_ready":true'* ]] \
-        || [[ "$sensor_status" != *'"phase10b_fpv_depth_ready":true'* ]]; then
+        || [[ "$sensor_status" != *'"fpv_rgb_ready":true'* ]] \
+        || [[ "$sensor_status" != *'"observer_rgb_ready":true'* ]] \
+        || [[ "$sensor_status" != *'"fpv_depth_ready":true'* ]]; then
         die "expert collection sensor runtime is not ready"
         return 1
     fi
@@ -950,7 +964,7 @@ internal_expert_run_episode() {
     info "Expert episode launch status=$launch_status evidence=$episode_evidence"
 }
 
-phase10b_stop_process_group() {
+stop_managed_process_group() {
     local process_id="$1"
     local label="$2"
     [[ "$process_id" =~ ^[1-9][0-9]*$ ]] || return 0
@@ -976,6 +990,131 @@ phase10b_stop_process_group() {
         fi
     fi
     wait "$process_id" 2>/dev/null || true
+}
+
+expert_scene_preview_usage() {
+    cat <<'EOF'
+Usage: ./uav expert-scene-preview --seed SEED
+
+Start the managed expert Isaac/PX4/XRCE runtime, apply one formal episode
+scene, and keep WebRTC running until interrupted. No flight, recorder, or
+dataset output is started.
+
+Options:
+  --seed SEED  Nonnegative deterministic episode scene seed (required)
+  -h, --help   Show this help
+EOF
+}
+
+command_expert_scene_preview() {
+    local random_seed=""
+    local episode_id="episode_000001"
+    while (($# > 0)); do
+        case "$1" in
+            --seed)
+                (($# >= 2)) || die "--seed requires a value"
+                random_seed="$2"
+                shift 2
+                ;;
+            --seed=*)
+                random_seed="${1#--seed=}"
+                shift
+                ;;
+            -h|--help)
+                expert_scene_preview_usage
+                return 0
+                ;;
+            *)
+                die "unknown expert-scene-preview argument: $1"
+                return 64
+                ;;
+        esac
+    done
+    [[ "$random_seed" =~ ^[0-9]+$ ]] || {
+        die "expert-scene-preview requires --seed with a nonnegative integer"
+        return 64
+    }
+    [[ -x "$ISAAC_SIM_RELEASE/isaac-sim.streaming.sh" ]] || die \
+        "Isaac streaming launcher missing: $ISAAC_SIM_RELEASE"
+    command -v MicroXRCEAgent >/dev/null || die \
+        "MicroXRCEAgent is not available"
+    if pgrep -x MicroXRCEAgent >/dev/null \
+        || pgrep -f "$ISAAC_SIM_RELEASE/kit/kit" >/dev/null \
+        || pgrep -f '/PX4-Autopilot/build/px4_sitl_default/bin/px4' \
+            >/dev/null; then
+        die "expert scene preview requires no pre-existing Isaac/PX4/XRCE process"
+        return 1
+    fi
+
+    local preview_timestamp preview_runtime_root
+    local preview_agent_pid="" preview_isaac_pid=""
+    local runtime_status=1 scene_status=1 isaac_status=0
+    local preview_interrupted=0 preview_cleanup_done=0
+    preview_timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    preview_runtime_root="$RUN_LOG_DIR/expert-scene-preview_$preview_timestamp"
+    mkdir -p "$preview_runtime_root"
+
+    expert_scene_preview_cleanup() {
+        ((preview_cleanup_done == 0)) || return 0
+        preview_cleanup_done=1
+        stop_managed_process_group "$preview_isaac_pid" "preview Isaac/PX4"
+        stop_managed_process_group "$preview_agent_pid" "preview XRCE agent"
+    }
+    trap expert_scene_preview_cleanup EXIT
+    trap 'preview_interrupted=1; expert_scene_preview_cleanup' INT TERM
+
+    setsid MicroXRCEAgent udp4 -p 8888 \
+        >"$preview_runtime_root/xrce.log" 2>&1 &
+    preview_agent_pid=$!
+    # shellcheck disable=SC2016
+    setsid /usr/bin/bash -c '
+        cd -- "$1"
+        exec env -u DISPLAY -u WAYLAND_DISPLAY \
+            UAV_EXPERT_SENSORS=1 \
+            ./isaac-sim.streaming.sh --livestream 2 --exec "$2"
+    ' expert-scene-preview-runtime "$ISAAC_SIM_RELEASE" \
+        "$REPO_ROOT/isaac/runtime/bootstrap.py" \
+        >"$preview_runtime_root/isaac.log" 2>&1 &
+    preview_isaac_pid=$!
+
+    info "Starting formal expert scene preview seed=$random_seed"
+    info "Runtime logs: $preview_runtime_root"
+    set +e
+    clean_environment_command expert-runtime-wait
+    runtime_status=$?
+    if ((runtime_status == 0)); then
+        clean_environment_command expert-scene-prepare \
+            "$episode_id" "$random_seed"
+        scene_status=$?
+    fi
+    set -e
+
+    if ((runtime_status == 0 && scene_status == 0)); then
+        info "打開 WebRTC 可以看到場景。 episode=$episode_id seed=$random_seed"
+        info "不飛行，不收集資料，純檢查場景。 Press Ctrl-C to stop."
+        set +e
+        wait "$preview_isaac_pid"
+        isaac_status=$?
+        set -e
+    fi
+
+    trap - EXIT INT TERM
+    expert_scene_preview_cleanup
+    if ((preview_interrupted != 0)); then
+        return 130
+    fi
+    if ((runtime_status != 0)); then
+        die "expert scene preview runtime did not become ready"
+        return "$runtime_status"
+    fi
+    if ((scene_status != 0)); then
+        die "formal expert scene could not be applied"
+        return "$scene_status"
+    fi
+    if ((isaac_status != 0)); then
+        die "preview Isaac runtime exited with status $isaac_status"
+        return "$isaac_status"
+    fi
 }
 
 internal_dispatch() {
@@ -1054,6 +1193,9 @@ internal_dispatch() {
             ;;
         expert-runtime-wait)
             internal_expert_wait_runtime
+            ;;
+        expert-scene-prepare)
+            internal_expert_prepare_scene "$@"
             ;;
         expert-run-episode)
             internal_expert_run_episode "$@"
@@ -1380,6 +1522,17 @@ main() {
             shift
             python3 -m uav_ml.tools.expert_collect "$@"
             ;;
+        expert-scene-preview)
+            require_repository
+            shift
+            if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+                expert_scene_preview_usage
+                return 0
+            fi
+            require_ros_base
+            require_workspace_overlay
+            command_expert_scene_preview "$@"
+            ;;
         expert-validate)
             require_repository
             shift
@@ -1608,12 +1761,12 @@ main() {
                 die "refusing to overwrite $dataset_root"
                 return 1
             fi
-            [[ -x "$PHASE10B_ISAAC_RELEASE/isaac-sim.streaming.sh" ]] \
-                || die "Isaac streaming launcher missing: $PHASE10B_ISAAC_RELEASE"
+            [[ -x "$ISAAC_SIM_RELEASE/isaac-sim.streaming.sh" ]] \
+                || die "Isaac streaming launcher missing: $ISAAC_SIM_RELEASE"
             command -v MicroXRCEAgent >/dev/null \
                 || die "MicroXRCEAgent is not available"
             if pgrep -x MicroXRCEAgent >/dev/null \
-                || pgrep -f "$PHASE10B_ISAAC_RELEASE/kit/kit" >/dev/null \
+                || pgrep -f "$ISAAC_SIM_RELEASE/kit/kit" >/dev/null \
                 || pgrep -f '/PX4-Autopilot/build/px4_sitl_default/bin/px4' \
                     >/dev/null; then
                 die "Phase10B managed pilot requires no pre-existing Isaac/PX4/XRCE process"
@@ -1641,7 +1794,7 @@ main() {
                     exec env -u DISPLAY -u WAYLAND_DISPLAY \
                         UAV_PHASE10B_SENSORS=1 \
                         ./isaac-sim.streaming.sh --livestream 2 --exec "$2"
-                ' phase10b-runtime "$PHASE10B_ISAAC_RELEASE" \
+                ' phase10b-runtime "$ISAAC_SIM_RELEASE" \
                     "$REPO_ROOT/isaac/runtime/bootstrap.py" \
                     >"$runtime_root/${episode_id}_isaac.log" 2>&1 &
                 isaac_pid=$!
@@ -1656,8 +1809,8 @@ main() {
                     episode_status=$runtime_status
                 fi
                 set -e
-                phase10b_stop_process_group "$isaac_pid" "Isaac/PX4"
-                phase10b_stop_process_group "$agent_pid" "XRCE agent"
+                stop_managed_process_group "$isaac_pid" "Isaac/PX4"
+                stop_managed_process_group "$agent_pid" "XRCE agent"
                 if ((runtime_status != 0 || episode_status != 0)); then
                     die "safety-critical managed runtime failure in $episode_id"
                     return 1
@@ -1695,12 +1848,12 @@ main() {
                 die "refusing to overwrite $qa_root"
                 return 1
             fi
-            [[ -x "$PHASE10B_ISAAC_RELEASE/isaac-sim.streaming.sh" ]] \
-                || die "Isaac streaming launcher missing: $PHASE10B_ISAAC_RELEASE"
+            [[ -x "$ISAAC_SIM_RELEASE/isaac-sim.streaming.sh" ]] \
+                || die "Isaac streaming launcher missing: $ISAAC_SIM_RELEASE"
             command -v MicroXRCEAgent >/dev/null \
                 || die "MicroXRCEAgent is not available"
             if pgrep -x MicroXRCEAgent >/dev/null \
-                || pgrep -f "$PHASE10B_ISAAC_RELEASE/kit/kit" >/dev/null \
+                || pgrep -f "$ISAAC_SIM_RELEASE/kit/kit" >/dev/null \
                 || pgrep -f '/PX4-Autopilot/build/px4_sitl_default/bin/px4' \
                     >/dev/null; then
                 die "Phase10C visual QA requires no pre-existing Isaac/PX4/XRCE process"
@@ -1722,7 +1875,7 @@ main() {
                     exec env -u DISPLAY -u WAYLAND_DISPLAY \
                         UAV_PHASE10B_SENSORS=1 \
                         ./isaac-sim.streaming.sh --livestream 2 --exec "$2"
-                ' phase10c-runtime "$PHASE10B_ISAAC_RELEASE" \
+                ' phase10c-runtime "$ISAAC_SIM_RELEASE" \
                     "$REPO_ROOT/isaac/runtime/bootstrap.py" \
                     >"$qa_runtime_root/${qa_episode}_isaac.log" 2>&1 &
                 qa_isaac_pid=$!
@@ -1735,8 +1888,8 @@ main() {
                     qa_status=$?
                 fi
                 set -e
-                phase10b_stop_process_group "$qa_isaac_pid" "Isaac/PX4"
-                phase10b_stop_process_group "$qa_agent_pid" "XRCE agent"
+                stop_managed_process_group "$qa_isaac_pid" "Isaac/PX4"
+                stop_managed_process_group "$qa_agent_pid" "XRCE agent"
                 if ((qa_status != 0)); then
                     die "Phase10C visual QA capture failed in $qa_episode"
                     return "$qa_status"

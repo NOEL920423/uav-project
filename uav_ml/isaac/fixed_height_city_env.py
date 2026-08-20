@@ -52,7 +52,7 @@ class IsaacFixedHeightCityEnv(gym.Env):
 
     def _setup_static_scene(self) -> None:
         ground = sim_utils.GroundPlaneCfg(
-            color=(0.18, 0.32, 0.42),
+            color=(0.40, 0.40, 0.40),
             size=(30.0, 30.0),
         )
         ground.func("/World/Ground", ground)
@@ -88,8 +88,10 @@ class IsaacFixedHeightCityEnv(gym.Env):
             stage.RemovePrim(old.GetPath())
         sim_utils.create_prim("/World/GeneratedCity", "Xform")
         for index, building in enumerate(self.core.buildings):
+            radius = 0.5 * math.hypot(building.width, building.depth)
             cfg = sim_utils.CuboidCfg(
-                size=(building.width, building.depth, building.height),
+                radius=radius,
+                height=building.height,
                 visual_material=sim_utils.PreviewSurfaceCfg(
                     diffuse_color=building.color,
                     roughness=0.72,

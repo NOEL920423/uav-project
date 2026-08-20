@@ -1,4 +1,4 @@
-"""One-command, resumable canonical high-rise expert dataset collector."""
+"""One-command, resumable canonical cylinder expert dataset collector."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from uav_ml.tools.validate_expert_collection import (
     DEFAULT_DATASET,
     validate_collection,
     validate_collection_episode,
-    validate_highrise_scene,
+    validate_cylinder_scene,
 )
 
 
@@ -213,7 +213,7 @@ class CollectionManifestStore:
         self.dataset_root.mkdir(parents=True)
         self.data = {
             "tool_version": TOOL_VERSION,
-            "dataset_name": "bc_expert_highrise_v1",
+            "dataset_name": "bc_expert_cylinder_v1",
             "dataset_root": str(self.dataset_root),
             "target_episodes": episodes,
             "base_seed": base_seed,
@@ -477,7 +477,7 @@ class SubprocessBackend:
         environment = os.environ.copy()
         environment.pop("DISPLAY", None)
         environment.pop("WAYLAND_DISPLAY", None)
-        environment["UAV_PHASE10B_SENSORS"] = "1"
+        environment["UAV_EXPERT_SENSORS"] = "1"
         isaac = subprocess.Popen(
             [
                 str(self.launcher),
@@ -835,7 +835,7 @@ class ExpertCollector:
         scene_metadata = scene or {
             "episode_id": episode_id,
             "random_seed": seed,
-            "generator": "canonical_highrise_scene_generator_v1",
+            "generator": "canonical_cylinder_scene_generator_v1",
             "mode": "normal",
             "validation_error": str(error),
         }
@@ -974,7 +974,7 @@ class ExpertCollector:
                     scene = generate_episode_scene(
                         episode_id, seed, 0.0, 0.0
                     )
-                    validate_highrise_scene(scene, episode_id, seed)
+                    validate_cylinder_scene(scene, episode_id, seed)
                 except (RuntimeError, ValueError) as scene_error:
                     outcome = self._record_invalid_scene(
                         episode_id, seed, scene_error, scene
@@ -997,7 +997,7 @@ class ExpertCollector:
                 assert scene is not None
                 scene_summary = {
                     "generator": scene["generator"],
-                    "building_count": len(scene["obstacles"]),
+                    "obstacle_count": len(scene["obstacles"]),
                     "direct_path_blocker_count": scene[
                         "direct_path_blocker_count"
                     ],
@@ -1119,8 +1119,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="./uav expert-collect",
         description=(
-            "Collect a resumable canonical high-rise ASTAR_EXPERT BC dataset. "
-            "The default dataset is artifacts/datasets/bc_expert_highrise_v1/."
+            "Collect a resumable canonical cylinder ASTAR_EXPERT BC dataset. "
+            "The default dataset is artifacts/datasets/bc_expert_cylinder_v1/."
         ),
     )
     parser.add_argument(

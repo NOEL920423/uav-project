@@ -62,6 +62,18 @@ AUXILIARY_FIELDS = (
     "fpv_depth_status",
 )
 OBSERVER_SYNCHRONIZATION_TOLERANCE_S = 0.35
+RUNTIME_TO_DATASET_STATUS_FIELDS = {
+    "fpv_rgb_enabled": "phase10a_camera_enabled",
+    "fpv_rgb_ready": "phase10a_camera_ready",
+    "fpv_rgb_error": "phase10a_camera_error",
+    "observer_rgb_enabled": "phase10c_observer_rgb_enabled",
+    "observer_rgb_ready": "phase10c_observer_rgb_ready",
+    "observer_rgb_error": "phase10c_observer_rgb_error",
+    "observer_mode": "phase10c_observer_mode",
+    "fpv_depth_enabled": "phase10b_fpv_depth_enabled",
+    "fpv_depth_ready": "phase10b_fpv_depth_ready",
+    "fpv_depth_error": "phase10b_fpv_depth_error",
+}
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -320,14 +332,9 @@ class ExpertDatasetRecorderNode(Node):
         if not isinstance(status, dict):
             return
         self._sensor_runtime_status = {
-            key: status.get(key) for key in (
-                "phase10a_camera_enabled", "phase10a_camera_ready",
-                "phase10a_camera_error", "phase10c_observer_rgb_enabled",
-                "phase10c_observer_rgb_ready", "phase10c_observer_rgb_error",
-                "phase10c_observer_mode",
-                "phase10b_fpv_depth_enabled", "phase10b_fpv_depth_ready",
-                "phase10b_fpv_depth_error",
-            )
+            dataset_key: status.get(runtime_key, status.get(dataset_key))
+            for runtime_key, dataset_key
+            in RUNTIME_TO_DATASET_STATUS_FIELDS.items()
         }
         if (
             status.get("episode_id") == self.episode_id

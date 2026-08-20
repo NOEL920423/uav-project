@@ -14,7 +14,7 @@ from unittest import mock
 import numpy as np
 from PIL import Image
 
-from isaac.runtime.episode_scene import generate_episode_scene
+from isaac.runtime.episode_scene import NUM_OBSTACLES, generate_episode_scene
 from uav_ml.tools.expert_collect import (
     CollectionManifestStore,
     DryRunBackend,
@@ -24,7 +24,7 @@ from uav_ml.tools.expert_collect import (
 from uav_ml.tools.expert_visual_qa import create_contact_sheet
 from uav_ml.tools.validate_expert_collection import (
     validate_episode_metadata,
-    validate_highrise_scene,
+    validate_cylinder_scene,
 )
 
 
@@ -294,15 +294,22 @@ class ExpertCollectionToolTest(unittest.TestCase):
             [3, 2],
         )
 
-    def test_scene_validator_enforces_frozen_highrise_contract(self) -> None:
+    def test_scene_validator_enforces_frozen_cylinder_contract(self) -> None:
         scene = generate_episode_scene("episode_000001", 103001, 0.0, 0.0)
-        result = validate_highrise_scene(scene, "episode_000001", 103001)
-        self.assertEqual(result["building_count"], 8)
+        result = validate_cylinder_scene(scene, "episode_000001", 103001)
+        self.assertEqual(result["obstacle_count"], NUM_OBSTACLES)
         self.assertEqual(result["direct_path_blocker_count"], 2)
+        wrong_count = json.loads(json.dumps(scene))
+        wrong_count["obstacles"].pop()
+        wrong_count["obstacle_count"] -= 1
+        with self.assertRaisesRegex(
+            ValueError, f"expected exactly {NUM_OBSTACLES} obstacles"
+        ):
+            validate_cylinder_scene(wrong_count, "episode_000001", 103001)
         changed = json.loads(json.dumps(scene))
-        changed["obstacles"][0]["width"] = 0.9
+        changed["obstacles"][0]["radius_basis_width"] = 0.9
         with self.assertRaisesRegex(ValueError, "out of range"):
-            validate_highrise_scene(changed, "episode_000001", 103001)
+            validate_cylinder_scene(changed, "episode_000001", 103001)
 
     def test_episode_id_has_no_six_digit_ceiling(self) -> None:
         scene = generate_episode_scene(

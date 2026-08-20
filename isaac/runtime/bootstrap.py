@@ -7,7 +7,7 @@ manual Pegasus UI sequence used by this project:
 1. load the default environment;
 2. spawn an Iris with the PX4 MAVLink backend;
 3. start the physics timeline (which auto-launches PX4 SITL);
-4. start the narrow Phase 9 pose/scene/runtime bridge.
+4. start the narrow bootstrap pose/scene/runtime bridge.
 
 The episode itself is still started by the external ROS 2 orchestrator, so
 booting Isaac Sim never arms the vehicle by itself.
@@ -36,27 +36,80 @@ SCRIPT_ROOT = Path(__file__).resolve().parent
 RUNTIME_BRIDGE_SCRIPT = SCRIPT_ROOT / "runtime_bridge.py"
 PX4_ROOT = Path.home() / "PX4-Autopilot"
 VEHICLE_PRIM_PATH = "/World/quadrotor"
-PHASE9_ROOT = "/World/Phase9Runtime"
+BOOTSTRAP_SCENE_ROOT = "/World/BootstrapScene"
 
 
-def create_phase9_scene(stage) -> None:
-    """Create one deterministic, non-blocking collidable scene obstacle."""
-    root = UsdGeom.Xform.Define(stage, PHASE9_ROOT)
-    root.GetPrim().SetCustomDataByKey("phase9:scene_id", "phase9_fixed_scene_v1")
+def create_bootstrap_scene(stage) -> None:
+    """Create the simple bootstrap scene with a floor and one obstacle."""
+    root = UsdGeom.Xform.Define(stage, BOOTSTRAP_SCENE_ROOT)
+    root.GetPrim().SetCustomDataByKey(
+        "bootstrap:scene_id",
+        "bootstrap_simple_scene_v1",
+    )
 
-    obstacle = UsdGeom.Cube.Define(stage, f"{PHASE9_ROOT}/Obstacle_001")
-    obstacle.CreateSizeAttr(1.0)
-    obstacle.AddTranslateOp().Set(Gf.Vec3d(-1.5, 1.5, 1.25))
-    obstacle.AddScaleOp().Set(Gf.Vec3d(0.6, 0.6, 2.5))
-    obstacle.CreateDisplayColorAttr([Gf.Vec3f(0.20, 0.35, 0.55)])
+    # ------------------------------------------------------------
+    # Plain visual floor
+    # ------------------------------------------------------------
+    floor = UsdGeom.Cube.Define(
+        stage,
+        f"{BOOTSTRAP_SCENE_ROOT}/PlainFloor",
+    )
+    floor.CreateSizeAttr(1.0)
+
+    # Final physical dimensions:
+    # X = 20 m
+    # Y = 20 m
+    # Z = 0.01 m
+    floor.AddTranslateOp().Set(
+        Gf.Vec3d(0.0, 0.0, 0.01)
+    )
+    floor.AddScaleOp().Set(
+        Gf.Vec3d(20.0, 20.0, 0.01)
+    )
+
+    floor.CreateDisplayColorAttr(
+        [Gf.Vec3f(0.40, 0.40, 0.40)]
+    )
+
+    # No CollisionAPI here.
+    # Keep the original Pegasus GroundPlane responsible for physics.
+
+    # ------------------------------------------------------------
+    # Obstacle
+    # ------------------------------------------------------------
+    obstacle = UsdGeom.Cylinder.Define(
+        stage,
+        f"{BOOTSTRAP_SCENE_ROOT}/Obstacle_001",
+    )
+    obstacle.CreateRadiusAttr(0.35)
+    obstacle.CreateHeightAttr(3.0)
+    obstacle.AddTranslateOp().Set(
+        Gf.Vec3d(-1.5, 1.5, 1.5)
+    )
+
+    obstacle.CreateDisplayColorAttr(
+        [Gf.Vec3f(0.30, 0.30, 0.30)]
+    )
     UsdPhysics.CollisionAPI.Apply(obstacle.GetPrim())
 
-    goal = UsdGeom.Cylinder.Define(stage, f"{PHASE9_ROOT}/Goal")
+    # ------------------------------------------------------------
+    # Goal marker
+    # ------------------------------------------------------------
+    goal = UsdGeom.Cylinder.Define(
+        stage,
+        f"{BOOTSTRAP_SCENE_ROOT}/Goal",
+    )
     goal.CreateRadiusAttr(0.25)
     goal.CreateHeightAttr(0.02)
-    goal.AddTranslateOp().Set(Gf.Vec3d(0.5, 3.0, 0.01))
-    goal.CreateDisplayColorAttr([Gf.Vec3f(0.20, 0.85, 0.25)])
-    print("[UAVBootstrap] Deterministic Phase 9 scene created.")
+    goal.AddTranslateOp().Set(
+        Gf.Vec3d(0.5, 3.0, 0.01)
+    )
+    goal.CreateDisplayColorAttr(
+        [Gf.Vec3f(0.20, 0.85, 0.25)]
+    )
+
+    print("[UAVBootstrap]  Scene created.")
+    print("[UAVBootstrap] Plain floor size: 20 x 20 x 0.01 m.")
 
 
 async def wait_for_updates(count: int) -> None:
@@ -83,7 +136,7 @@ async def bootstrap() -> None:
             raise RuntimeError("Isaac Sim has no active USD stage after environment loading.")
 
         existing_vehicle = stage.GetPrimAtPath(VEHICLE_PRIM_PATH)
-        create_phase9_scene(stage)
+        create_bootstrap_scene(stage)
         if not existing_vehicle or not existing_vehicle.IsValid():
             backend_config = PX4MavlinkBackendConfig({
                 "vehicle_id": 0,

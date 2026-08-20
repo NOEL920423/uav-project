@@ -29,7 +29,7 @@ class EpisodeSceneClient(Node):
 
     def __init__(self) -> None:
         """Initialize safety telemetry, scene status, and command endpoints."""
-        super().__init__("phase10b_episode_scene_client")
+        super().__init__("episode_scene_client")
         self.declare_parameter("episode_id", "episode_000001")
         self.declare_parameter("random_seed", 0)
         self.declare_parameter("scene_mode", "normal")
@@ -104,7 +104,7 @@ class EpisodeSceneClient(Node):
             and status.get("pose_valid") is True
         ):
             self.get_logger().info(
-                "PHASE10B_SCENE_READY " + json.dumps(
+                "EXPERT_SCENE_READY " + json.dumps(
                     status["scene_configuration"], sort_keys=True
                 )
             )
@@ -138,7 +138,7 @@ class EpisodeSceneClient(Node):
             if code == 0 else self.get_logger().error
         )
         logger(
-            f"PHASE10B_SCENE_RESULT success={str(code == 0).lower()} "
+            f"EXPERT_SCENE_RESULT success={str(code == 0).lower()} "
             f"commands={self.command_count} detail={detail}"
         )
         rclpy.shutdown()

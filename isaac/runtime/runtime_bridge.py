@@ -45,17 +45,17 @@ POSE_TOPIC = "/isaac_uav/pose"
 STATUS_TOPIC = "/uav/isaac/runtime_status"
 FRAME_ID = "isaac_world"
 SCHEMA = "uav_isaac_runtime/v1"
-SCENE_ID = "phase9_fixed_scene_v1"
+BOOTSTRAP_SCENE_ID = "bootstrap_fixed_scene_v1"
 SCENE_REVISION = 1
 PUBLISH_PERIOD_S = 0.05
 CAMERA_PUBLISH_PERIOD_S = 0.20
 CAMERA_TOPIC = "/uav/isaac/fpv/image/compressed"
-CAMERA_PATH = "/World/Phase10A/FPVCamera"
-OBSERVER_CAMERA_PATH = "/World/Phase10C/ObserverCamera"
+CAMERA_PATH = "/World/RuntimeSensors/FPVCamera"
+OBSERVER_CAMERA_PATH = "/World/RuntimeSensors/ObserverCamera"
 OBSERVER_CAMERA_TOPIC = "/uav/isaac/observer/image/compressed"
 DEPTH_TOPIC = "/uav/isaac/fpv/depth/compressed"
 EPISODE_COMMAND_TOPIC = "/uav/isaac/episode_command"
-PHASE9_ROOT = "/World/Phase9Runtime"
+BOOTSTRAP_SCENE_ROOT = "/World/BootstrapScene"
 SCENE_ROOT = "/World/GeneratedEpisode"
 CAMERA_WIDTH = 320
 CAMERA_HEIGHT = 180
@@ -84,7 +84,7 @@ CAMERA_CLIPPING_RANGE = (0.05, 10000.0)
 CAMERA_SMOOTHING = 0.18
 GOAL = (0.5, 3.0, 1.5)
 OBSTACLES = ({
-    "name": "Building_Phase9_001",
+    "name": "BootstrapObstacle_001",
     "x": -1.5,
     "y": 1.5,
     "z": 1.25,
@@ -130,12 +130,18 @@ class IsaacRuntimeBridge:
         self._status_publisher = self._node.create_publisher(
             String, STATUS_TOPIC, 10
         )
-        self._camera_enabled = os.environ.get("UAV_PHASE10A_CAMERA", "0") == "1"
-        self._phase10b_enabled = (
-            os.environ.get("UAV_PHASE10B_SENSORS", "0") == "1"
+        self._camera_enabled = (
+            os.environ.get("UAV_FPV_CAMERA", "0") == "1"
+            or os.environ.get("UAV_PHASE10A_CAMERA", "0") == "1"
         )
-        self._camera_enabled = self._camera_enabled or self._phase10b_enabled
-        self._scene_id = SCENE_ID
+        self._expert_sensors_enabled = (
+            os.environ.get("UAV_EXPERT_SENSORS", "0") == "1"
+            or os.environ.get("UAV_PHASE10B_SENSORS", "0") == "1"
+        )
+        self._camera_enabled = (
+            self._camera_enabled or self._expert_sensors_enabled
+        )
+        self._scene_id = BOOTSTRAP_SCENE_ID
         self._scene_revision = SCENE_REVISION
         self._goal = GOAL
         self._obstacles = list(OBSTACLES)
@@ -183,7 +189,8 @@ class IsaacRuntimeBridge:
         print(
             "[IsaacRuntimeBridge] Started: pose/status at 20 Hz, "
             f"FPV camera={'enabled' if self._camera_enabled else 'disabled'}, "
-            f"Phase10B auxiliary={'enabled' if self._phase10b_enabled else 'disabled'}"
+            "expert sensors="
+            f"{'enabled' if self._expert_sensors_enabled else 'disabled'}"
         )
 
     def _setup_camera(self):
@@ -208,7 +215,7 @@ class IsaacRuntimeBridge:
             CompressedImage, CAMERA_TOPIC, 10
         )
         self._camera_error = "warming"
-        if self._phase10b_enabled:
+        if self._expert_sensors_enabled:
             observer_camera = UsdGeom.Camera.Define(
                 self._stage, OBSERVER_CAMERA_PATH
             )
@@ -244,7 +251,7 @@ class IsaacRuntimeBridge:
             self._observer_camera_error = "warming"
             self._depth_error = "warming"
         print(
-            f"[IsaacRuntimeBridge] Phase10A FPV render product: "
+            f"[IsaacRuntimeBridge] FPV render product: "
             f"{CAMERA_WIDTH}x{CAMERA_HEIGHT} JPEG quality {JPEG_QUALITY}"
         )
 
@@ -266,7 +273,9 @@ class IsaacRuntimeBridge:
             )
             self._apply_scene(scene)
             self._scene_revision += 1
-            self._scene_id = f"phase10b_{scene['episode_id']}_seed_{scene['random_seed']}"
+            self._scene_id = (
+                f"expert_{scene['episode_id']}_seed_{scene['random_seed']}"
+            )
             self._episode_id = scene["episode_id"]
             self._random_seed = scene["random_seed"]
             self._goal = tuple(scene["goal"])
@@ -282,37 +291,53 @@ class IsaacRuntimeBridge:
             print(f"[IsaacRuntimeBridge][ERROR] {self._episode_command_error}")
 
     def _apply_scene(self, scene):
-        if self._stage.GetPrimAtPath(PHASE9_ROOT).IsValid():
-            self._stage.RemovePrim(PHASE9_ROOT)
+        if self._stage.GetPrimAtPath(BOOTSTRAP_SCENE_ROOT).IsValid():
+            self._stage.RemovePrim(BOOTSTRAP_SCENE_ROOT)
         if self._stage.GetPrimAtPath(SCENE_ROOT).IsValid():
             self._stage.RemovePrim(SCENE_ROOT)
         root = UsdGeom.Xform.Define(self._stage, SCENE_ROOT)
-        root.GetPrim().SetCustomDataByKey("phase10b:episode_id", scene["episode_id"])
-        root.GetPrim().SetCustomDataByKey("phase10b:seed", scene["random_seed"])
+        root.GetPrim().SetCustomDataByKey("episode:id", scene["episode_id"])
+        root.GetPrim().SetCustomDataByKey("episode:seed", scene["random_seed"])
         root.GetPrim().SetCustomDataByKey(
-            "phase10c:generator", scene["generator"]
+            "episode:generator", scene["generator"]
+        )
+        # ------------------------------------------------------------
+        # Plain visual floor
+        # ------------------------------------------------------------
+        # 地板方形墊子的參數(僅外型，沒有碰撞)
+        self._create_box(
+            f"{SCENE_ROOT}/PlainFloor",
+            (100.0, 100.0, 0.01), # 地板尺寸
+            (0.0, 0.0, 0.01), # 位置
+            (0.40, 0.40, 0.40), # 預設顏色
+            collision=False,
         )
         self._create_episode_lighting(scene["lighting"])
-        UsdGeom.Xform.Define(self._stage, f"{SCENE_ROOT}/Obstacles")
-        for index, source in enumerate(scene["obstacles"], start=1):
-            building = self._create_highrise_building(source, index)
-            building.SetCustomDataByKey(
-                "episode:shape", "high_rise_building"
+        UsdGeom.Xform.Define(
+            self._stage,
+            f"{SCENE_ROOT}/Obstacles",
+        )
+
+        for index, source in enumerate(
+            scene["obstacles"],
+            start=1,
+        ):
+            obstacle = self._create_cylinder_obstacle(
+                source,
+                index,
             )
-            building.SetCustomDataByKey(
-                "episode:radius", float(source["radius"])
+
+            obstacle.SetCustomDataByKey(
+                "episode:shape",
+                "cylinder",
             )
-            building.SetCustomDataByKey(
-                "episode:height", float(source["height"])
+            obstacle.SetCustomDataByKey(
+                "episode:radius",
+                float(source["radius"]),
             )
-            building.SetCustomDataByKey(
-                "episode:width", float(source["width"])
-            )
-            building.SetCustomDataByKey(
-                "episode:depth", float(source["depth"])
-            )
-            building.SetCustomDataByKey(
-                "episode:yaw_deg", float(source["yaw_deg"])
+            obstacle.SetCustomDataByKey(
+                "episode:height",
+                float(source["height"]),
             )
         start = UsdGeom.Cylinder.Define(
             self._stage, f"{SCENE_ROOT}/Start/StartDisk"
@@ -361,6 +386,22 @@ class IsaacRuntimeBridge:
             UsdPhysics.CollisionAPI.Apply(prim)
         return prim
 
+    def _create_cylinder_obstacle(self, source, index):
+        name = str(source.get("name") or f"Obstacle_{index:03d}")
+        path = f"{SCENE_ROOT}/Obstacles/{name}"
+        cylinder = UsdGeom.Cylinder.Define(self._stage, path)
+        cylinder.CreateRadiusAttr(float(source["radius"]))
+        cylinder.CreateHeightAttr(float(source["height"]))
+        prim = cylinder.GetPrim()
+        self._set_prim_transform(
+            prim,
+            (source["x"], source["y"], source["z"]),
+        )
+        self._set_display_color(prim, source["color"])
+        if bool(source["collision"]):
+            UsdPhysics.CollisionAPI.Apply(prim)
+        return prim
+
     def _create_episode_lighting(self, lighting):
         light_root = f"{SCENE_ROOT}/Lights"
         UsdGeom.Xform.Define(self._stage, light_root)
@@ -382,117 +423,6 @@ class IsaacRuntimeBridge:
                 (0.0, 0.0, 8.0),
                 rotation_deg=spec["rotation_deg"],
             )
-
-    def _create_highrise_building(self, source, index):
-        name = str(source.get("name") or f"Building_{index:03d}")
-        path = f"{SCENE_ROOT}/Obstacles/{name}"
-        building = UsdGeom.Xform.Define(self._stage, path).GetPrim()
-        self._set_prim_transform(
-            building,
-            (source["x"], source["y"], 0.0),
-            rotation_deg=(0.0, 0.0, source["yaw_deg"]),
-        )
-        width = float(source["width"])
-        depth = float(source["depth"])
-        height = float(source["height"])
-        self._create_box(
-            f"{path}/Body",
-            (width, depth, height),
-            (0.0, 0.0, 0.5 * height),
-            source["facade_color"],
-            collision=True,
-        )
-        self._create_building_windows(path, source)
-        roof_path = f"{path}/Roof"
-        UsdGeom.Xform.Define(self._stage, roof_path)
-        roof_style = str(source["roof_style"])
-        roof_height = float(source["roof_height"])
-        crown_scale = 0.82 if roof_style == "flat" else 0.58
-        roof_color = [
-            max(0.02, float(value) * 0.65)
-            for value in source["facade_color"]
-        ]
-        self._create_box(
-            f"{roof_path}/Crown",
-            (width * crown_scale, depth * crown_scale, roof_height),
-            (0.0, 0.0, height + 0.5 * roof_height),
-            roof_color,
-            collision=False,
-        )
-        if roof_style == "antenna":
-            antenna_height = float(source["antenna_height"])
-            antenna = UsdGeom.Cylinder.Define(
-                self._stage, f"{roof_path}/Antenna"
-            )
-            antenna.CreateRadiusAttr(max(0.018, min(width, depth) * 0.045))
-            antenna.CreateHeightAttr(antenna_height)
-            self._set_prim_transform(
-                antenna.GetPrim(),
-                (0.0, 0.0, height + roof_height + 0.5 * antenna_height),
-            )
-            self._set_display_color(
-                antenna.GetPrim(), (0.12, 0.12, 0.14)
-            )
-        return building
-
-    def _create_building_windows(self, building_path, source):
-        windows = source["windows"]
-        window_root = f"{building_path}/Windows"
-        UsdGeom.Xform.Define(self._stage, window_root)
-        width = float(source["width"])
-        depth = float(source["depth"])
-        height = float(source["height"])
-        row_count = int(windows["row_count"])
-        columns_x = int(windows["columns_x"])
-        columns_y = int(windows["columns_y"])
-        thickness = float(windows["thickness_m"])
-        margin = float(windows["margin_m"])
-        window_height = min(
-            float(windows["height_m"]), height / (row_count + 2)
-        )
-        usable_height = max(window_height, height - 2.0 * margin)
-        row_spacing = usable_height / max(1, row_count)
-        window_width_x = max(
-            0.07, (width - 2.0 * margin) / max(1, columns_x) * 0.62
-        )
-        window_width_y = max(
-            0.07, (depth - 2.0 * margin) / max(1, columns_y) * 0.62
-        )
-        pattern = iter(windows["on_pattern"])
-        for row in range(row_count):
-            z = margin + (row + 0.5) * row_spacing
-            for column in range(columns_x):
-                x = -0.5 * width + (column + 0.5) * width / columns_x
-                for face_name, y in (
-                    ("North", 0.5 * depth + 0.5 * thickness),
-                    ("South", -0.5 * depth - 0.5 * thickness),
-                ):
-                    color = (
-                        source["window_on_color"] if next(pattern)
-                        else source["window_off_color"]
-                    )
-                    self._create_box(
-                        f"{window_root}/{face_name}_R{row:02d}_C{column:02d}",
-                        (window_width_x, thickness, window_height),
-                        (x, y, z),
-                        color,
-                    )
-            for column in range(columns_y):
-                y = -0.5 * depth + (column + 0.5) * depth / columns_y
-                for face_name, x in (
-                    ("East", 0.5 * width + 0.5 * thickness),
-                    ("West", -0.5 * width - 0.5 * thickness),
-                ):
-                    color = (
-                        source["window_on_color"] if next(pattern)
-                        else source["window_off_color"]
-                    )
-                    self._create_box(
-                        f"{window_root}/{face_name}_R{row:02d}_C{column:02d}",
-                        (thickness, window_width_y, window_height),
-                        (x, y, z),
-                        color,
-                    )
 
     def _update_camera_pose(self):
         if self._camera_transform is None:
@@ -623,7 +553,7 @@ class IsaacRuntimeBridge:
             self._camera_error = f"{type(error).__name__}: {error}"
 
         if (
-            self._phase10b_enabled
+            self._expert_sensors_enabled
             and now_monotonic - self._last_observer_publish_monotonic
             >= OBSERVER_CAMERA_PUBLISH_PERIOD_S
         ):
@@ -643,7 +573,7 @@ class IsaacRuntimeBridge:
                 )
 
         if (
-            self._phase10b_enabled
+            self._expert_sensors_enabled
             and now_monotonic - self._last_depth_publish_monotonic
             >= DEPTH_PUBLISH_PERIOD_S
         ):
@@ -724,16 +654,30 @@ class IsaacRuntimeBridge:
             "random_seed": self._random_seed,
             "scene_configuration": self._scene_configuration,
             "episode_command_error": self._episode_command_error,
+            "fpv_rgb_enabled": self._camera_enabled,
+            "fpv_rgb_ready": self._camera_frame_count > 0,
+            "fpv_rgb_frame_count": self._camera_frame_count,
+            "fpv_rgb_error": self._camera_error,
+            "observer_rgb_enabled": self._expert_sensors_enabled,
+            "observer_rgb_ready": self._observer_frame_count > 0,
+            "observer_rgb_frame_count": self._observer_frame_count,
+            "observer_rgb_error": self._observer_camera_error,
+            "observer_mode": OBSERVER_MODE.lower(),
+            "fpv_depth_enabled": self._expert_sensors_enabled,
+            "fpv_depth_ready": self._depth_frame_count > 0,
+            "fpv_depth_frame_count": self._depth_frame_count,
+            "fpv_depth_error": self._depth_error,
+            # Compatibility aliases for historical CLI and dataset evidence.
             "phase10a_camera_enabled": self._camera_enabled,
             "phase10a_camera_ready": self._camera_frame_count > 0,
             "phase10a_camera_frame_count": self._camera_frame_count,
             "phase10a_camera_error": self._camera_error,
-            "phase10c_observer_rgb_enabled": self._phase10b_enabled,
+            "phase10c_observer_rgb_enabled": self._expert_sensors_enabled,
             "phase10c_observer_rgb_ready": self._observer_frame_count > 0,
             "phase10c_observer_rgb_frame_count": self._observer_frame_count,
             "phase10c_observer_rgb_error": self._observer_camera_error,
             "phase10c_observer_mode": OBSERVER_MODE.lower(),
-            "phase10b_fpv_depth_enabled": self._phase10b_enabled,
+            "phase10b_fpv_depth_enabled": self._expert_sensors_enabled,
             "phase10b_fpv_depth_ready": self._depth_frame_count > 0,
             "phase10b_fpv_depth_frame_count": self._depth_frame_count,
             "phase10b_fpv_depth_error": self._depth_error,

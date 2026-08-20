@@ -11,7 +11,7 @@ def _payload():
     return {
         "schema": "uav_isaac_runtime/v1",
         "sequence": 4,
-        "scene_id": "phase9_fixed_scene_v1",
+        "scene_id": "bootstrap_fixed_scene_v1",
         "scene_revision": 1,
         "timeline_playing": True,
         "prim_valid": True,
@@ -19,7 +19,7 @@ def _payload():
         "vehicle_prim_path": "/World/quadrotor/body",
         "goal": [0.5, 3.0, 1.5],
         "obstacles": [{
-            "name": "Building_Phase9_001",
+            "name": "BootstrapObstacle_001",
             "x": -1.5,
             "y": 1.5,
             "z": 1.25,
@@ -34,7 +34,7 @@ def test_accepts_ready_finite_runtime_snapshot():
     snapshot = parse_runtime_snapshot(json.dumps(_payload()))
     assert snapshot.ready
     assert snapshot.goal == (0.5, 3.0, 1.5)
-    assert snapshot.obstacles[0].name == "Building_Phase9_001"
+    assert snapshot.obstacles[0].name == "BootstrapObstacle_001"
 
 
 @pytest.mark.parametrize(

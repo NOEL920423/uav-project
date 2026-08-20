@@ -1,4 +1,4 @@
-"""Deterministic canonical high-rise scenes without Isaac dependencies."""
+"""Deterministic canonical cylinder scenes without Isaac dependencies."""
 
 from __future__ import annotations
 
@@ -6,56 +6,72 @@ import math
 import random
 import re
 
+# 障礙物數量
+NUM_OBSTACLES = 10
 
-NUM_OBSTACLES = 8
+# 有效的障礙物參數
 GUARANTEE_DIRECT_PATH_BLOCKERS = True
 DIRECT_PATH_BLOCKER_COUNT = 2
 DIRECT_PATH_BLOCKER_T_RANGES = ((0.34, 0.38), (0.62, 0.66))
 DIRECT_PATH_BLOCKER_LATERAL_JITTER_M = 0.08
 DIRECT_PATH_BLOCKER_HEIGHT_MIN = 3.20
-X_MIN = -2.0
+
+# 障礙物生成範圍
+X_MIN = -5.0
 X_MAX = 5.0
-Y_MIN = -1.0
+Y_MIN = -2.0
 Y_MAX = 7.0
+
 START_POS = (0.0, 0.0, 0.0)
 TARGET_POS = (3.0, 5.0, 0.0)
 FLIGHT_ALTITUDE_M = 1.5
 DISK_RADIUS = 0.5
+
+# 額外安全距離
 DISK_SAFE_MARGIN = 1.0
 START_CLEAR_RADIUS = DISK_RADIUS + DISK_SAFE_MARGIN
 TARGET_CLEAR_RADIUS = DISK_RADIUS + DISK_SAFE_MARGIN
-BUILDING_WIDTH_MIN = 0.46
-BUILDING_WIDTH_MAX = 0.72
-BUILDING_DEPTH_MIN = 0.46
-BUILDING_DEPTH_MAX = 0.72
-BUILDING_HEIGHT_MIN = 2.80
-BUILDING_HEIGHT_MAX = 5.20
-BLOCKER_BUILDING_WIDTH_MIN = 0.56
-BLOCKER_BUILDING_DEPTH_MIN = 0.56
-BUILDING_YAW_MIN_DEG = -35.0
-BUILDING_YAW_MAX_DEG = 35.0
-BUILDING_WINDOW_THICKNESS_M = 0.018
-BUILDING_WINDOW_HEIGHT_M = 0.16
-BUILDING_WINDOW_MARGIN_M = 0.08
-BUILDING_ROOF_HEIGHT_MIN = 0.10
-BUILDING_ROOF_HEIGHT_MAX = 0.28
-BUILDING_ANTENNA_HEIGHT_MIN = 0.25
-BUILDING_ANTENNA_HEIGHT_MAX = 0.55
-BUILDING_FACADE_COLORS = (
+
+RADIUS_BASIS_WIDTH_MIN = 0.46
+RADIUS_BASIS_WIDTH_MAX = 0.72
+RADIUS_BASIS_DEPTH_MIN = 0.46
+RADIUS_BASIS_DEPTH_MAX = 0.72
+
+# 障礙物高度最小值和最大值
+CYLINDER_HEIGHT_MIN = 2.80
+CYLINDER_HEIGHT_MAX = 5.20
+
+BLOCKER_RADIUS_BASIS_WIDTH_MIN = 0.56
+BLOCKER_RADIUS_BASIS_DEPTH_MIN = 0.56
+# These decoration samples remain in the RNG contract. Removing their draws
+# changes later placement draws and therefore seed-to-geometry mapping.
+OBSTACLE_YAW_MIN_DEG = -35.0
+OBSTACLE_YAW_MAX_DEG = 35.0
+SCENE_DECORATION_WINDOW_THICKNESS_M = 0.018
+SCENE_DECORATION_WINDOW_HEIGHT_M = 0.16
+SCENE_DECORATION_WINDOW_MARGIN_M = 0.08
+SCENE_DECORATION_ROOF_HEIGHT_MIN = 0.10
+SCENE_DECORATION_ROOF_HEIGHT_MAX = 0.28
+SCENE_DECORATION_ANTENNA_HEIGHT_MIN = 0.25
+SCENE_DECORATION_ANTENNA_HEIGHT_MAX = 0.55
+CYLINDER_COLORS = (
     (0.12, 0.18, 0.24),
     (0.20, 0.27, 0.31),
     (0.30, 0.31, 0.34),
     (0.27, 0.22, 0.20),
     (0.18, 0.22, 0.30),
 )
-BUILDING_WINDOW_ON_COLORS = (
+SCENE_DECORATION_WINDOW_ON_COLORS = (
     (0.38, 0.72, 1.00),
     (0.62, 0.86, 1.00),
     (1.00, 0.78, 0.36),
 )
-BUILDING_WINDOW_OFF_COLOR = (0.035, 0.055, 0.075)
-BUILDING_ROOF_STYLES = ("flat", "crown", "antenna")
+SCENE_DECORATION_WINDOW_OFF_COLOR = (0.035, 0.055, 0.075)
+SCENE_DECORATION_ROOF_STYLES = ("flat", "crown", "antenna")
+
+# 兩個 cylinder 外緣間的最小實體距離，不是中心距離
 MIN_OBSTACLE_GAP = 0.50
+
 MAX_PLACEMENT_ATTEMPTS = 1000
 RESET_POSITION_TOLERANCE_M = 0.50
 LIGHTING_CONTRACT = {
@@ -116,61 +132,77 @@ def _is_valid_obstacle_position(
         for item in placed
     )
 
-
-def _random_building_spec(rng: random.Random, blocker: bool = False) -> dict:
-    width = rng.uniform(
-        BLOCKER_BUILDING_WIDTH_MIN if blocker else BUILDING_WIDTH_MIN,
-        BUILDING_WIDTH_MAX,
+"""
+目前沒有獨立的 CYLINDER_RADIUS_MIN/MAX。
+Radius 是由 radius basis width/depth 計算：
+radius = 0.5 * math.hypot(radius_basis_width, radius_basis_depth)
+"""
+def _random_cylinder_spec(rng: random.Random, blocker: bool = False) -> dict:
+    radius_basis_width = rng.uniform(
+        BLOCKER_RADIUS_BASIS_WIDTH_MIN
+        if blocker else RADIUS_BASIS_WIDTH_MIN,
+        RADIUS_BASIS_WIDTH_MAX,
     )
-    depth = rng.uniform(
-        BLOCKER_BUILDING_DEPTH_MIN if blocker else BUILDING_DEPTH_MIN,
-        BUILDING_DEPTH_MAX,
+    radius_basis_depth = rng.uniform(
+        BLOCKER_RADIUS_BASIS_DEPTH_MIN
+        if blocker else RADIUS_BASIS_DEPTH_MIN,
+        RADIUS_BASIS_DEPTH_MAX,
     )
     height = rng.uniform(
-        max(BUILDING_HEIGHT_MIN, DIRECT_PATH_BLOCKER_HEIGHT_MIN)
-        if blocker else BUILDING_HEIGHT_MIN,
-        BUILDING_HEIGHT_MAX,
+        max(CYLINDER_HEIGHT_MIN, DIRECT_PATH_BLOCKER_HEIGHT_MIN)
+        if blocker else CYLINDER_HEIGHT_MIN,
+        CYLINDER_HEIGHT_MAX,
     )
     return {
-        "shape": "high_rise_building",
-        "width": width,
-        "depth": depth,
+        "shape": "cylinder",
+        "radius_basis_width": radius_basis_width,
+        "radius_basis_depth": radius_basis_depth,
         "height": height,
-        "radius": 0.5 * math.hypot(width, depth),
-        "blocker_half_extent": 0.5 * min(width, depth),
-        "yaw_deg": rng.uniform(BUILDING_YAW_MIN_DEG, BUILDING_YAW_MAX_DEG),
-        "facade_color": list(rng.choice(BUILDING_FACADE_COLORS)),
-        "window_on_color": list(rng.choice(BUILDING_WINDOW_ON_COLORS)),
-        "window_off_color": list(BUILDING_WINDOW_OFF_COLOR),
-        "roof_style": rng.choice(BUILDING_ROOF_STYLES),
+        "radius": 0.5 * math.hypot(
+            radius_basis_width, radius_basis_depth
+        ),
+        "blocker_half_extent": 0.5 * min(
+            radius_basis_width, radius_basis_depth
+        ),
+        "yaw_deg": rng.uniform(OBSTACLE_YAW_MIN_DEG, OBSTACLE_YAW_MAX_DEG),
+        "color": list(rng.choice(CYLINDER_COLORS)),
+        "window_on_color": list(rng.choice(SCENE_DECORATION_WINDOW_ON_COLORS)),
+        "window_off_color": list(SCENE_DECORATION_WINDOW_OFF_COLOR),
+        "roof_style": rng.choice(SCENE_DECORATION_ROOF_STYLES),
         "roof_height": rng.uniform(
-            BUILDING_ROOF_HEIGHT_MIN, BUILDING_ROOF_HEIGHT_MAX
+            SCENE_DECORATION_ROOF_HEIGHT_MIN,
+            SCENE_DECORATION_ROOF_HEIGHT_MAX,
         ),
         "antenna_height": rng.uniform(
-            BUILDING_ANTENNA_HEIGHT_MIN, BUILDING_ANTENNA_HEIGHT_MAX
+            SCENE_DECORATION_ANTENNA_HEIGHT_MIN,
+            SCENE_DECORATION_ANTENNA_HEIGHT_MAX,
         ),
-        "collision": True,
+        "collision": True, # 所有障礙物都要有碰撞
     }
 
 
 def _window_contract(spec: dict, rng: random.Random) -> dict:
     row_count = max(5, min(11, int(spec["height"] / 0.44)))
-    columns_x = max(2, min(3, int(spec["width"] / 0.22)))
-    columns_y = max(2, min(3, int(spec["depth"] / 0.22)))
+    columns_x = max(
+        2, min(3, int(spec["radius_basis_width"] / 0.22))
+    )
+    columns_y = max(
+        2, min(3, int(spec["radius_basis_depth"] / 0.22))
+    )
     window_count = row_count * 2 * (columns_x + columns_y)
     return {
         "row_count": row_count,
         "columns_x": columns_x,
         "columns_y": columns_y,
-        "height_m": BUILDING_WINDOW_HEIGHT_M,
-        "thickness_m": BUILDING_WINDOW_THICKNESS_M,
-        "margin_m": BUILDING_WINDOW_MARGIN_M,
+        "height_m": SCENE_DECORATION_WINDOW_HEIGHT_M,
+        "thickness_m": SCENE_DECORATION_WINDOW_THICKNESS_M,
+        "margin_m": SCENE_DECORATION_WINDOW_MARGIN_M,
         "on_pattern": [rng.random() < 0.72 for _ in range(window_count)],
     }
 
-
+# 強制生成有擋住的障礙物(blocked)
 def _generate_obstacles(rng: random.Random) -> list[dict]:
-    """Port the canonical building rejection sampler and random call order."""
+    """Run the canonical obstacle rejection sampler and random call order."""
     placed: list[dict] = []
     blocker_count = 0
     if GUARANTEE_DIRECT_PATH_BLOCKERS:
@@ -193,7 +225,7 @@ def _generate_obstacles(rng: random.Random) -> list[dict]:
     for blocker_index in range(blocker_count):
         t_min, t_max = DIRECT_PATH_BLOCKER_T_RANGES[blocker_index]
         for _attempt in range(MAX_PLACEMENT_ATTEMPTS):
-            spec = _random_building_spec(rng, blocker=True)
+            spec = _random_cylinder_spec(rng, blocker=True)
             radius = spec["radius"]
             t = rng.uniform(t_min, t_max)
             lateral_limit = min(
@@ -232,7 +264,7 @@ def _generate_obstacles(rng: random.Random) -> list[dict]:
 
     for _index in range(NUM_OBSTACLES - blocker_count):
         for _attempt in range(MAX_PLACEMENT_ATTEMPTS):
-            spec = _random_building_spec(rng)
+            spec = _random_cylinder_spec(rng)
             radius = spec["radius"]
             x = rng.uniform(X_MIN + radius, X_MAX - radius)
             y = rng.uniform(Y_MIN + radius, Y_MAX - radius)
@@ -248,7 +280,7 @@ def _generate_obstacles(rng: random.Random) -> list[dict]:
             break
         else:
             raise RuntimeError(
-                f"could not place canonical building {len(placed) + 1}"
+                f"could not place canonical obstacle {len(placed) + 1}"
             )
 
     physical_blockers = [
@@ -261,7 +293,7 @@ def _generate_obstacles(rng: random.Random) -> list[dict]:
         raise RuntimeError("canonical direct-path blocker validation failed")
 
     for index, spec in enumerate(placed, start=1):
-        spec["name"] = f"Building_{index:03d}"
+        spec["name"] = f"Obstacle_{index:03d}"
         spec["windows"] = _window_contract(spec, rng)
         spec["hierarchy"] = ["Body", "Windows", "Roof/Crown"]
         if spec["roof_style"] == "antenna":
@@ -273,23 +305,23 @@ def _blocked_goal_fixture() -> dict:
     radius = 0.85
     side = radius * math.sqrt(2.0)
     spec = {
-        "name": "Building_blocked_goal",
-        "shape": "high_rise_building",
+        "name": "Obstacle_blocked_goal",
+        "shape": "cylinder",
         "x": TARGET_POS[0],
         "y": TARGET_POS[1],
         "z": 1.5,
-        "width": side,
-        "depth": side,
+        "radius_basis_width": side,
+        "radius_basis_depth": side,
         "height": 3.0,
         "radius": radius,
         "blocker_half_extent": 0.5 * side,
         "yaw_deg": 0.0,
-        "facade_color": list(BUILDING_FACADE_COLORS[0]),
-        "window_on_color": list(BUILDING_WINDOW_ON_COLORS[0]),
-        "window_off_color": list(BUILDING_WINDOW_OFF_COLOR),
+        "color": list(CYLINDER_COLORS[0]),
+        "window_on_color": list(SCENE_DECORATION_WINDOW_ON_COLORS[0]),
+        "window_off_color": list(SCENE_DECORATION_WINDOW_OFF_COLOR),
         "roof_style": "flat",
-        "roof_height": BUILDING_ROOF_HEIGHT_MIN,
-        "antenna_height": BUILDING_ANTENNA_HEIGHT_MIN,
+        "roof_height": SCENE_DECORATION_ROOF_HEIGHT_MIN,
+        "antenna_height": SCENE_DECORATION_ANTENNA_HEIGHT_MIN,
         "collision": True,
         "placement_mode": "phase10b_safe_failure",
         "fixture": "phase10b_safe_failure",
@@ -306,7 +338,7 @@ def generate_episode_scene(
     reset_north_m: float,
     mode: str = "normal",
 ) -> dict:
-    """Generate the canonical eight-building distribution for one safe reset."""
+    """Generate the configured obstacle distribution for one safe reset."""
     if not re.fullmatch(r"episode_[0-9]{6,}", episode_id):
         raise ValueError(
             "episode_id must use episode_ followed by at least six digits"
@@ -330,7 +362,7 @@ def generate_episode_scene(
     return {
         "episode_id": episode_id,
         "random_seed": int(seed),
-        "generator": "canonical_highrise_scene_generator_v1",
+        "generator": "canonical_cylinder_scene_generator_v1",
         "reference": (
             "legacy/isaac_ros2_episode_pipeline/2.scene_episode_generator.py"
         ),
@@ -347,10 +379,14 @@ def generate_episode_scene(
         "lighting": LIGHTING_CONTRACT,
         "placement_contract": {
             "area": {"x": [X_MIN, X_MAX], "y": [Y_MIN, Y_MAX]},
-            "width_m": [BUILDING_WIDTH_MIN, BUILDING_WIDTH_MAX],
-            "depth_m": [BUILDING_DEPTH_MIN, BUILDING_DEPTH_MAX],
-            "height_m": [BUILDING_HEIGHT_MIN, BUILDING_HEIGHT_MAX],
-            "yaw_deg": [BUILDING_YAW_MIN_DEG, BUILDING_YAW_MAX_DEG],
+            "radius_basis_width_m": [
+                RADIUS_BASIS_WIDTH_MIN, RADIUS_BASIS_WIDTH_MAX
+            ],
+            "radius_basis_depth_m": [
+                RADIUS_BASIS_DEPTH_MIN, RADIUS_BASIS_DEPTH_MAX
+            ],
+            "height_m": [CYLINDER_HEIGHT_MIN, CYLINDER_HEIGHT_MAX],
+            "yaw_deg": [OBSTACLE_YAW_MIN_DEG, OBSTACLE_YAW_MAX_DEG],
             "minimum_gap_m": MIN_OBSTACLE_GAP,
             "disk_radius_m": DISK_RADIUS,
             "disk_safe_margin_m": DISK_SAFE_MARGIN,
