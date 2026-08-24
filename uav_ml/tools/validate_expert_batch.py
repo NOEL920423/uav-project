@@ -12,6 +12,16 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from isaac.runtime.formal_expert_sensor_contract import (
+    FPV_RGB_HEIGHT,
+    FPV_RGB_WIDTH,
+    LEGACY_OBSERVER_RGB_HEIGHT,
+    LEGACY_OBSERVER_RGB_WIDTH,
+    TOP_RGB_ALIGNMENT_TOLERANCE_S,
+    TOP_RGB_HEIGHT,
+    TOP_RGB_MODE,
+    TOP_RGB_WIDTH,
+)
 from uav_ml.tools.validate_expert_dataset import (
     _directory_size,
     validate_episode,
@@ -22,8 +32,22 @@ def _load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _uses_formal_top_rgb(episode: dict) -> bool:
+    """Return whether one episode declares the fixed formal TOP stream."""
+    streams = episode.get("available_sensor_streams") or {}
+    runtime_status = streams.get("runtime_status") or {}
+    return runtime_status.get("phase10c_observer_mode") == TOP_RGB_MODE
+
+
 def _validate_auxiliary(dataset_root: Path, episode_id: str) -> dict:
     episode_dir = dataset_root / episode_id
+    episode = _load(episode_dir / "episode.json")
+    formal_top_rgb = _uses_formal_top_rgb(episode)
+    observer_size = (
+        (TOP_RGB_WIDTH, TOP_RGB_HEIGHT)
+        if formal_top_rgb
+        else (LEGACY_OBSERVER_RGB_WIDTH, LEGACY_OBSERVER_RGB_HEIGHT)
+    )
     with (episode_dir / "samples.csv").open(
         newline="", encoding="utf-8"
     ) as stream:
@@ -37,9 +61,17 @@ def _validate_auxiliary(dataset_root: Path, episode_id: str) -> dict:
     if len(rows) != len(sample_rows):
         raise ValueError(f"{episode_id}: auxiliary row count mismatch")
     counts = Counter()
+    observer_timestamps: set[float] = set()
     for index, row in enumerate(rows, start=1):
         if row["episode_id"] != episode_id or int(row["sample_id"]) != index:
             raise ValueError(f"{episode_id}: auxiliary identity mismatch")
+        if formal_top_rgb and abs(
+            float(row["primary_image_timestamp_s"])
+            - float(sample_rows[index - 1]["image_timestamp_s"])
+        ) > TOP_RGB_ALIGNMENT_TOLERANCE_S:
+            raise ValueError(
+                f"{episode_id}: auxiliary primary timestamp mismatch"
+            )
         observer_name = (
             "observer_rgb"
             if "observer_rgb_available" in auxiliary_fields
@@ -52,19 +84,61 @@ def _validate_auxiliary(dataset_root: Path, episode_id: str) -> dict:
             available = row[f"{name}_available"].lower() == "true"
             counts[f"{name}_{'available' if available else 'missing'}"] += 1
             if not available:
+                if formal_top_rgb and name == observer_name:
+                    raise ValueError(
+                        f"{episode_id}: formal TOP RGB is missing for "
+                        f"sample {index}"
+                    )
                 if row[f"{name}_path"]:
                     raise ValueError(
                         f"{episode_id}: unavailable {name} has a path"
                     )
                 continue
             error = float(row[f"{name}_error_s"])
-            if error > tolerance + 1e-9:
+            effective_tolerance = (
+                TOP_RGB_ALIGNMENT_TOLERANCE_S
+                if formal_top_rgb and name == observer_name
+                else tolerance
+            )
+            if not math.isfinite(error) or error > effective_tolerance + 1e-9:
                 raise ValueError(f"{episode_id}: {name} join over tolerance")
+            if formal_top_rgb and name == observer_name:
+                observer_timestamp = float(row[f"{name}_timestamp_s"])
+                primary_timestamp = float(row["primary_image_timestamp_s"])
+                observed_error = abs(observer_timestamp - primary_timestamp)
+                if (
+                    not math.isfinite(observer_timestamp)
+                    or observed_error > TOP_RGB_ALIGNMENT_TOLERANCE_S + 1e-9
+                ):
+                    raise ValueError(
+                        f"{episode_id}: formal TOP RGB timestamp mismatch"
+                    )
+                if abs(error - observed_error) > 1e-9:
+                    raise ValueError(
+                        f"{episode_id}: formal TOP RGB error metadata mismatch"
+                    )
+                if row[f"{name}_status"] != "matched":
+                    raise ValueError(
+                        f"{episode_id}: formal TOP RGB status is not matched"
+                    )
+                if observer_timestamp in observer_timestamps:
+                    raise ValueError(
+                        f"{episode_id}: formal TOP RGB timestamp was reused"
+                    )
+                observer_timestamps.add(observer_timestamp)
             path = (dataset_root / row[f"{name}_path"]).resolve()
             if not path.is_file() or not path.is_relative_to(dataset_root):
                 raise ValueError(f"{episode_id}: invalid {name} path")
             with Image.open(path) as image:
-                if image.format != expected_format or image.size != (320, 180):
+                expected_size = (
+                    observer_size
+                    if name == observer_name
+                    else (FPV_RGB_WIDTH, FPV_RGB_HEIGHT)
+                )
+                if (
+                    image.format != expected_format
+                    or image.size != expected_size
+                ):
                     raise ValueError(f"{episode_id}: invalid {name} image")
                 if name == "fpv_depth" and image.mode not in {"I;16", "I"}:
                     raise ValueError(f"{episode_id}: depth is not uint16 PNG")

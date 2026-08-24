@@ -27,7 +27,14 @@ from isaac.runtime.episode_scene import (
     START_POS,
     TARGET_POS,
 )
-from uav_ml.tools.validate_expert_batch import _validate_auxiliary
+from isaac.runtime.formal_expert_sensor_contract import (
+    FORMAL_RGB_EXPECTED_RATE_RANGE_HZ,
+    LEGACY_OBSERVER_RGB_EXPECTED_RATE_RANGE_HZ,
+)
+from uav_ml.tools.validate_expert_batch import (
+    _uses_formal_top_rgb,
+    _validate_auxiliary,
+)
 from uav_ml.tools.validate_expert_dataset import (
     _directory_size,
     validate_episode,
@@ -199,10 +206,22 @@ def validate_episode_metadata(episode: dict, validation: dict) -> dict:
             raise ValueError(f"{episode_id}: {name} rate is invalid")
         stream_rates[name] = rate
     if validation["episode_success"]:
+        formal_top_rgb = _uses_formal_top_rgb(episode)
+        if formal_top_rgb and int(
+            streams["observer_rgb"].get("matched", -1)
+        ) != int(validation["sample_count"]):
+            raise ValueError(
+                f"{episode_id}: formal TOP RGB match count is incomplete"
+            )
+        observer_rate_range = (
+            FORMAL_RGB_EXPECTED_RATE_RANGE_HZ
+            if formal_top_rgb
+            else LEGACY_OBSERVER_RGB_EXPECTED_RATE_RANGE_HZ
+        )
         for name, lower, upper in (
-            ("fpv_rgb", 3.0, 7.0),
+            ("fpv_rgb", *FORMAL_RGB_EXPECTED_RATE_RANGE_HZ),
             ("fpv_depth", 3.0, 7.0),
-            ("observer_rgb", 1.0, 3.0),
+            ("observer_rgb", *observer_rate_range),
         ):
             if (
                 stream_counts[name] < 2

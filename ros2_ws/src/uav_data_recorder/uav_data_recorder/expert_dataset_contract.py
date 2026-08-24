@@ -58,6 +58,50 @@ def nearest(values: list[TimedValue], target_s: float) -> TimedValue | None:
     return min(values, key=lambda item: abs(item.timestamp_s - target_s))
 
 
+def latest_at_or_before(
+    values: list[TimedValue], target_s: float
+) -> TimedValue | None:
+    """Return the latest causal value whose timestamp does not exceed target."""
+    candidates = [item for item in values if item.timestamp_s <= target_s]
+    return max(candidates, key=lambda item: item.timestamp_s, default=None)
+
+
+def update_recording_window(
+    start_s: float | None,
+    end_s: float | None,
+    phase: str,
+    timestamp_s: float,
+) -> tuple[float | None, float | None]:
+    """Update the immutable-first transition bounds for BC sample recording."""
+    timestamp = float(timestamp_s)
+    if not math.isfinite(timestamp) or timestamp <= 0.0:
+        raise ValueError("recording window timestamp must be positive")
+    if start_s is None:
+        if phase == "TRACKING":
+            return timestamp, end_s
+        return start_s, end_s
+    if (
+        end_s is None
+        and timestamp >= start_s
+        and phase != "TRACKING"
+    ):
+        return start_s, timestamp
+    return start_s, end_s
+
+
+def recording_window_rejection(
+    start_s: float | None,
+    end_s: float | None,
+    image_timestamp_s: float,
+) -> str | None:
+    """Return why an image lies outside the inclusive/exclusive BC window."""
+    if start_s is None or image_timestamp_s < start_s:
+        return "before_tracking_window"
+    if end_s is not None and image_timestamp_s >= end_s:
+        return "after_tracking_window"
+    return None
+
+
 def previous(
     values: list[TimedValue], selected: TimedValue
 ) -> TimedValue | None:

@@ -38,6 +38,18 @@ if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
 
 from episode_scene import generate_episode_scene
+from formal_expert_sensor_contract import (
+    FORMAL_RGB_PUBLISH_PERIOD_S,
+    FPV_RGB_HEIGHT,
+    FPV_RGB_WIDTH,
+    LEGACY_OBSERVER_RGB_HEIGHT,
+    LEGACY_OBSERVER_RGB_PUBLISH_PERIOD_S,
+    LEGACY_OBSERVER_RGB_WIDTH,
+    TOP_RGB_HEIGHT,
+    TOP_RGB_MODE,
+    TOP_RGB_PUBLISH_PERIOD_S,
+    TOP_RGB_WIDTH,
+)
 
 
 VEHICLE_BODY_PATH = "/World/quadrotor/body"
@@ -48,7 +60,7 @@ SCHEMA = "uav_isaac_runtime/v1"
 BOOTSTRAP_SCENE_ID = "bootstrap_fixed_scene_v1"
 SCENE_REVISION = 1
 PUBLISH_PERIOD_S = 0.05
-CAMERA_PUBLISH_PERIOD_S = 0.20
+CAMERA_PUBLISH_PERIOD_S = FORMAL_RGB_PUBLISH_PERIOD_S
 CAMERA_TOPIC = "/uav/isaac/fpv/image/compressed"
 CAMERA_PATH = "/World/RuntimeSensors/FPVCamera"
 OBSERVER_CAMERA_PATH = "/World/RuntimeSensors/ObserverCamera"
@@ -57,10 +69,10 @@ DEPTH_TOPIC = "/uav/isaac/fpv/depth/compressed"
 EPISODE_COMMAND_TOPIC = "/uav/isaac/episode_command"
 BOOTSTRAP_SCENE_ROOT = "/World/BootstrapScene"
 SCENE_ROOT = "/World/GeneratedEpisode"
-CAMERA_WIDTH = 320
-CAMERA_HEIGHT = 180
+CAMERA_WIDTH = FPV_RGB_WIDTH
+CAMERA_HEIGHT = FPV_RGB_HEIGHT
+
 JPEG_QUALITY = 85
-OBSERVER_CAMERA_PUBLISH_PERIOD_S = 0.50
 DEPTH_PUBLISH_PERIOD_S = 0.20
 DEPTH_MIN_M = 0.05
 DEPTH_MAX_M = 30.0
@@ -80,6 +92,12 @@ OBSERVER_TOP_HEIGHT_M = 9.0
 OBSERVER_TOP_LOOK_AT_HEIGHT_M = 0.0
 OBSERVER_FOCAL_LENGTH = 18.0
 OBSERVER_HORIZONTAL_APERTURE = 22.0
+
+# 固定的上視圖影像
+FORMAL_OBSERVER_EYE = (0.0, 2.5, 15.0)
+FORMAL_OBSERVER_TARGET = (0.0, 2.5, 0.0)
+FORMAL_OBSERVER_UP = (0.0, 1.0, 0.0)
+FORMAL_OBSERVER_COVERAGE_M = (20.0, 11.25)
 CAMERA_CLIPPING_RANGE = (0.05, 10000.0)
 CAMERA_SMOOTHING = 0.18
 GOAL = (0.5, 3.0, 1.5)
@@ -113,6 +131,18 @@ def _world_pose(stage, prim_path):
     return values if all(math.isfinite(value) for value in values) else None
 
 
+def _orthographic_aperture(stage, coverage_m):
+    """Convert a world-space coverage in metres to USD camera aperture units."""
+    meters_per_unit = float(UsdGeom.GetStageMetersPerUnit(stage))
+    if not math.isfinite(meters_per_unit) or meters_per_unit <= 0.0:
+        raise RuntimeError("stage meters per unit must be finite and positive")
+    return (
+        float(coverage_m)
+        / meters_per_unit
+        / float(Gf.Camera.APERTURE_UNIT)
+    )
+
+
 class IsaacRuntimeBridge:
     """Own one update callback and publish actual stage state at 20 Hz."""
 
@@ -134,9 +164,30 @@ class IsaacRuntimeBridge:
             os.environ.get("UAV_FPV_CAMERA", "0") == "1"
             or os.environ.get("UAV_PHASE10A_CAMERA", "0") == "1"
         )
-        self._expert_sensors_enabled = (
+        self._formal_expert_sensors_enabled = (
             os.environ.get("UAV_EXPERT_SENSORS", "0") == "1"
-            or os.environ.get("UAV_PHASE10B_SENSORS", "0") == "1"
+        )
+        self._legacy_expert_sensors_enabled = (
+            os.environ.get("UAV_PHASE10B_SENSORS", "0") == "1"
+        )
+        self._expert_sensors_enabled = (
+            self._formal_expert_sensors_enabled
+            or self._legacy_expert_sensors_enabled
+        )
+        self._observer_resolution = (
+            (TOP_RGB_WIDTH, TOP_RGB_HEIGHT)
+            if self._formal_expert_sensors_enabled
+            else (LEGACY_OBSERVER_RGB_WIDTH, LEGACY_OBSERVER_RGB_HEIGHT)
+        )
+        self._observer_publish_period_s = (
+            TOP_RGB_PUBLISH_PERIOD_S
+            if self._formal_expert_sensors_enabled
+            else LEGACY_OBSERVER_RGB_PUBLISH_PERIOD_S
+        )
+        self._observer_mode = (
+            TOP_RGB_MODE
+            if self._formal_expert_sensors_enabled
+            else OBSERVER_MODE.lower()
         )
         self._camera_enabled = (
             self._camera_enabled or self._expert_sensors_enabled
@@ -216,13 +267,38 @@ class IsaacRuntimeBridge:
         )
         self._camera_error = "warming"
         if self._expert_sensors_enabled:
+            existing_observer = self._stage.GetPrimAtPath(
+                OBSERVER_CAMERA_PATH
+            )
+            if existing_observer and existing_observer.IsValid():
+                self._stage.RemovePrim(OBSERVER_CAMERA_PATH)
             observer_camera = UsdGeom.Camera.Define(
                 self._stage, OBSERVER_CAMERA_PATH
             )
-            observer_camera.GetFocalLengthAttr().Set(OBSERVER_FOCAL_LENGTH)
-            observer_camera.GetHorizontalApertureAttr().Set(
-                OBSERVER_HORIZONTAL_APERTURE
-            )
+            if self._formal_expert_sensors_enabled:
+                observer_camera.GetProjectionAttr().Set(
+                    UsdGeom.Tokens.orthographic
+                )
+                observer_camera.GetHorizontalApertureAttr().Set(
+                    _orthographic_aperture(
+                        self._stage, FORMAL_OBSERVER_COVERAGE_M[0]
+                    )
+                )
+                observer_camera.GetVerticalApertureAttr().Set(
+                    _orthographic_aperture(
+                        self._stage, FORMAL_OBSERVER_COVERAGE_M[1]
+                    )
+                )
+            else:
+                observer_camera.GetProjectionAttr().Set(
+                    UsdGeom.Tokens.perspective
+                )
+                observer_camera.GetFocalLengthAttr().Set(
+                    OBSERVER_FOCAL_LENGTH
+                )
+                observer_camera.GetHorizontalApertureAttr().Set(
+                    OBSERVER_HORIZONTAL_APERTURE
+                )
             observer_camera.GetClippingRangeAttr().Set(
                 Gf.Vec2f(*CAMERA_CLIPPING_RANGE)
             )
@@ -230,7 +306,7 @@ class IsaacRuntimeBridge:
                 observer_camera.GetPrim()
             ).AddTransformOp()
             self._observer_render_product = rep.create.render_product(
-                OBSERVER_CAMERA_PATH, (CAMERA_WIDTH, CAMERA_HEIGHT)
+                OBSERVER_CAMERA_PATH, self._observer_resolution
             )
             self._observer_rgb_annotator = (
                 rep.AnnotatorRegistry.get_annotator("rgb")
@@ -459,7 +535,12 @@ class IsaacRuntimeBridge:
         ).GetInverse()
         self._camera_transform.Set(transform)
         if self._observer_camera_transform is not None:
-            if OBSERVER_MODE == "TOP":
+            if self._formal_expert_sensors_enabled:
+                observer_eye = Gf.Vec3d(*FORMAL_OBSERVER_EYE)
+                observer_target = Gf.Vec3d(*FORMAL_OBSERVER_TARGET)
+                observer_up = Gf.Vec3d(*FORMAL_OBSERVER_UP)
+                self._observer_camera_position = observer_eye
+            elif OBSERVER_MODE == "TOP":
                 observer_eye = Gf.Vec3d(
                     position[0],
                     position[1],
@@ -486,9 +567,10 @@ class IsaacRuntimeBridge:
                     position[2] + OBSERVER_LOOK_AT_HEIGHT_M,
                 )
                 observer_up = Gf.Vec3d(0.0, 0.0, 1.0)
-            self._observer_camera_position = self._smooth_position(
-                self._observer_camera_position, observer_eye
-            )
+            if not self._formal_expert_sensors_enabled:
+                self._observer_camera_position = self._smooth_position(
+                    self._observer_camera_position, observer_eye
+                )
             observer_transform = Gf.Matrix4d().SetLookAt(
                 self._observer_camera_position,
                 observer_target,
@@ -508,7 +590,9 @@ class IsaacRuntimeBridge:
         ))
 
     @staticmethod
-    def _jpeg_message(data, stamp, frame_id):
+    def _jpeg_message(
+        data, stamp, frame_id, expected_size=(CAMERA_WIDTH, CAMERA_HEIGHT)
+    ):
         import numpy as np
         from PIL import Image
 
@@ -517,7 +601,8 @@ class IsaacRuntimeBridge:
         if data is None or getattr(data, "size", 0) == 0:
             raise RuntimeError("RGB annotator has no frame")
         rgb = np.asarray(data)[..., :3]
-        if rgb.shape != (CAMERA_HEIGHT, CAMERA_WIDTH, 3):
+        width, height = expected_size
+        if rgb.shape != (height, width, 3):
             raise RuntimeError(f"unexpected RGB shape {rgb.shape}")
         if rgb.dtype != np.uint8:
             rgb = np.clip(rgb, 0, 255).astype(np.uint8)
@@ -555,7 +640,7 @@ class IsaacRuntimeBridge:
         if (
             self._expert_sensors_enabled
             and now_monotonic - self._last_observer_publish_monotonic
-            >= OBSERVER_CAMERA_PUBLISH_PERIOD_S
+            >= self._observer_publish_period_s
         ):
             self._last_observer_publish_monotonic = now_monotonic
             try:
@@ -563,6 +648,7 @@ class IsaacRuntimeBridge:
                     self._observer_rgb_annotator.get_data(),
                     stamp,
                     "isaac_observer_optical",
+                    self._observer_resolution,
                 )
                 self._observer_camera_publisher.publish(message)
                 self._observer_frame_count += 1
@@ -662,7 +748,7 @@ class IsaacRuntimeBridge:
             "observer_rgb_ready": self._observer_frame_count > 0,
             "observer_rgb_frame_count": self._observer_frame_count,
             "observer_rgb_error": self._observer_camera_error,
-            "observer_mode": OBSERVER_MODE.lower(),
+            "observer_mode": self._observer_mode,
             "fpv_depth_enabled": self._expert_sensors_enabled,
             "fpv_depth_ready": self._depth_frame_count > 0,
             "fpv_depth_frame_count": self._depth_frame_count,
@@ -676,7 +762,7 @@ class IsaacRuntimeBridge:
             "phase10c_observer_rgb_ready": self._observer_frame_count > 0,
             "phase10c_observer_rgb_frame_count": self._observer_frame_count,
             "phase10c_observer_rgb_error": self._observer_camera_error,
-            "phase10c_observer_mode": OBSERVER_MODE.lower(),
+            "phase10c_observer_mode": self._observer_mode,
             "phase10b_fpv_depth_enabled": self._expert_sensors_enabled,
             "phase10b_fpv_depth_ready": self._depth_frame_count > 0,
             "phase10b_fpv_depth_frame_count": self._depth_frame_count,

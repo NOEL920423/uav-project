@@ -10,10 +10,13 @@ from uav_data_recorder.expert_dataset_contract import (
     contract_manifest,
     episode_outcome_success,
     goal_features,
+    latest_at_or_before,
     nearest,
     ned_to_body,
     normalize_action,
     previous,
+    recording_window_rejection,
+    update_recording_window,
 )
 
 
@@ -47,6 +50,66 @@ def test_timestamp_join_exposes_error_and_previous_control_sample():
     assert selected == values[1]
     assert abs(selected.timestamp_s - 1.06) < SYNCHRONIZATION_TOLERANCE_S
     assert previous(values, selected) == values[0]
+
+
+def test_flight_status_lookup_is_causal_at_tracking_boundaries():
+    """Lifecycle lookup never uses a future transition for an earlier image."""
+    values = [
+        TimedValue(1.00, "STARTING_TRACKING"),
+        TimedValue(1.05, "TRACKING"),
+        TimedValue(1.10, "GOAL_HOLD"),
+    ]
+    assert latest_at_or_before(values, 1.049) == values[0]
+    assert latest_at_or_before(values, 1.050) == values[1]
+    assert latest_at_or_before(values, 1.099) == values[1]
+    assert latest_at_or_before(values, 1.100) == values[2]
+
+
+def test_recording_window_is_tracking_inclusive_and_goal_hold_exclusive():
+    """Normal tracking and settling remain while GOAL_HOLD ends recording."""
+    start, end = update_recording_window(None, None, "REPLANNING", 9.0)
+    assert (start, end) == (None, None)
+    start, end = update_recording_window(start, end, "TRACKING", 10.0)
+    assert (start, end) == (10.0, None)
+    assert recording_window_rejection(start, end, 9.999) == (
+        "before_tracking_window"
+    )
+    assert recording_window_rejection(start, end, 10.0) is None
+    assert recording_window_rejection(start, end, 10.5) is None
+
+    start, end = update_recording_window(start, end, "TRACKING", 10.8)
+    assert (start, end) == (10.0, None)
+    start, end = update_recording_window(start, end, "GOAL_HOLD", 11.0)
+    assert recording_window_rejection(start, end, 10.999) is None
+    assert recording_window_rejection(start, end, 11.0) == (
+        "after_tracking_window"
+    )
+    assert recording_window_rejection(start, end, 12.0) == (
+        "after_tracking_window"
+    )
+    assert update_recording_window(start, end, "LANDING", 12.0) == (
+        10.0, 11.0
+    )
+    assert update_recording_window(start, end, "COMPLETE", 13.0) == (
+        10.0, 11.0
+    )
+
+
+def test_failure_transition_closes_recording_after_tracking():
+    """The first non-TRACKING failure phase becomes the immutable end bound."""
+    start, end = update_recording_window(None, None, "TRACKING", 20.0)
+    assert update_recording_window(start, end, "REPLANNING", 19.9) == (
+        20.0, None
+    )
+    start, end = update_recording_window(start, end, "LANDING", 20.5)
+    assert (start, end) == (20.0, 20.5)
+    assert recording_window_rejection(start, end, 20.499) is None
+    assert recording_window_rejection(start, end, 20.5) == (
+        "after_tracking_window"
+    )
+    assert update_recording_window(start, end, "FAILED", 21.0) == (
+        20.0, 20.5
+    )
 
 
 def test_manifest_defines_raw_image_and_rebuild_dimensions():

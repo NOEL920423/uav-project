@@ -72,7 +72,7 @@ def _make_fixture(root: Path, episode_count: int = 10) -> tuple[Path, Path]:
         if not success:
             continue
         episode_dir = dataset / episode_id
-        image_dir = episode_dir / "images" / "fpv"
+        image_dir = episode_dir / "fpv_rgb"
         image_dir.mkdir(parents=True)
         image_path = image_dir / "frame_000001.jpg"
         pixels = np.full((18, 32, 3), 20 * index, dtype=np.uint8)
@@ -184,7 +184,7 @@ class BcBaselineTests(unittest.TestCase):
                 "test": 1,
             })
             corrupt_image = dataset.joinpath(
-                "episode_000004", "images", "fpv", "frame_000001.jpg"
+                "episode_000004", "fpv_rgb", "frame_000001.jpg"
             )
             corrupt_image.unlink()
             corrupt_audit = audit_dataset(dataset, encoder)

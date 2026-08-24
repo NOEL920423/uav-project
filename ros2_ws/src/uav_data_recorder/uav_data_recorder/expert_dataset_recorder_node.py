@@ -32,11 +32,14 @@ from uav_data_recorder.expert_dataset_contract import (
     contract_manifest,
     episode_outcome_success,
     goal_features,
+    latest_at_or_before,
     nearest,
     ned_to_body,
     normalize_action,
     previous,
+    recording_window_rejection,
     timestamp_seconds,
+    update_recording_window,
     yaw_from_quaternion,
 )
 
@@ -130,8 +133,8 @@ class ExpertDatasetRecorderNode(Node):
             raise FileExistsError(
                 f"refusing to overwrite existing episode: {self.episode_dir}"
             )
-        self.images_dir = self.episode_dir / "images"
-        self.images_dir.mkdir(parents=True)
+        self.fpv_rgb_dir = self.episode_dir / "fpv_rgb"
+        self.fpv_rgb_dir.mkdir(parents=True)
         self.started_utc = time.strftime(
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
         )
@@ -151,6 +154,8 @@ class ExpertDatasetRecorderNode(Node):
         self._timeline: list[dict] = []
         self._last_phase = ""
         self._last_status: Px4FlightStatus | None = None
+        self._recording_start_timestamp_s: float | None = None
+        self._recording_end_timestamp_s: float | None = None
         self._observed_goal_reached = False
         self._observed_landing_commanded = False
         self._observed_landed_after_landing = False
@@ -276,6 +281,15 @@ class ExpertDatasetRecorderNode(Node):
             return
         self._flight.append(item)
         self._last_status = message
+        (
+            self._recording_start_timestamp_s,
+            self._recording_end_timestamp_s,
+        ) = update_recording_window(
+            self._recording_start_timestamp_s,
+            self._recording_end_timestamp_s,
+            message.state,
+            item.timestamp_s,
+        )
         self._observed_goal_reached |= bool(message.goal_reached)
         self._observed_landing_commanded |= bool(message.landing_commanded)
         self._observed_landed_after_landing |= bool(
@@ -402,19 +416,35 @@ class ExpertDatasetRecorderNode(Node):
             self._images
             and now - self._images[0].timestamp_s >= self.tolerance_s
         ):
+            if (
+                self._recording_end_timestamp_s is None
+                and not any(
+                    item.timestamp_s >= self._images[0].timestamp_s
+                    for item in self._flight
+                )
+            ):
+                break
             self._process_image(self._images.popleft())
 
     def _reject(self, reason: str) -> None:
         self._rejections[reason] += 1
 
     def _process_image(self, image: TimedValue) -> None:
+        window_rejection = recording_window_rejection(
+            self._recording_start_timestamp_s,
+            self._recording_end_timestamp_s,
+            image.timestamp_s,
+        )
+        if window_rejection is not None:
+            self._reject(window_rejection)
+            return
         if self._goal is None:
             self._reject("goal_missing")
             return
         state = nearest(list(self._states), image.timestamp_s)
         action = nearest(list(self._actions), image.timestamp_s)
         mux = nearest(list(self._mux), image.timestamp_s)
-        flight = nearest(list(self._flight), image.timestamp_s)
+        flight = latest_at_or_before(list(self._flight), image.timestamp_s)
         joined = {
             "state": state, "action": action, "mux": mux, "flight": flight
         }
@@ -475,7 +505,7 @@ class ExpertDatasetRecorderNode(Node):
         sample_id = len(self._rows) + 1
         relative = (
             Path(self.episode_id)
-            / "images"
+            / "fpv_rgb"
             / f"frame_{sample_id:06d}.jpg"
         )
         output = self.dataset_root / relative
@@ -493,15 +523,17 @@ class ExpertDatasetRecorderNode(Node):
         }
         specifications = (
             (
-                "observer_rgb", self._observer_images,
+                "observer_rgb", "top_rgb", self._observer_images,
                 OBSERVER_SYNCHRONIZATION_TOLERANCE_S, b"\xff\xd8", ".jpg",
             ),
             (
-                "fpv_depth", self._depth_images,
+                "fpv_depth", "fpv_depth", self._depth_images,
                 self.tolerance_s, b"\x89PNG\r\n\x1a\n", ".png",
             ),
         )
-        for name, buffer, tolerance, signature, suffix in specifications:
+        for (
+            name, directory_name, buffer, tolerance, signature, suffix
+        ) in specifications:
             selected = nearest(list(buffer), image.timestamp_s)
             error = (
                 None if selected is None
@@ -520,9 +552,9 @@ class ExpertDatasetRecorderNode(Node):
             row[f"{name}_error_s"] = "" if error is None else error
             row[f"{name}_path"] = ""
             if available:
-                directory = self.episode_dir / name
+                directory = self.episode_dir / directory_name
                 directory.mkdir(exist_ok=True)
-                relative = Path(self.episode_id) / name / (
+                relative = Path(self.episode_id) / directory_name / (
                     f"frame_{sample_id:06d}{suffix}"
                 )
                 (self.dataset_root / relative).write_bytes(selected.value[0])

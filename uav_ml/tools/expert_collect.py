@@ -823,7 +823,7 @@ class ExpertCollector:
 
         episode_dir = self.dataset_root / episode_id
         episode_dir.mkdir(parents=True)
-        (episode_dir / "images").mkdir()
+        (episode_dir / "fpv_rgb").mkdir()
         with (episode_dir / "samples.csv").open(
             "w", newline="", encoding="utf-8"
         ) as stream:

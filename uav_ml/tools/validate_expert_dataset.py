@@ -26,6 +26,7 @@ from uav_data_recorder.expert_dataset_contract import (  # noqa: E402
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
     SYNCHRONIZATION_TOLERANCE_S,
+    contract_manifest,
 )
 
 

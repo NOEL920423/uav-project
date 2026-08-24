@@ -3,10 +3,23 @@
 import ast
 from pathlib import Path
 
+from isaac.runtime.formal_expert_sensor_contract import (
+    FORMAL_RGB_EXPECTED_RATE_RANGE_HZ,
+    FORMAL_RGB_NOMINAL_RATE_HZ,
+    FORMAL_RGB_PUBLISH_PERIOD_S,
+    LEGACY_OBSERVER_RGB_PUBLISH_PERIOD_S,
+    TOP_RGB_HEIGHT,
+    TOP_RGB_PUBLISH_PERIOD_S,
+    TOP_RGB_WIDTH,
+)
+
 
 ROOT = Path(__file__).parents[2]
 BOOTSTRAP = ROOT / "isaac" / "runtime" / "bootstrap.py"
 BRIDGE = ROOT / "isaac" / "runtime" / "runtime_bridge.py"
+SENSOR_CONTRACT = (
+    ROOT / "isaac" / "runtime" / "formal_expert_sensor_contract.py"
+)
 VISUAL_QA_CAPTURE = (
     ROOT / "ros2_ws" / "src" / "uav_data_recorder" /
     "uav_data_recorder" / "visual_qa_capture.py"
@@ -25,6 +38,33 @@ def test_embedded_runtime_scripts_parse():
     """Both --exec scripts must remain valid Python source."""
     ast.parse(BOOTSTRAP.read_text(encoding="utf-8"))
     ast.parse(BRIDGE.read_text(encoding="utf-8"))
+    ast.parse(SENSOR_CONTRACT.read_text(encoding="utf-8"))
+
+
+def test_formal_sensor_contract_is_dependency_free_and_self_consistent():
+    """Ordinary Python tools can share the embedded sensor constants."""
+    tree = ast.parse(SENSOR_CONTRACT.read_text(encoding="utf-8"))
+    imports = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    imports.update(
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module != "__future__"
+    )
+    assert not imports
+    assert TOP_RGB_WIDTH > 0
+    assert TOP_RGB_HEIGHT > 0
+    assert TOP_RGB_PUBLISH_PERIOD_S == FORMAL_RGB_PUBLISH_PERIOD_S
+    assert LEGACY_OBSERVER_RGB_PUBLISH_PERIOD_S != TOP_RGB_PUBLISH_PERIOD_S
+    assert (
+        FORMAL_RGB_EXPECTED_RATE_RANGE_HZ[0]
+        < FORMAL_RGB_NOMINAL_RATE_HZ
+        < FORMAL_RGB_EXPECTED_RATE_RANGE_HZ[1]
+    )
 
 
 def test_runtime_bridge_has_no_storage_or_control_boundary():
@@ -99,6 +139,54 @@ def test_expert_sensor_contract_is_opt_in_and_storage_free():
     assert "write_bytes" not in source
 
 
+def test_formal_observer_is_fixed_orthographic_without_changing_fpv():
+    """Formal TOP is global while legacy observer and FPV remain unchanged."""
+    source = BRIDGE.read_text(encoding="utf-8")
+    setup = source.split("def _setup_camera", 1)[1].split(
+        "def _episode_command_callback", 1
+    )[0]
+    pose_update = source.split("def _update_camera_pose", 1)[1].split(
+        "def _smooth_position", 1
+    )[0]
+
+    assert "CAMERA_WIDTH = FPV_RGB_WIDTH" in source
+    assert "CAMERA_HEIGHT = FPV_RGB_HEIGHT" in source
+    assert "(TOP_RGB_WIDTH, TOP_RGB_HEIGHT)" in source
+    assert "TOP_RGB_MODE" in source
+    assert "TOP_RGB_PUBLISH_PERIOD_S" in source
+    assert "LEGACY_OBSERVER_RGB_PUBLISH_PERIOD_S" in source
+    assert "self._observer_publish_period_s" in source
+    assert "FORMAL_OBSERVER_CAMERA_WIDTH" not in source
+    assert "FORMAL_OBSERVER_CAMERA_HEIGHT" not in source
+    assert "OBSERVER_CAMERA_PUBLISH_PERIOD_S" not in source
+    assert "FORMAL_OBSERVER_EYE = (0.0, 2.5, 15.0)" in source
+    assert "FORMAL_OBSERVER_TARGET = (0.0, 2.5, 0.0)" in source
+    assert "FORMAL_OBSERVER_UP = (0.0, 1.0, 0.0)" in source
+    assert "FORMAL_OBSERVER_COVERAGE_M = (20.0, 11.25)" in source
+    assert "UsdGeom.GetStageMetersPerUnit(stage)" in source
+    assert "Gf.Camera.APERTURE_UNIT" in source
+    assert "UsdGeom.Tokens.orthographic" in setup
+    assert "UsdGeom.Tokens.perspective" in setup
+    assert "OBSERVER_FOCAL_LENGTH" in setup
+    assert "OBSERVER_HORIZONTAL_APERTURE" in setup
+    assert "self._observer_resolution" in setup
+    assert "if self._formal_expert_sensors_enabled:" in pose_update
+    assert "Gf.Vec3d(*FORMAL_OBSERVER_EYE)" in pose_update
+    assert "Gf.Vec3d(*FORMAL_OBSERVER_TARGET)" in pose_update
+    assert "Gf.Vec3d(*FORMAL_OBSERVER_UP)" in pose_update
+    assert "if not self._formal_expert_sensors_enabled:" in pose_update
+    assert "self._smooth_position" in pose_update
+
+    fpv_setup = setup.split("if self._expert_sensors_enabled:", 1)[0]
+    fpv_pose = pose_update.split(
+        "if self._observer_camera_transform is not None:", 1
+    )[0]
+    assert "FORMAL_OBSERVER" not in fpv_setup
+    assert "FORMAL_OBSERVER" not in fpv_pose
+    assert "(CAMERA_WIDTH, CAMERA_HEIGHT)" in fpv_setup
+    assert "self._fpv_camera_position = fpv_eye" in fpv_pose
+
+
 def test_semantic_runtime_status_preserves_dataset_compatibility_aliases():
     """New runtime keys map to the unchanged dataset evidence contract."""
     bridge = BRIDGE.read_text(encoding="utf-8")
@@ -108,6 +196,54 @@ def test_semantic_runtime_status_preserves_dataset_compatibility_aliases():
     assert '"fpv_rgb_ready": "phase10a_camera_ready"' in recorder
     assert '"observer_rgb_ready": "phase10c_observer_rgb_ready"' in recorder
     assert '"fpv_depth_ready": "phase10b_fpv_depth_ready"' in recorder
+
+
+def test_formal_dataset_uses_explicit_storage_directories():
+    """Storage names change without renaming the observer stream contract."""
+    source = EXPERT_DATASET_RECORDER.read_text(encoding="utf-8")
+    ast.parse(source)
+    assert 'self.fpv_rgb_dir = self.episode_dir / "fpv_rgb"' in source
+    assert '"observer_rgb", "top_rgb", self._observer_images' in source
+    assert '"observer_rgb_available"' in source
+    assert '"observer_rgb_path"' in source
+    assert '"observer_rgb": {' in source
+
+
+def test_recorder_uses_causal_inclusive_exclusive_flight_window():
+    """BC writes stop at the flight boundary without stopping evidence."""
+    source = EXPERT_DATASET_RECORDER.read_text(encoding="utf-8")
+    callback = source.split("def _flight_callback", 1)[1].split(
+        "def _goal_callback", 1
+    )[0]
+    process = source.split("def _process_image", 1)[1].split(
+        "def _record_auxiliary", 1
+    )[0]
+    finalize = source.split("def finalize", 1)[1].split(
+        "def destroy_node", 1
+    )[0]
+
+    assert "update_recording_window" in callback
+    assert "self._recording_start_timestamp_s" in callback
+    assert "self._recording_end_timestamp_s" in callback
+    assert "self._observed_goal_reached" in callback
+    assert "self._observed_landing_commanded" in callback
+    assert "self._observed_landed_after_landing" in callback
+
+    gate = process.index("recording_window_rejection")
+    primary_write = process.index("output.write_bytes")
+    auxiliary_write = process.index("self._record_auxiliary")
+    assert gate < primary_write < auxiliary_write
+    assert "state = nearest(" in process
+    assert "action = nearest(" in process
+    assert "mux = nearest(" in process
+    assert "flight = latest_at_or_before(" in process
+    assert "prior_action = previous(" in process
+    assert process.count("self._record_auxiliary(") == 1
+
+    assert 'status.state == "COMPLETE"' in finalize
+    assert '"goal_reached": self._observed_goal_reached' in finalize
+    assert '"landing_commanded": self._observed_landing_commanded' in finalize
+    assert "landed_after_landing_command" in finalize
 
 
 def test_episode_scene_client_uses_semantic_runtime_identity():
