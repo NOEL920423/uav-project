@@ -172,12 +172,16 @@ class CollectionManifestStore:
         self.data: dict = {}
 
     @staticmethod
-    def _episode_entry(index: int, base_seed: int) -> dict:
+    def _episode_entry(
+        index: int,
+        base_seed: int,
+        fixed_seed: int | None = None,
+    ) -> dict:
         """Build one deterministic append-only episode-plan entry."""
         return {
             "index": index,
             "episode_id": f"episode_{index:06d}",
-            "seed": base_seed + index,
+            "seed": base_seed + index if fixed_seed is None else fixed_seed,
             "status": "pending",
             "success": None,
             "accepted_samples": 0,
@@ -204,7 +208,12 @@ class CollectionManifestStore:
             "created_utc": _utc_now(),
         }
 
-    def create(self, episodes: int, base_seed: int) -> dict:
+    def create(
+        self,
+        episodes: int,
+        base_seed: int,
+        fixed_seed: int | None = None,
+    ) -> dict:
         """Create a new immutable episode and seed plan."""
         if self.dataset_root.exists():
             raise FileExistsError(
@@ -222,7 +231,7 @@ class CollectionManifestStore:
             "created_utc": _utc_now(),
             "updated_utc": _utc_now(),
             "episodes": [
-                self._episode_entry(index, base_seed)
+                self._episode_entry(index, base_seed, fixed_seed)
                 for index in range(1, episodes + 1)
             ],
             "collection_runs": [
@@ -233,6 +242,8 @@ class CollectionManifestStore:
             "active_run_number": 1,
             "visual_qa": [],
         }
+        if fixed_seed is not None:
+            self.data["fixed_seed"] = fixed_seed
         self.save()
         return self.data
 
@@ -636,6 +647,7 @@ class ExpertCollector:
         dataset_root: Path,
         episodes: int,
         base_seed: int = DEFAULT_BASE_SEED,
+        fixed_seed: int | None = None,
         resume: bool = False,
         autoencoder: Path = DEFAULT_AUTOENCODER,
         device: str = "auto",
@@ -646,10 +658,19 @@ class ExpertCollector:
             raise ValueError("--episodes must be a positive integer")
         if base_seed < 0:
             raise ValueError("--base-seed must be nonnegative")
+        if fixed_seed is not None and fixed_seed < 0:
+            raise ValueError("--seed must be nonnegative")
+        if fixed_seed is not None and episodes != 1:
+            raise ValueError("--seed requires --episodes 1")
+        if fixed_seed is not None and resume:
+            raise ValueError(
+                "--seed starts an isolated run and cannot use --resume"
+            )
         self.repository_root = repository_root.resolve()
         self.dataset_root = dataset_root.resolve()
         self.episodes = episodes
         self.base_seed = base_seed
+        self.fixed_seed = fixed_seed
         self.resume = resume
         self.autoencoder = autoencoder.resolve()
         self.device = device
@@ -671,7 +692,11 @@ class ExpertCollector:
             self._manifest_prepared = True
             self._recover_incomplete_episodes()
         else:
-            self.store.create(self.episodes, self.base_seed)
+            self.store.create(
+                self.episodes,
+                self.base_seed,
+                fixed_seed=self.fixed_seed,
+            )
             self._manifest_prepared = True
         self.display = ProgressDisplay(
             int(self.store.data["target_episodes"])
@@ -1140,11 +1165,20 @@ def _parser() -> argparse.ArgumentParser:
             "when no run is unfinished, append a new run"
         ),
     )
-    parser.add_argument(
+    seed_group = parser.add_mutually_exclusive_group()
+    seed_group.add_argument(
         "--base-seed",
         type=int,
         default=DEFAULT_BASE_SEED,
         help=f"seed base for a new collection (default: {DEFAULT_BASE_SEED})",
+    )
+    seed_group.add_argument(
+        "--seed",
+        type=int,
+        help=(
+            "run one isolated regression episode with this exact seed; "
+            "requires --episodes 1"
+        ),
     )
     parser.add_argument("--device", default="auto", help=argparse.SUPPRESS)
     parser.add_argument(
@@ -1159,13 +1193,27 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     """Parse the formal CLI and return a shell-compatible status."""
-    args = _parser().parse_args()
+    parser = _parser()
+    args = parser.parse_args()
+    if args.seed is not None and args.episodes != 1:
+        parser.error("--seed requires --episodes 1")
+    if args.seed is not None and args.resume:
+        parser.error("--seed starts an isolated run and cannot use --resume")
     repository_root = Path(__file__).resolve().parents[2]
     if args.dry_run:
         dry_root = repository_root / "run_logs" / f"expert-dry-run_{_stamp()}"
         dataset_root = dry_root / "mock_dataset"
         backend: SubprocessBackend | DryRunBackend = DryRunBackend()
         runtime_root = dry_root / "runtime"
+    elif args.seed is not None:
+        dataset_root = (
+            repository_root
+            / "artifacts"
+            / "regressions"
+            / f"expert_seed_{args.seed}_{_stamp()}"
+        )
+        backend = SubprocessBackend(repository_root)
+        runtime_root = None
     else:
         dataset_root = repository_root / DEFAULT_DATASET
         backend = SubprocessBackend(repository_root)
@@ -1175,6 +1223,7 @@ def main() -> int:
         dataset_root=dataset_root,
         episodes=args.episodes,
         base_seed=args.base_seed,
+        fixed_seed=args.seed,
         resume=args.resume,
         autoencoder=repository_root / DEFAULT_AUTOENCODER,
         device=args.device,

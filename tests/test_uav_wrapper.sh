@@ -67,6 +67,8 @@ expert_help="$($UAV expert-collect --help)"
     fail "expert-collect help is missing --episodes"
 [[ "$expert_help" == *"--resume"* ]] || \
     fail "expert-collect help is missing --resume"
+[[ "$expert_help" == *"--seed SEED"* ]] || \
+    fail "expert-collect help is missing --seed"
 
 git -C "$REPO_ROOT" check-ignore -q ros2_ws/build/example
 git -C "$REPO_ROOT" check-ignore -q ros2_ws/install/example

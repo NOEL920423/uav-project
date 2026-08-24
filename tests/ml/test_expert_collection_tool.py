@@ -32,6 +32,7 @@ from uav_ml.tools.expert_collect import (
     DryRunBackend,
     ExpertCollector,
     ProgressDisplay,
+    _parser,
 )
 from uav_ml.tools.expert_visual_qa import create_contact_sheet
 from uav_ml.tools.validate_expert_batch import _validate_auxiliary
@@ -82,11 +83,13 @@ class ExpertCollectionToolTest(unittest.TestCase):
         *,
         resume: bool = False,
         episodes: int = 3,
+        fixed_seed: int | None = None,
     ) -> ExpertCollector:
         return ExpertCollector(
             repository_root=REPOSITORY_ROOT,
             dataset_root=dataset,
             episodes=episodes,
+            fixed_seed=fixed_seed,
             resume=resume,
             backend=backend,
             runtime_root=(
@@ -114,6 +117,55 @@ class ExpertCollectionToolTest(unittest.TestCase):
         self.assertTrue(all(
             entry["status"] == "complete" for entry in manifest["episodes"]
         ))
+
+    def test_fixed_seed_reaches_scene_generator_and_reproduces_scene(self) -> None:
+        generated_scenes = []
+        backends = []
+        original = generate_episode_scene
+
+        def generate(*args, **kwargs):
+            scene = original(*args, **kwargs)
+            generated_scenes.append(scene)
+            return scene
+
+        with mock.patch(
+            "uav_ml.tools.expert_collect.generate_episode_scene",
+            side_effect=generate,
+        ), contextlib.redirect_stdout(io.StringIO()):
+            for index in range(2):
+                backend = InterruptingBackend(interrupt_index=99)
+                backends.append(backend)
+                self._collector(
+                    self.root / f"fixed-seed-{index}",
+                    backend,
+                    episodes=1,
+                    fixed_seed=103009,
+                ).run()
+
+        self.assertEqual(generated_scenes[0], generated_scenes[1])
+        self.assertEqual(
+            [backend.seen for backend in backends],
+            [[("episode_000001", 103009)], [("episode_000001", 103009)]],
+        )
+        manifest = json.loads(
+            (self.root / "fixed-seed-0" / "collection_manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["fixed_seed"], 103009)
+        self.assertEqual(manifest["episodes"][0]["seed"], 103009)
+
+    def test_fixed_seed_cli_requires_one_episode(self) -> None:
+        args = _parser().parse_args([
+            "--episodes", "1", "--seed", "103009",
+        ])
+        self.assertEqual(args.seed, 103009)
+        with self.assertRaisesRegex(ValueError, "requires --episodes 1"):
+            self._collector(
+                self.root / "invalid-fixed-seed",
+                DryRunBackend(),
+                episodes=2,
+                fixed_seed=103009,
+            )
 
     def test_resume_keeps_completed_episode_and_reuses_no_seed(self) -> None:
         dataset = self.root / "dataset"
