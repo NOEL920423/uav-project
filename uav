@@ -133,7 +133,7 @@ Examples:
   ./uav phase10c-visual-qa
   ./uav phase10c-visual-qa-check
   ./uav expert-collect --episodes 100
-  ./uav expert-collect --episodes 100 --resume
+  ./uav expert-collect --episodes 100 --max-attempts 150 --resume
   ./uav expert-scene-preview --seed 103001
   ./uav expert-validate --episodes 100
   ./uav shell

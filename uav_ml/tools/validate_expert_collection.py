@@ -46,7 +46,7 @@ DEFAULT_AUTOENCODER = Path(
     "autoencoder_runs/rgb_ae_v0_baseline_20260811/best.pt"
 )
 COLLECTION_MANIFEST = "collection_manifest.json"
-FINAL_EPISODE_STATES = {"complete", "failed"}
+FINAL_EPISODE_STATES = {"complete", "rejected"}
 
 
 def _load(path: Path) -> dict:
@@ -298,30 +298,54 @@ def validate_collection(
     collection_manifest_path = dataset_root / COLLECTION_MANIFEST
     dataset_manifest = _load(dataset_manifest_path)
     collection_manifest = _load(collection_manifest_path)
-    total = int(collection_manifest.get("target_episodes", -1))
-    if expected_episodes is not None and total != expected_episodes:
+    target = int(collection_manifest.get(
+        "requested_accepted_episodes",
+        collection_manifest.get("target_episodes", -1),
+    ))
+    if expected_episodes is not None and target != expected_episodes:
         raise ValueError(
-            f"collection target is {total}, expected {expected_episodes}"
+            f"collection accepted target is {target}, "
+            f"expected {expected_episodes}"
         )
-    if total <= 0:
+    if target <= 0:
         raise ValueError("collection target must be positive")
     entries = collection_manifest.get("episodes")
-    if not isinstance(entries, list) or len(entries) != total:
-        raise ValueError("collection manifest episode plan is incomplete")
-    expected_ids = [
-        f"episode_{index:06d}" for index in range(1, total + 1)
-    ]
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("collection manifest attempt history is empty")
+    expected_ids = [f"episode_{index:06d}" for index in range(1, len(entries) + 1)]
     ids = [entry.get("episode_id") for entry in entries]
-    if ids != expected_ids or dataset_manifest.get("episodes") != expected_ids:
-        raise ValueError("dataset episode IDs are incomplete or out of order")
+    if ids != expected_ids:
+        raise ValueError("collection attempt IDs are incomplete or out of order")
     if any(
         entry.get("status") not in FINAL_EPISODE_STATES
         for entry in entries
     ):
         raise ValueError("collection has unfinished episodes")
     seeds = [int(entry["seed"]) for entry in entries]
-    if len(set(seeds)) != total:
+    if len(set(seeds)) != len(entries):
         raise ValueError("collection seeds are not unique")
+    accepted_entries = [
+        entry for entry in entries
+        if entry.get("status") == "complete"
+        and entry.get("success") is True
+    ]
+    rejected_entries = [
+        entry for entry in entries if entry.get("status") == "rejected"
+    ]
+    if len(accepted_entries) != target:
+        raise ValueError(
+            f"collection has {len(accepted_entries)} accepted episodes, "
+            f"expected {target}"
+        )
+    accepted_ids = [entry["episode_id"] for entry in accepted_entries]
+    if dataset_manifest.get("episodes") != accepted_ids:
+        raise ValueError("accepted dataset manifest contains non-accepted attempts")
+    for entry in rejected_entries:
+        rejection_record = entry.get("rejection_record")
+        if not rejection_record or not Path(str(rejection_record)).is_file():
+            raise ValueError(
+                f"{entry['episode_id']}: rejected attempt evidence index missing"
+            )
 
     validations = []
     rejection_counts = Counter()
@@ -330,7 +354,9 @@ def validate_collection(
     action_errors: list[float] = []
     rates: list[float] = []
     scene_keys = set()
-    for entry, episode_id, seed in zip(entries, expected_ids, seeds):
+    for entry in accepted_entries:
+        episode_id = str(entry["episode_id"])
+        seed = int(entry["seed"])
         episode = _load(dataset_root / episode_id / "episode.json")
         if int(episode.get("random_seed", -1)) != seed:
             raise ValueError(f"{episode_id}: collection/episode seed mismatch")
@@ -382,7 +408,7 @@ def validate_collection(
     if success_count < 1 or sample_count < 1:
         raise ValueError("collection contains no usable successful samples")
     qa_entries = collection_manifest.get("visual_qa", [])
-    expected_qa = total // int(
+    expected_qa = target // int(
         collection_manifest.get("visual_qa_interval", 20)
     )
     valid_qa = sum(
@@ -396,9 +422,10 @@ def validate_collection(
     result = {
         "valid": True,
         "dataset_version": dataset_manifest.get("dataset_version"),
-        "episode_count": total,
+        "episode_count": target,
+        "attempted_episodes": len(entries),
         "successful_episodes": success_count,
-        "failed_episodes": total - success_count,
+        "failed_episodes": len(rejected_entries),
         "unique_seeds": len(set(seeds)),
         "unique_scenes": len(scene_keys),
         "accepted_samples_total": sample_count,
@@ -423,10 +450,11 @@ def validate_collection(
         )
         dataset_manifest.update({
             "status": "complete",
-            "episode_count": total,
+            "episodes": accepted_ids,
+            "episode_count": target,
             "sample_count": sample_count,
             "successful_episodes": success_count,
-            "failed_episodes": total - success_count,
+            "failed_episodes": len(rejected_entries),
             "validation": {"valid": True, "path": output.name},
         })
         dataset_manifest_path.write_text(

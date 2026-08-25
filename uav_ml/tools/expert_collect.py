@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import csv
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -13,6 +15,8 @@ import signal
 import subprocess
 import time
 from typing import Callable
+
+from PIL import UnidentifiedImageError
 
 from isaac.runtime.episode_scene import generate_episode_scene
 from uav_ml.tools.expert_visual_qa import create_contact_sheet
@@ -26,10 +30,12 @@ from uav_ml.tools.validate_expert_collection import (
 )
 
 
-TOOL_VERSION = "expert_collection_v1.0"
+TOOL_VERSION = "expert_collection_v1.1"
+LEGACY_TOOL_VERSION = "expert_collection_v1.0"
 DEFAULT_BASE_SEED = 103000
+DEFAULT_MAX_ATTEMPT_MULTIPLIER = 1.5
 VISUAL_QA_INTERVAL = 20
-TERMINAL_STATES = {"complete", "failed"}
+TERMINAL_STATES = {"complete", "rejected", "failed"}
 AUXILIARY_FIELDS = (
     "episode_id", "sample_id", "primary_image_timestamp_s",
     "observer_rgb_available", "observer_rgb_timestamp_s",
@@ -95,6 +101,49 @@ class EpisodeOutcome:
     rejected_samples: int
     terminal_reason: str
     dataset_bytes: int
+    failure_category: str | None = None
+    validation_result: dict | None = None
+
+
+def default_max_attempts(requested_episodes: int) -> int:
+    """Return the documented total-attempt limit for an accepted target."""
+    return max(
+        requested_episodes,
+        math.ceil(requested_episodes * DEFAULT_MAX_ATTEMPT_MULTIPLIER),
+    )
+
+
+def _failure_category(reason: str) -> str:
+    """Map an episode terminal reason to a stable summary category."""
+    normalized = reason.lower().replace("-", "_")
+    if "collision" in normalized or "tracking" in normalized:
+        return "collision_tracking"
+    if "image" in normalized or "visual_qa" in normalized:
+        return "image_qa"
+    if any(token in normalized for token in (
+        "blocked", "invalid_scene", "unusable", "no_path", "planner"
+    )):
+        return "blocked_scene"
+    if "validation" in normalized or "dataset" in normalized:
+        return "dataset_validation"
+    if any(token in normalized for token in (
+        "flight", "goal", "timeout", "mission", "takeoff", "landing"
+    )):
+        return "flight_failure"
+    return "other"
+
+
+def _validation_failure_category(error: Exception) -> str:
+    """Separate image QA rejection from other episode dataset rejection."""
+    reason = str(error).lower()
+    if isinstance(error, UnidentifiedImageError) or any(
+        token in reason for token in (
+            "image", "jpeg", "blank", "dark", "luminance", "fpv_rgb",
+            "fpv_depth", "observer_rgb",
+        )
+    ):
+        return "image_qa"
+    return "dataset_validation"
 
 
 class ProgressDisplay:
@@ -135,25 +184,25 @@ class ProgressDisplay:
         if not force and now - self._last_block < 5.0:
             return
         self._last_block = now
-        completed = success_count + failure_count
-        percent = min(100, int(100 * completed / self.total))
-        filled = min(30, int(30 * completed / self.total))
+        percent = min(100, int(100 * success_count / self.total))
+        filled = min(30, int(30 * success_count / self.total))
         bar = "█" * filled + "-" * (30 - filled)
         elapsed = now - self.started
         eta = None
-        if completed:
-            eta = elapsed / completed * (self.total - completed)
+        if success_count:
+            eta = elapsed / success_count * (self.total - success_count)
         print(
             "\nExpert Dataset Collection\n\n"
-            f"Episodes: {index} / {self.total} [{bar}] {percent}%\n\n"
+            f"Accepted: {success_count} / {self.total} [{bar}] {percent}%\n"
+            f"Attempts: {index}\n\n"
             "Current:\n"
             f"  seed     : {seed}\n"
             f"  state    : {state}\n"
             f"  samples  : {current_samples}\n"
             f"  rejected : {current_rejected}\n\n"
             "Batch:\n"
-            f"  success  : {success_count}\n"
-            f"  failed   : {failure_count}\n\n"
+            f"  accepted : {success_count}\n"
+            f"  rejected : {failure_count}\n\n"
             "Dataset:\n"
             f"  samples  : {total_samples + current_samples}\n"
             f"  size     : {_format_size(dataset_bytes)}\n\n"
@@ -173,15 +222,18 @@ class CollectionManifestStore:
 
     @staticmethod
     def _episode_entry(index: int, base_seed: int) -> dict:
-        """Build one deterministic append-only episode-plan entry."""
+        """Build one deterministic append-only attempt entry."""
         return {
             "index": index,
+            "attempt_index": index,
             "episode_id": f"episode_{index:06d}",
             "seed": base_seed + index,
             "status": "pending",
+            "accepted": None,
             "success": None,
             "accepted_samples": 0,
             "rejected_samples": 0,
+            "failure_category": None,
             "terminal_reason": "",
         }
 
@@ -189,46 +241,47 @@ class CollectionManifestStore:
     def _run_entry(
         run_number: int,
         requested_episodes: int,
-        first_index: int,
-        last_index: int,
+        max_attempts: int,
         *,
         status: str,
     ) -> dict:
-        """Build an audit record for one invocation's requested append."""
+        """Build an audit record for one accepted-target invocation."""
         return {
             "run_number": run_number,
+            "requested_accepted_episodes": requested_episodes,
             "requested_episodes": requested_episodes,
-            "first_episode_index": first_index,
-            "last_episode_index": last_index,
+            "max_attempts": max_attempts,
             "status": status,
             "created_utc": _utc_now(),
         }
 
-    def create(self, episodes: int, base_seed: int) -> dict:
-        """Create a new immutable episode and seed plan."""
+    def create(
+        self, episodes: int, base_seed: int, max_attempts: int | None = None
+    ) -> dict:
+        """Create a new accepted-target manifest with no attempted seeds."""
         if self.dataset_root.exists():
             raise FileExistsError(
                 f"refusing to overwrite existing dataset: {self.dataset_root}"
             )
         self.dataset_root.mkdir(parents=True)
+        attempt_limit = max_attempts or default_max_attempts(episodes)
         self.data = {
             "tool_version": TOOL_VERSION,
+            "manifest_version": 2,
             "dataset_name": "bc_expert_cylinder_v1",
             "dataset_root": str(self.dataset_root),
             "target_episodes": episodes,
+            "requested_accepted_episodes": episodes,
+            "max_attempts": attempt_limit,
             "base_seed": base_seed,
             "visual_qa_interval": VISUAL_QA_INTERVAL,
             "status": "prepared",
             "created_utc": _utc_now(),
             "updated_utc": _utc_now(),
-            "episodes": [
-                self._episode_entry(index, base_seed)
-                for index in range(1, episodes + 1)
-            ],
+            "episodes": [],
+            "accepted_episode_ids": [],
             "collection_runs": [
-                self._run_entry(
-                    1, episodes, 1, episodes, status="prepared"
-                )
+                self._run_entry(1, episodes, attempt_limit, status="prepared")
             ],
             "active_run_number": 1,
             "visual_qa": [],
@@ -236,140 +289,106 @@ class CollectionManifestStore:
         self.save()
         return self.data
 
-    def load_for_collection(self, episodes: int, resume: bool) -> dict:
-        """Resume an unfinished run or append a new run to the dataset."""
+    def load_for_collection(
+        self,
+        episodes: int,
+        resume: bool,
+        max_attempts: int | None = None,
+    ) -> dict:
+        """Load an accepted target, migrating the former fixed-attempt plan."""
         if not self.path.is_file():
             raise FileNotFoundError(
                 f"resume manifest does not exist: {self.path}"
             )
         self.data = _read_json(self.path)
-        if self.data.get("tool_version") != TOOL_VERSION:
+        version = self.data.get("tool_version")
+        if version not in {TOOL_VERSION, LEGACY_TOOL_VERSION}:
             raise ValueError("collection manifest tool version mismatch")
-        existing_target = int(self.data.get("target_episodes", -1))
-        if existing_target <= 0:
-            raise ValueError("collection manifest target is invalid")
         entries = self.data.get("episodes")
-        if not isinstance(entries, list) or len(entries) != existing_target:
-            raise ValueError("collection manifest episode plan is invalid")
+        if not isinstance(entries, list):
+            raise ValueError("collection manifest attempt history is invalid")
+        if self.data.get("manifest_version") != 2:
+            for index, entry in enumerate(entries, start=1):
+                entry.setdefault("index", index)
+                entry["attempt_index"] = int(entry["index"])
+                if entry.get("status") == "failed":
+                    entry["status"] = "rejected"
+                accepted = (
+                    entry.get("status") == "complete"
+                    and entry.get("success") is True
+                )
+                entry["accepted"] = accepted
+                if not accepted and entry.get("status") in TERMINAL_STATES:
+                    entry["failure_category"] = _failure_category(
+                        str(entry.get("terminal_reason", ""))
+                    )
+            self.data.update({
+                "tool_version": TOOL_VERSION,
+                "manifest_version": 2,
+                "requested_accepted_episodes": episodes,
+                "target_episodes": episodes,
+            })
         expected_ids = [
-            f"episode_{index:06d}"
-            for index in range(1, existing_target + 1)
+            f"episode_{index:06d}" for index in range(1, len(entries) + 1)
         ]
         if [entry.get("episode_id") for entry in entries] != expected_ids:
             raise ValueError("collection manifest episode IDs are invalid")
         seeds = [entry.get("seed") for entry in entries]
-        if len(set(seeds)) != existing_target:
+        if len(set(seeds)) != len(entries):
             raise ValueError("collection manifest contains duplicate seeds")
-
-        unfinished_entries = [
-            entry for entry in entries
-            if entry.get("status") not in TERMINAL_STATES
-        ]
-        runs = self.data.get("collection_runs")
-        if runs is not None and not isinstance(runs, list):
-            raise ValueError("collection manifest run history is invalid")
-        active_run = None
-        if runs:
-            active_number = int(
-                self.data.get("active_run_number", len(runs))
-            )
-            active_runs = [
-                item for item in runs
-                if int(item.get("run_number", -1)) == active_number
-            ]
-            if len(active_runs) != 1:
-                raise ValueError("collection manifest active run is invalid")
-            active_run = active_runs[0]
-        unfinished_run = bool(unfinished_entries) or (
-            active_run is not None and active_run.get("status") != "complete"
+        accepted = sum(
+            entry.get("status") == "complete"
+            and entry.get("success") is True
+            for entry in entries
         )
-        if not runs and not unfinished_entries:
-            validation = self.data.get("validation", {})
-            legacy_valid = (
-                isinstance(validation, dict)
-                and validation.get("valid") is True
+        existing_target = int(
+            self.data.get("requested_accepted_episodes", accepted)
+        )
+        if episodes < accepted:
+            raise ValueError(
+                f"--episodes target {episodes} is below {accepted} existing "
+                "accepted episodes"
             )
-            unfinished_run = (
-                self.data.get("status") != "complete" and not legacy_valid
+        if episodes < existing_target and accepted < existing_target:
+            raise ValueError(
+                f"cannot reduce unfinished accepted target {existing_target}"
             )
-
-        if unfinished_run:
-            if not resume:
-                raise ValueError(
-                    "collection has an unfinished run; rerun with --resume"
-                )
-            if active_run is not None:
-                requested = int(active_run["requested_episodes"])
-            else:
-                # A v1 manifest predating run history represents one run.
-                requested = existing_target
-            if episodes != requested:
-                raise ValueError(
-                    "--episodes must match the unfinished collection run "
-                    f"({requested})"
-                )
-            if not runs:
-                self.data["collection_runs"] = [
-                    self._run_entry(
-                        1,
-                        existing_target,
-                        1,
-                        existing_target,
-                        status="interrupted",
-                    )
-                ]
-                self.data["active_run_number"] = 1
-                self.save()
-            return self.data
-
-        if not runs:
-            # Preserve the completed legacy plan as the first historical run.
-            legacy = self._run_entry(
-                1,
-                existing_target,
-                1,
-                existing_target,
-                status="complete",
+        if not resume and self.data.get("status") not in {"complete", "prepared"}:
+            raise ValueError(
+                "collection has an unfinished run; rerun with --resume"
             )
-            legacy["completed_utc"] = self.data.get(
-                "completed_utc", self.data.get("updated_utc", _utc_now())
+        attempt_limit = max_attempts or default_max_attempts(episodes)
+        if attempt_limit < len(entries):
+            raise ValueError(
+                f"--max-attempts {attempt_limit} is below existing attempt "
+                f"history ({len(entries)})"
             )
-            runs = [legacy]
-            self.data["collection_runs"] = runs
-
+        runs = self.data.setdefault("collection_runs", [])
         run_number = max(
-            int(item.get("run_number", 0)) for item in runs
+            (int(item.get("run_number", 0)) for item in runs), default=0
         ) + 1
-        new_target = existing_target + episodes
-        base_seed = int(self.data["base_seed"])
-        new_entries = [
-            self._episode_entry(index, base_seed)
-            for index in range(existing_target + 1, new_target + 1)
-        ]
-        extended_seeds = seeds + [entry["seed"] for entry in new_entries]
-        if len(set(extended_seeds)) != new_target:
-            raise ValueError("episode append would create duplicate seeds")
-        entries.extend(new_entries)
         runs.append(self._run_entry(
-            run_number,
-            episodes,
-            existing_target + 1,
-            new_target,
-            status="prepared",
+            run_number, episodes, attempt_limit, status="prepared"
         ))
         self.data["active_run_number"] = run_number
-        self.data["target_episodes"] = new_target
-        self.data.setdefault("target_extensions", []).append({
-            "run_number": run_number,
-            "additional_episodes": episodes,
-            "from_episodes": existing_target,
-            "to_episodes": new_target,
-            "extended_utc": _utc_now(),
-        })
+        self.data["target_episodes"] = episodes
+        self.data["requested_accepted_episodes"] = episodes
+        self.data["max_attempts"] = attempt_limit
         self.data.pop("completed_utc", None)
         self.data.pop("validation", None)
         self.save()
         return self.data
+
+    def next_attempt(self) -> dict:
+        """Return a resumable pending attempt or append the next seed."""
+        for entry in self.data["episodes"]:
+            if entry.get("status") == "pending":
+                return entry
+        index = len(self.data["episodes"]) + 1
+        entry = self._episode_entry(index, int(self.data["base_seed"]))
+        self.data["episodes"].append(entry)
+        self.save()
+        return entry
 
     def save(self) -> None:
         """Persist the current manifest atomically."""
@@ -401,14 +420,20 @@ class CollectionManifestStore:
         return entry
 
     def completed_counts(self) -> tuple[int, int, int]:
-        """Return success, failure, and accepted-sample totals."""
-        final = [
+        """Return accepted, rejected, and accepted-sample totals."""
+        accepted = [
             entry for entry in self.data["episodes"]
-            if entry.get("status") in TERMINAL_STATES
+            if entry.get("status") == "complete"
+            and entry.get("success") is True
         ]
-        successes = sum(bool(entry.get("success")) for entry in final)
-        samples = sum(int(entry.get("accepted_samples", 0)) for entry in final)
-        return successes, len(final) - successes, samples
+        rejected = [
+            entry for entry in self.data["episodes"]
+            if entry.get("status") in {"rejected", "failed"}
+        ]
+        samples = sum(
+            int(entry.get("accepted_samples", 0)) for entry in accepted
+        )
+        return len(accepted), len(rejected), samples
 
 
 class SubprocessBackend:
@@ -635,6 +660,7 @@ class ExpertCollector:
         repository_root: Path,
         dataset_root: Path,
         episodes: int,
+        max_attempts: int | None = None,
         base_seed: int = DEFAULT_BASE_SEED,
         resume: bool = False,
         autoencoder: Path = DEFAULT_AUTOENCODER,
@@ -644,11 +670,17 @@ class ExpertCollector:
     ) -> None:
         if episodes <= 0:
             raise ValueError("--episodes must be a positive integer")
+        if max_attempts is not None and max_attempts < episodes:
+            raise ValueError(
+                "--max-attempts must be at least the requested accepted "
+                "episode count"
+            )
         if base_seed < 0:
             raise ValueError("--base-seed must be nonnegative")
         self.repository_root = repository_root.resolve()
         self.dataset_root = dataset_root.resolve()
         self.episodes = episodes
+        self.max_attempts = max_attempts or default_max_attempts(episodes)
         self.base_seed = base_seed
         self.resume = resume
         self.autoencoder = autoencoder.resolve()
@@ -665,23 +697,28 @@ class ExpertCollector:
     def _prepare(self) -> None:
         if self.store.path.is_file() or self.resume:
             data = self.store.load_for_collection(
-                self.episodes, self.resume
+                self.episodes, self.resume, self.max_attempts
             )
             self.base_seed = int(data["base_seed"])
+            self.max_attempts = int(data["max_attempts"])
             self._manifest_prepared = True
             self._recover_incomplete_episodes()
+            self._ensure_rejection_records()
         else:
-            self.store.create(self.episodes, self.base_seed)
+            self.store.create(
+                self.episodes, self.base_seed, self.max_attempts
+            )
             self._manifest_prepared = True
         self.display = ProgressDisplay(
             int(self.store.data["target_episodes"])
         )
         self.runtime_root.mkdir(parents=True, exist_ok=True)
-        unfinished = any(
-            entry.get("status") not in TERMINAL_STATES
+        accepted, _, _ = self.store.completed_counts()
+        attempted = sum(
+            entry.get("status") != "pending"
             for entry in self.store.data["episodes"]
         )
-        if unfinished:
+        if accepted < self.episodes and attempted < self.max_attempts:
             self.backend.preflight()
         self.store.set_collection_state("collecting")
 
@@ -690,9 +727,13 @@ class ExpertCollector:
         for entry in self.store.data["episodes"]:
             if entry.get("status") in TERMINAL_STATES:
                 episode_dir = self.dataset_root / entry["episode_id"]
-                if self.backend.produces_dataset and not (
-                    episode_dir / "episode.json"
-                ).is_file():
+                if (
+                    self.backend.produces_dataset
+                    and entry.get("status") == "complete"
+                    and not (
+                        episode_dir / "episode.json"
+                    ).is_file()
+                ):
                     raise FileNotFoundError(
                         "completed episode metadata is missing: "
                         f"{episode_dir / 'episode.json'}"
@@ -708,29 +749,64 @@ class ExpertCollector:
                 entry["recovered_incomplete_path"] = str(destination)
             entry.update({
                 "status": "pending",
+                "accepted": None,
                 "success": None,
                 "accepted_samples": 0,
                 "rejected_samples": 0,
+                "failure_category": None,
                 "terminal_reason": "",
             })
         self._reconcile_dataset_manifest()
         self.store.save()
 
+    def _ensure_rejection_records(self) -> None:
+        """Add evidence indexes when migrating already-rejected v1 attempts."""
+        for entry in self.store.data["episodes"]:
+            if entry.get("status") not in {"rejected", "failed"}:
+                continue
+            existing = entry.get("rejection_record")
+            if existing and Path(str(existing)).is_file():
+                continue
+            outcome = EpisodeOutcome(
+                success=False,
+                accepted_samples=0,
+                rejected_samples=int(entry.get("rejected_samples", 0)),
+                terminal_reason=str(entry.get("terminal_reason", "")),
+                dataset_bytes=int(entry.get("dataset_bytes", 0)),
+                failure_category=str(
+                    entry.get("failure_category") or "other"
+                ),
+                validation_result=entry.get("validation_result"),
+            )
+            runtime_dir = Path(str(
+                entry.get("log_path")
+                or self.runtime_root / str(entry["episode_id"])
+            ))
+            path = self._record_rejection(entry, outcome, runtime_dir)
+            entry["status"] = "rejected"
+            entry["rejection_record"] = str(path.resolve())
+        self.store.save()
+
     def _reconcile_dataset_manifest(self) -> None:
+        accepted_entries = [
+            entry for entry in self.store.data["episodes"]
+            if entry.get("status") == "complete"
+            and entry.get("success") is True
+        ]
+        self.store.data["accepted_episode_ids"] = [
+            entry["episode_id"] for entry in accepted_entries
+        ]
+        self.store.save()
         path = self.dataset_root / "dataset_manifest.json"
         if not path.is_file():
             return
         manifest = _read_json(path)
-        final_entries = [
-            entry for entry in self.store.data["episodes"]
-            if entry.get("status") in TERMINAL_STATES
-        ]
         manifest.update({
-            "episodes": [entry["episode_id"] for entry in final_entries],
-            "episode_count": len(final_entries),
+            "episodes": [entry["episode_id"] for entry in accepted_entries],
+            "episode_count": len(accepted_entries),
             "sample_count": sum(
                 int(entry.get("accepted_samples", 0))
-                for entry in final_entries
+                for entry in accepted_entries
             ),
             "status": "collecting",
         })
@@ -775,23 +851,67 @@ class ExpertCollector:
             )
         from uav_ml.tools.finalize_expert_episode import finalize
 
-        finalized = finalize(
-            self.dataset_root, episode_id, evidence_path, expected_success=None
-        )
-        validation = validate_collection_episode(
-            self.dataset_root,
-            self.autoencoder,
-            episode_id,
-            device=self.device,
-        )
+        try:
+            finalized = finalize(
+                self.dataset_root,
+                episode_id,
+                evidence_path,
+                expected_success=None,
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            raise RuntimeError(
+                f"{episode_id}: unsafe or corrupt recorder/flight evidence: "
+                f"{error}"
+            ) from error
+        try:
+            validation = validate_collection_episode(
+                self.dataset_root,
+                self.autoencoder,
+                episode_id,
+                device=self.device,
+            )
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                f"{episode_id}: corrupt JSON output during validation: {error}"
+            ) from error
+        except (FileNotFoundError, PermissionError) as error:
+            raise RuntimeError(
+                f"{episode_id}: required recorder output unavailable: {error}"
+            ) from error
+        except (OSError, ValueError) as error:
+            if isinstance(error, OSError) and not isinstance(
+                error, UnidentifiedImageError
+            ):
+                raise RuntimeError(
+                    f"{episode_id}: recorder output I/O corruption: {error}"
+                ) from error
+            category = _validation_failure_category(error)
+            reason = f"dataset_validation: {error}"
+            return EpisodeOutcome(
+                success=False,
+                accepted_samples=0,
+                rejected_samples=int(
+                    finalized.get("rejected_sample_count", 0)
+                ),
+                terminal_reason=reason,
+                dataset_bytes=int(finalized.get(
+                    "episode_disk_usage_bytes", _directory_size(episode_dir)
+                )),
+                failure_category=category,
+                validation_result={"valid": False, "error": str(error)},
+            )
+        reason = str(finalized.get("terminal_reason", ""))
+        success = bool(finalized["success"])
         return EpisodeOutcome(
-            success=bool(finalized["success"]),
+            success=success,
             accepted_samples=int(validation["sample_count"]),
             rejected_samples=int(finalized.get("rejected_sample_count", 0)),
-            terminal_reason=str(finalized.get("terminal_reason", "")),
+            terminal_reason=reason,
             dataset_bytes=int(finalized.get(
                 "episode_disk_usage_bytes", _directory_size(episode_dir)
             )),
+            failure_category=None if success else _failure_category(reason),
+            validation_result=validation,
         )
 
     @staticmethod
@@ -802,6 +922,7 @@ class ExpertCollector:
             rejected_samples=9,
             terminal_reason="dry_run_complete",
             dataset_bytes=0,
+            validation_result={"valid": True, "dry_run": True},
         )
 
     def _record_invalid_scene(
@@ -814,7 +935,10 @@ class ExpertCollector:
         """Record a safe no-flight failure and allow the next seed to run."""
         reason = f"invalid_scene: {error}"
         if not self.backend.produces_dataset:
-            return EpisodeOutcome(False, 0, 0, reason, 0)
+            return EpisodeOutcome(
+                False, 0, 0, reason, 0, "blocked_scene",
+                {"valid": False, "error": str(error)},
+            )
         from uav_ml.tools.validate_expert_dataset import (
             CSV_FIELDS,
             DATASET_VERSION,
@@ -934,22 +1058,40 @@ class ExpertCollector:
             0,
             reason,
             _directory_size(episode_dir),
+            "blocked_scene",
+            validation,
         )
 
-    def _visual_qa(self, through_episode: int) -> None:
-        if through_episode % VISUAL_QA_INTERVAL:
-            return
+    def _visual_qa(
+        self, through_accepted: int, source_episode: str
+    ) -> str | None:
+        if through_accepted % VISUAL_QA_INTERVAL:
+            return None
         entry = {
-            "through_episode": through_episode,
+            "through_accepted_episode": through_accepted,
+            "through_episode": through_accepted,
             "status": "pending",
-            "path": f"visual_qa/contact_sheet_{through_episode:06d}.jpg",
+            "path": f"visual_qa/contact_sheet_{through_accepted:06d}.jpg",
         }
         self.store.data.setdefault("visual_qa", []).append(entry)
         self.store.save()
         try:
-            result = create_contact_sheet(self.dataset_root, through_episode)
-        except Exception as error:  # noqa: BLE001 - noncritical QA boundary
+            result = create_contact_sheet(
+                self.dataset_root,
+                through_accepted,
+                source_episode=source_episode,
+            )
+        except (UnidentifiedImageError, ValueError) as error:
             entry.update({"status": "failed", "error": str(error)})
+            self.store.save()
+            return str(error)
+        except Exception as error:
+            entry.update({
+                "status": "infrastructure_failure",
+                "error": str(error),
+            })
+            self.store.save()
+            raise
         else:
             entry.update({
                 "status": "complete",
@@ -957,18 +1099,144 @@ class ExpertCollector:
                 "path": result["contact_sheet"],
             })
         self.store.save()
+        return None
+
+    def _record_rejection(
+        self, entry: dict, outcome: EpisodeOutcome, runtime_dir: Path
+    ) -> Path:
+        """Write a stable evidence index without moving episode artifacts."""
+        index = int(entry["attempt_index"])
+        episode_id = str(entry["episode_id"])
+        episode_dir = self.dataset_root / episode_id
+        validation_path = episode_dir / "validation.json"
+        evidence_path = episode_dir / "flight_evidence.json"
+        record = {
+            "attempt_index": index,
+            "episode_index": index,
+            "episode_id": episode_id,
+            "seed": int(entry["seed"]),
+            "failure_category": outcome.failure_category
+            or _failure_category(outcome.terminal_reason),
+            "failure_reason": outcome.terminal_reason,
+            "episode_json": (
+                str((episode_dir / "episode.json").resolve())
+                if (episode_dir / "episode.json").is_file() else None
+            ),
+            "flight_evidence": (
+                str(evidence_path.resolve()) if evidence_path.is_file()
+                else None
+            ),
+            "validation_result": outcome.validation_result,
+            "validation_path": (
+                str(validation_path.resolve())
+                if validation_path.is_file() else None
+            ),
+            "log_path": str(runtime_dir.resolve()),
+            "recorded_utc": _utc_now(),
+        }
+        path = (
+            self.dataset_root / "rejected_attempts"
+            / f"attempt_{index:06d}.json"
+        )
+        _atomic_json(path, record)
+        return path
+
+    def _summary(
+        self, status: str, infrastructure_failures: int = 0
+    ) -> dict:
+        """Persist and print the collection outcome for people and tooling."""
+        accepted, rejected, samples = self.store.completed_counts()
+        attempted = sum(
+            entry.get("status") != "pending"
+            for entry in self.store.data["episodes"]
+        )
+        reasons = Counter(
+            str(entry.get("failure_category") or "other")
+            for entry in self.store.data["episodes"]
+            if entry.get("status") in {"rejected", "failed"}
+        )
+        infrastructure_count = max(
+            infrastructure_failures,
+            len(self.store.data.get("infrastructure_failures", [])),
+        )
+        summary = {
+            "status": status,
+            "complete": accepted >= self.episodes,
+            "requested_accepted_episodes": self.episodes,
+            "max_attempts": self.max_attempts,
+            "attempted": attempted,
+            "accepted": accepted,
+            "rejected": rejected,
+            "rejected_reasons": dict(sorted(reasons.items())),
+            "infrastructure_failures": infrastructure_count,
+            "accepted_samples_total": samples,
+            "updated_utc": _utc_now(),
+        }
+        self.store.data["summary"] = summary
+        self.store.save()
+        _atomic_json(self.dataset_root / "collection_summary.json", summary)
+        print(
+            "\nCollection Summary\n\n"
+            f"Requested accepted episodes : {self.episodes}\n"
+            f"Maximum attempts            : {self.max_attempts}\n"
+            f"Attempted                   : {attempted}\n"
+            f"Accepted                    : {accepted}\n"
+            f"Rejected                    : {rejected}\n\n"
+            "Rejected reasons:\n"
+            + "".join(
+                f"  {name:<26}: {count}\n"
+                for name, count in sorted(reasons.items())
+            )
+            + f"\nInfrastructure failures     : {infrastructure_count}\n"
+            f"Status                      : {status}\n",
+            flush=True,
+        )
+        return summary
 
     def run(self) -> dict:
         """Run or resume collection and always clean child processes."""
         current_index: int | None = None
         try:
             self._prepare()
-            for entry in self.store.data["episodes"]:
-                if entry.get("status") in TERMINAL_STATES:
-                    continue
+            while True:
+                accepted_count, _, _ = self.store.completed_counts()
+                attempted_count = sum(
+                    entry.get("status") != "pending"
+                    for entry in self.store.data["episodes"]
+                )
+                if accepted_count >= self.episodes:
+                    break
+                if attempted_count >= self.max_attempts:
+                    self._reconcile_dataset_manifest()
+                    validation = {
+                        "valid": False,
+                        "complete": False,
+                        "dataset_incomplete": True,
+                        "reason": "maximum attempts reached before target",
+                        "requested_accepted_episodes": self.episodes,
+                        "attempted": attempted_count,
+                        "accepted": accepted_count,
+                    }
+                    self.store.data["validation"] = validation
+                    self.store.set_collection_state(
+                        "incomplete_max_attempts",
+                        "maximum attempts reached before accepted target",
+                    )
+                    summary = self._summary("incomplete_max_attempts")
+                    return {**validation, "summary": summary}
+
+                entry = self.store.next_attempt()
                 current_index = int(entry["index"])
                 episode_id = str(entry["episode_id"])
                 seed = int(entry["seed"])
+                runtime_dir = self.runtime_root / episode_id
+                self.store.update_episode(
+                    current_index,
+                    status="running",
+                    accepted=None,
+                    attempted_utc=entry.get("attempted_utc") or _utc_now(),
+                    log_path=str(runtime_dir.resolve()),
+                )
                 scene = None
                 try:
                     scene = generate_episode_scene(
@@ -981,18 +1249,29 @@ class ExpertCollector:
                     )
                     self.store.update_episode(
                         current_index,
-                        status="failed",
+                        status="rejected",
+                        accepted=False,
                         success=False,
                         accepted_samples=outcome.accepted_samples,
                         rejected_samples=0,
                         dataset_bytes=outcome.dataset_bytes,
+                        failure_category=outcome.failure_category,
                         terminal_reason=outcome.terminal_reason,
                         completed_utc=_utc_now(),
                         command_status=None,
                     )
+                    rejection_path = self._record_rejection(
+                        self.store.data["episodes"][current_index - 1],
+                        outcome,
+                        runtime_dir,
+                    )
+                    self.store.update_episode(
+                        current_index,
+                        rejection_record=str(rejection_path.resolve()),
+                        validation_result=outcome.validation_result,
+                    )
+                    self._reconcile_dataset_manifest()
                     self.display.transition(current_index, "INVALID SCENE")
-                    if self.backend.produces_dataset:
-                        self._visual_qa(current_index)
                     continue
                 assert scene is not None
                 scene_summary = {
@@ -1009,7 +1288,6 @@ class ExpertCollector:
                     scene_validation=scene_summary,
                 )
                 self.display.transition(current_index, "Scene ready")
-                runtime_dir = self.runtime_root / episode_id
                 try:
                     command_status = self.backend.run_episode(
                         index=current_index,
@@ -1028,28 +1306,78 @@ class ExpertCollector:
                     if self.backend.produces_dataset
                     else self._dry_run_outcome()
                 )
-                terminal_state = "complete" if outcome.success else "failed"
+                terminal_state = "complete" if outcome.success else "rejected"
                 self.store.update_episode(
                     current_index,
                     status=terminal_state,
+                    accepted=outcome.success,
                     success=outcome.success,
-                    accepted_samples=outcome.accepted_samples,
+                    accepted_samples=(
+                        outcome.accepted_samples if outcome.success else 0
+                    ),
                     rejected_samples=outcome.rejected_samples,
                     dataset_bytes=outcome.dataset_bytes,
+                    failure_category=outcome.failure_category,
                     terminal_reason=outcome.terminal_reason,
+                    validation_result=outcome.validation_result,
                     completed_utc=_utc_now(),
                     command_status=command_status,
                 )
-                self.display.transition(current_index, "DATASET VALID")
-                if self.backend.produces_dataset:
-                    self._visual_qa(current_index)
+                if not outcome.success:
+                    rejection_path = self._record_rejection(
+                        self.store.data["episodes"][current_index - 1],
+                        outcome,
+                        runtime_dir,
+                    )
+                    self.store.update_episode(
+                        current_index,
+                        rejection_record=str(rejection_path.resolve()),
+                    )
+                self._reconcile_dataset_manifest()
                 success_count, failure_count, total_samples = (
                     self.store.completed_counts()
                 )
+                qa_error = None
+                if self.backend.produces_dataset and outcome.success:
+                    qa_error = self._visual_qa(success_count, episode_id)
+                if qa_error is not None:
+                    outcome = EpisodeOutcome(
+                        success=False,
+                        accepted_samples=0,
+                        rejected_samples=outcome.rejected_samples,
+                        terminal_reason=f"visual_qa: {qa_error}",
+                        dataset_bytes=outcome.dataset_bytes,
+                        failure_category="image_qa",
+                        validation_result=outcome.validation_result,
+                    )
+                    self.store.update_episode(
+                        current_index,
+                        status="rejected",
+                        accepted=False,
+                        success=False,
+                        accepted_samples=0,
+                        failure_category="image_qa",
+                        terminal_reason=outcome.terminal_reason,
+                    )
+                    rejection_path = self._record_rejection(
+                        self.store.data["episodes"][current_index - 1],
+                        outcome,
+                        runtime_dir,
+                    )
+                    self.store.update_episode(
+                        current_index,
+                        rejection_record=str(rejection_path.resolve()),
+                    )
+                    self._reconcile_dataset_manifest()
+                    success_count, failure_count, total_samples = (
+                        self.store.completed_counts()
+                    )
+                state = "ACCEPTED" if outcome.success else "REJECTED"
+                self.display.transition(current_index, state)
                 self.display.render(
                     index=current_index,
                     seed=seed,
-                    state="DATASET VALID",
+                    state=state,
                     success_count=success_count,
                     failure_count=failure_count,
                     current_samples=0,
@@ -1058,7 +1386,9 @@ class ExpertCollector:
                     dataset_bytes=_directory_size(self.dataset_root),
                     force=True,
                 )
+            current_index = None
             if self.backend.produces_dataset:
+                self._reconcile_dataset_manifest()
                 validation = validate_collection(
                     self.dataset_root,
                     self.autoencoder,
@@ -1084,7 +1414,8 @@ class ExpertCollector:
             self.store.data["validation"] = validation
             self.store.data["completed_utc"] = _utc_now()
             self.store.set_collection_state("complete")
-            return validation
+            summary = self._summary("complete")
+            return {**validation, "summary": summary}
         except KeyboardInterrupt:
             self.backend.cleanup()
             if self._manifest_prepared and current_index is not None:
@@ -1094,9 +1425,14 @@ class ExpertCollector:
                     terminal_reason="operator_interrupt",
                 )
             if self._manifest_prepared:
+                try:
+                    self._reconcile_dataset_manifest()
+                except (OSError, ValueError, json.JSONDecodeError):
+                    pass
                 self.store.set_collection_state(
                     "interrupted", "operator interrupt; resume is safe"
                 )
+                self._summary("interrupted")
             raise
         except Exception as error:
             self.backend.cleanup()
@@ -1109,8 +1445,33 @@ class ExpertCollector:
                             status="infrastructure_failure",
                             terminal_reason=str(error),
                         )
+                self.store.data.setdefault(
+                    "infrastructure_failures", []
+                ).append({
+                    "attempt_index": current_index,
+                    "reason": str(error),
+                    "log_path": (
+                        None if current_index is None else str(
+                            (
+                                self.runtime_root
+                                / f"episode_{current_index:06d}"
+                            ).resolve()
+                        )
+                    ),
+                    "recorded_utc": _utc_now(),
+                })
+                self.store.save()
+                try:
+                    self._reconcile_dataset_manifest()
+                except (OSError, ValueError, json.JSONDecodeError):
+                    # The original infrastructure failure remains primary.
+                    pass
                 self.store.set_collection_state(
                     "stopped_infrastructure_failure", str(error)
+                )
+                self._summary(
+                    "stopped_infrastructure_failure",
+                    infrastructure_failures=1,
                 )
             raise
 
@@ -1128,16 +1489,23 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         type=int,
         help=(
-            "number of episodes to add in this run; after an interruption, "
-            "pass the same value again with --resume"
+            "dataset-wide target number of accepted successful episodes"
+        ),
+    )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        help=(
+            "total deterministic seed attempts allowed (default: ceil(1.5 "
+            "times --episodes))"
         ),
     )
     parser.add_argument(
         "--resume",
         action="store_true",
         help=(
-            "resume an unfinished run without overwriting completed episodes; "
-            "when no run is unfinished, append a new run"
+            "resume existing accepted/rejected seed history; existing accepted "
+            "episodes count toward --episodes"
         ),
     )
     parser.add_argument(
@@ -1174,6 +1542,7 @@ def main() -> int:
         repository_root=repository_root,
         dataset_root=dataset_root,
         episodes=args.episodes,
+        max_attempts=args.max_attempts,
         base_seed=args.base_seed,
         resume=args.resume,
         autoencoder=repository_root / DEFAULT_AUTOENCODER,
@@ -1190,7 +1559,7 @@ def main() -> int:
         print(f"ERROR: expert collection stopped: {error}")
         return 1
     print(json.dumps(result, indent=2))
-    return 0
+    return 0 if result.get("complete", result.get("valid", False)) else 2
 
 
 if __name__ == "__main__":

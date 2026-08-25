@@ -30,8 +30,10 @@ from uav_ml.tools.expert_collect import (
     AUXILIARY_FIELDS,
     CollectionManifestStore,
     DryRunBackend,
+    EpisodeOutcome,
     ExpertCollector,
     ProgressDisplay,
+    default_max_attempts,
 )
 from uav_ml.tools.expert_visual_qa import create_contact_sheet
 from uav_ml.tools.validate_expert_batch import _validate_auxiliary
@@ -82,11 +84,13 @@ class ExpertCollectionToolTest(unittest.TestCase):
         *,
         resume: bool = False,
         episodes: int = 3,
+        max_attempts: int | None = None,
     ) -> ExpertCollector:
         return ExpertCollector(
             repository_root=REPOSITORY_ROOT,
             dataset_root=dataset,
             episodes=episodes,
+            max_attempts=max_attempts,
             resume=resume,
             backend=backend,
             runtime_root=(
@@ -104,8 +108,9 @@ class ExpertCollectionToolTest(unittest.TestCase):
         )
         self.assertEqual(manifest["status"], "complete")
         self.assertEqual(manifest["target_episodes"], 3)
+        self.assertEqual(manifest["max_attempts"], 5)
         self.assertEqual(
-            manifest["collection_runs"][0]["requested_episodes"], 3
+            manifest["collection_runs"][0]["requested_accepted_episodes"], 3
         )
         self.assertEqual(
             [entry["seed"] for entry in manifest["episodes"]],
@@ -142,7 +147,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         seeds = {entry["seed"] for entry in after["episodes"]}
         self.assertEqual(len(seeds), 3)
 
-    def test_completed_collection_appends_requested_episode_count(self) -> None:
+    def test_completed_collection_extends_dataset_wide_accepted_target(self) -> None:
         dataset = self.root / "dataset"
         with contextlib.redirect_stdout(io.StringIO()):
             self._collector(dataset, DryRunBackend()).run()
@@ -154,7 +159,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         extended = InterruptingBackend(interrupt_index=99)
         with contextlib.redirect_stdout(io.StringIO()):
             self._collector(
-                dataset, extended, resume=True, episodes=2
+                dataset, extended, resume=True, episodes=5
             ).run()
         self.assertEqual(
             extended.seen,
@@ -163,20 +168,15 @@ class ExpertCollectionToolTest(unittest.TestCase):
         after = json.loads(
             (dataset / "collection_manifest.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(after["target_episodes"], 5)
+        self.assertEqual(after["requested_accepted_episodes"], 5)
         self.assertEqual(after["episodes"][:3], first_three)
         self.assertEqual(
             [entry["seed"] for entry in after["episodes"]],
             [103001, 103002, 103003, 103004, 103005],
         )
-        self.assertEqual(after["target_extensions"][0]["from_episodes"], 3)
-        self.assertEqual(after["target_extensions"][0]["to_episodes"], 5)
-        self.assertEqual(
-            after["target_extensions"][0]["additional_episodes"], 2
-        )
         self.assertEqual(
             [run["requested_episodes"] for run in after["collection_runs"]],
-            [3, 2],
+            [3, 5],
         )
 
     def test_completed_collection_appends_without_resume_flag(self) -> None:
@@ -187,7 +187,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         appended = InterruptingBackend(interrupt_index=99)
         with contextlib.redirect_stdout(io.StringIO()):
             result = self._collector(
-                dataset, appended, episodes=1
+                dataset, appended, episodes=4
             ).run()
 
         self.assertEqual(appended.seen, [("episode_000004", 103004)])
@@ -216,16 +216,29 @@ class ExpertCollectionToolTest(unittest.TestCase):
             side_effect=generate,
         ), contextlib.redirect_stdout(io.StringIO()):
             result = self._collector(dataset, DryRunBackend()).run()
-        self.assertEqual(result["successful_episodes"], 2)
+        self.assertEqual(result["successful_episodes"], 3)
         self.assertEqual(result["failed_episodes"], 1)
         manifest = json.loads(
             (dataset / "collection_manifest.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(manifest["episodes"][1]["status"], "failed")
+        self.assertEqual(manifest["episodes"][1]["status"], "rejected")
         self.assertIn(
             "invalid_scene", manifest["episodes"][1]["terminal_reason"]
         )
         self.assertEqual(manifest["episodes"][2]["status"], "complete")
+        self.assertEqual(manifest["episodes"][3]["seed"], 103004)
+        self.assertEqual(manifest["episodes"][3]["status"], "complete")
+        self.assertEqual(manifest["accepted_episode_ids"], [
+            "episode_000001", "episode_000003", "episode_000004"
+        ])
+        rejection = json.loads(
+            (dataset / "rejected_attempts" / "attempt_000002.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(rejection["seed"], 103002)
+        self.assertEqual(rejection["failure_category"], "blocked_scene")
+        self.assertIn("validation_result", rejection)
+        self.assertIn("log_path", rejection)
 
     def test_invalid_scene_uses_formal_fpv_storage_directory(self) -> None:
         dataset = self.root / "dataset"
@@ -263,13 +276,145 @@ class ExpertCollectionToolTest(unittest.TestCase):
         self.assertEqual(
             manifest["episodes"][0]["status"], "infrastructure_failure"
         )
+        summary = json.loads(
+            (dataset / "collection_summary.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(summary["infrastructure_failures"], 1)
+
+    def test_episode_failure_is_rejected_and_next_seed_is_attempted(self) -> None:
+        dataset = self.root / "dataset"
+        backend = InterruptingBackend(interrupt_index=99)
+        collector = self._collector(
+            dataset, backend, episodes=2, max_attempts=3
+        )
+        rejected = EpisodeOutcome(
+            False, 17, 4, "tracking error caused collision", 0,
+            "collision_tracking", {"valid": True, "episode_success": False},
+        )
+        accepted = EpisodeOutcome(
+            True, 42, 2, "goal_reached_and_landed", 0,
+            None, {"valid": True, "episode_success": True},
+        )
+        with mock.patch.object(
+            collector,
+            "_dry_run_outcome",
+            side_effect=[rejected, accepted, accepted],
+        ), contextlib.redirect_stdout(io.StringIO()):
+            result = collector.run()
+        self.assertTrue(result["valid"])
+        self.assertEqual([seed for _, seed in backend.seen], [
+            103001, 103002, 103003
+        ])
+        manifest = json.loads(
+            (dataset / "collection_manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["episodes"][0]["status"], "rejected")
+        self.assertEqual(manifest["episodes"][0]["accepted_samples"], 0)
+        self.assertEqual(manifest["accepted_episode_ids"], [
+            "episode_000002", "episode_000003"
+        ])
+        evidence = json.loads(
+            (dataset / "rejected_attempts" / "attempt_000001.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(evidence["failure_reason"], rejected.terminal_reason)
+
+        (dataset / "dataset_manifest.json").write_text(json.dumps({
+            "episodes": ["episode_000001", "episode_000002", "episode_000003"],
+            "episode_count": 3,
+            "sample_count": 999,
+        }), encoding="utf-8")
+        collector._reconcile_dataset_manifest()
+        accepted_manifest = json.loads(
+            (dataset / "dataset_manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(accepted_manifest["episodes"], [
+            "episode_000002", "episode_000003"
+        ])
+        self.assertEqual(accepted_manifest["episode_count"], 2)
+
+    def test_max_attempts_returns_clear_incomplete_result(self) -> None:
+        dataset = self.root / "dataset"
+        backend = InterruptingBackend(interrupt_index=99)
+        collector = self._collector(
+            dataset, backend, episodes=3, max_attempts=3
+        )
+        rejected = EpisodeOutcome(
+            False, 0, 0, "goal not reached", 0, "flight_failure",
+            {"valid": True, "episode_success": False},
+        )
+        with mock.patch.object(
+            collector, "_dry_run_outcome", return_value=rejected
+        ), contextlib.redirect_stdout(io.StringIO()):
+            result = collector.run()
+        self.assertFalse(result["valid"])
+        self.assertTrue(result["dataset_incomplete"])
+        self.assertEqual(result["summary"]["attempted"], 3)
+        self.assertEqual(result["summary"]["accepted"], 0)
+        self.assertEqual(len(backend.seen), 3)
+
+    def test_default_max_attempts_is_ceiling_of_one_point_five_times(self) -> None:
+        self.assertEqual(default_max_attempts(1), 2)
+        self.assertEqual(default_max_attempts(3), 5)
+        self.assertEqual(default_max_attempts(100), 150)
+
+    def test_image_validation_failure_is_rejectable_episode_outcome(self) -> None:
+        dataset = self.root / "dataset"
+        episode = dataset / "episode_000001"
+        episode.mkdir(parents=True)
+        (episode / "flight_evidence.json").write_text(
+            "{}", encoding="utf-8"
+        )
+        collector = self._collector(dataset, DryRunBackend(), episodes=1)
+        finalized = {
+            "success": True,
+            "terminal_reason": "goal_reached_and_landed",
+            "rejected_sample_count": 0,
+            "episode_disk_usage_bytes": 12,
+        }
+        with mock.patch(
+            "uav_ml.tools.finalize_expert_episode.finalize",
+            return_value=finalized,
+        ), mock.patch(
+            "uav_ml.tools.expert_collect.validate_collection_episode",
+            side_effect=ValueError("FPV image is blank/dark"),
+        ):
+            outcome = collector._finalize_real_episode(
+                "episode_000001", command_status=0
+            )
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.failure_category, "image_qa")
+        self.assertIn("dataset_validation", outcome.terminal_reason)
+
+    def test_visual_qa_data_failure_is_rejectable_but_internal_failure_raises(
+        self,
+    ) -> None:
+        dataset = self.root / "dataset"
+        collector = self._collector(dataset, DryRunBackend(), episodes=1)
+        collector.store.create(1, 103000)
+        with mock.patch(
+            "uav_ml.tools.expert_collect.VISUAL_QA_INTERVAL", 1
+        ), mock.patch(
+            "uav_ml.tools.expert_collect.create_contact_sheet",
+            side_effect=ValueError("fixture image QA failure"),
+        ):
+            error = collector._visual_qa(1, "episode_000001")
+        self.assertEqual(error, "fixture image QA failure")
+
+        with mock.patch(
+            "uav_ml.tools.expert_collect.VISUAL_QA_INTERVAL", 1
+        ), mock.patch(
+            "uav_ml.tools.expert_collect.create_contact_sheet",
+            side_effect=RuntimeError("fixture internal failure"),
+        ), self.assertRaisesRegex(RuntimeError, "internal failure"):
+            collector._visual_qa(1, "episode_000001")
 
     def test_resume_count_mismatch_does_not_corrupt_manifest(self) -> None:
         dataset = self.root / "dataset"
         store = CollectionManifestStore(dataset)
         store.create(3, 103000)
         store.set_collection_state("interrupted")
-        with self.assertRaisesRegex(ValueError, "unfinished collection run"):
+        with self.assertRaisesRegex(ValueError, "cannot reduce unfinished"):
             self._collector(
                 dataset, DryRunBackend(), resume=True, episodes=2
             ).run()
@@ -278,7 +423,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         )
         self.assertEqual(manifest["target_episodes"], 3)
         self.assertEqual(manifest["status"], "interrupted")
-        self.assertEqual(len(manifest["episodes"]), 3)
+        self.assertEqual(len(manifest["episodes"]), 0)
 
     def test_resume_finishes_interrupted_validation_without_append(self) -> None:
         dataset = self.root / "dataset"
@@ -300,7 +445,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         self.assertEqual(result["episode_count"], 3)
         manifest = json.loads(store.path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["target_episodes"], 3)
-        self.assertEqual(len(manifest["collection_runs"]), 1)
+        self.assertEqual(len(manifest["collection_runs"]), 2)
         self.assertEqual(manifest["status"], "complete")
 
     def test_completed_legacy_manifest_is_migrated_before_append(self) -> None:
@@ -311,12 +456,17 @@ class ExpertCollectionToolTest(unittest.TestCase):
         legacy = json.loads(path.read_text(encoding="utf-8"))
         legacy.pop("collection_runs")
         legacy.pop("active_run_number")
+        legacy.pop("manifest_version")
+        legacy.pop("requested_accepted_episodes")
+        legacy["tool_version"] = "expert_collection_v1.0"
         legacy["status"] = "stopped_infrastructure_failure"
         path.write_text(json.dumps(legacy), encoding="utf-8")
 
         appended = InterruptingBackend(interrupt_index=99)
         with contextlib.redirect_stdout(io.StringIO()):
-            self._collector(dataset, appended, episodes=2).run()
+            self._collector(
+                dataset, appended, resume=True, episodes=5
+            ).run()
 
         manifest = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["target_episodes"], 5)
@@ -326,7 +476,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         ])
         self.assertEqual(
             [run["requested_episodes"] for run in manifest["collection_runs"]],
-            [3, 2],
+            [5],
         )
 
     def test_scene_validator_enforces_frozen_cylinder_contract(self) -> None:
@@ -429,11 +579,12 @@ class ExpertCollectionToolTest(unittest.TestCase):
             )
         rendered = output.getvalue()
         for expected in (
-            "Episodes: 37 / 100",
+            "Accepted: 35 / 100",
+            "Attempts: 37",
             "seed     : 103037",
             "state    : TRACKING",
-            "success  : 35",
-            "failed   : 1",
+            "accepted : 35",
+            "rejected : 1",
             "samples  : 42",
             "rejected : 113",
             "Elapsed",
