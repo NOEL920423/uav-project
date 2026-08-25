@@ -16,13 +16,13 @@ committed.
 Add 100 episodes to a new dataset:
 
 ```bash
-./uav expert-collect --episodes 100
+./uav expert-collect --episodes 100 --dataset bc_expert_cube
 ```
 
 If that 100-episode run is interrupted, resume it with the same count:
 
 ```bash
-./uav expert-collect --episodes 100 --resume
+./uav expert-collect --episodes 100 --dataset bc_expert_cube --resume
 ```
 
 `--episodes` is the number of episodes to add in the current run, not a fixed
@@ -30,11 +30,12 @@ dataset-wide target. After a run completes, any positive count can be appended
 without `--resume`. For example, this adds 5 episodes to an existing dataset:
 
 ```bash
-./uav expert-collect --episodes 5
+./uav expert-collect --episodes 5 --dataset bc_expert_cube
 ```
 
 If that 5-episode run stops partway through, use
-`./uav expert-collect --episodes 5 --resume`. The resume count must match the
+`./uav expert-collect --episodes 5 --dataset bc_expert_cube --resume`. The
+resume count must match the
 unfinished run so the tool cannot accidentally create a second plan or skip
 episodes. When no run is unfinished, `--resume` is also accepted and starts a
 new append run. There is no configured total-episode ceiling; IDs retain at

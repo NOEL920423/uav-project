@@ -60,7 +60,7 @@ Commands:
   px4-boundary-check  Validate scene-to-safe_to_forward diagnostic graph
   ml-doctor       Check Python, PyTorch, CUDA, GPU, and ML artifact locations
   rgb-audit       Audit and split legacy RGB episodes without modifying them
-  ae-train        Train/evaluate the episode-split FPV RGB Autoencoder baseline
+  ae-train        Train an episode-split FPV/TOP/depth Autoencoder baseline
   isaac-city-smoke  Validate the fixed-height city reset/step environment
   isaac-bc-collect  Collect synchronized clean RGB/state/A* demonstrations
   latent-prepare    Encode demonstrations and calculate train-only normalization
@@ -108,7 +108,7 @@ Examples:
   ./uav px4-boundary-check
   ./uav ml-doctor
   ./uav rgb-audit
-  ./uav ae-train --epochs 20 --device cuda
+  ./uav ae-train --dataset bc_expert_cube --epochs 200
   ./uav isaac-city-smoke --headless --enable_cameras
   ./uav isaac-bc-collect --headless --enable_cameras
   ./uav latent-prepare
@@ -118,7 +118,7 @@ Examples:
   ./uav dataset-generate-synthetic --output datasets/bc_v0 --episodes 8
   ./uav dataset-check --dataset datasets/bc_v0
   ./uav bc-smoke-test --device cpu
-  ./uav bc-train
+  ./uav bc-train --dataset bc_expert_cube --epochs 500
   ./uav bc-eval --episodes 20
   ./uav ml-test
   ./uav px4-stream-offline-check
@@ -132,8 +132,8 @@ Examples:
   ./uav phase10b-dataset-check
   ./uav phase10c-visual-qa
   ./uav phase10c-visual-qa-check
-  ./uav expert-collect --episodes 100
-  ./uav expert-collect --episodes 100 --resume
+  ./uav expert-collect --episodes 100 --dataset bc_expert_cube
+  ./uav expert-collect --episodes 100 --dataset bc_expert_cube --resume
   ./uav expert-scene-preview --seed 103001
   ./uav expert-validate --episodes 100
   ./uav shell
