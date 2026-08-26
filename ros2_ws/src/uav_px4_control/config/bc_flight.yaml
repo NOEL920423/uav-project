@@ -1,0 +1,42 @@
+bc_policy:
+  ros__parameters:
+    device: cpu
+    image_freshness_timeout_s: 0.35
+    odometry_freshness_timeout_s: 0.25
+    command_publish_rate_hz: 20.0
+    inference_timeout_s: 0.50
+
+bc_flight_supervisor:
+  ros__parameters:
+    flight_altitude_m: 1.5
+    altitude_tolerance_m: 0.20
+    takeoff_up_speed_mps: 0.55
+    readiness_timeout_s: 45.0
+    service_timeout_s: 15.0
+    takeoff_timeout_s: 25.0
+    landing_timeout_s: 75.0
+    command_retry_s: 0.50
+    telemetry_timeout_s: 0.75
+
+px4_mapping_gate:
+  ros__parameters:
+    telemetry_timeout_s: 0.75
+    lock_vehicle_state_signature: false
+    allow_controlled_mux_handoff: true
+
+px4_setpoint_streamer:
+  ros__parameters:
+    telemetry_timeout_s: 0.75
+    require_disarmed: false
+    require_offboard_inactive: false
+
+bc_episode_monitor:
+  ros__parameters:
+    goal_tolerance_m: 0.35
+    timeout_s: 45.0
+    uav_radius_m: 0.25
+    collision_clearance_threshold_m: 0.0
+    east_min_m: -5.0
+    east_max_m: 5.0
+    north_min_m: -2.0
+    north_max_m: 7.0

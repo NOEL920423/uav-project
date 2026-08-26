@@ -16,3 +16,4 @@ px4_mapping_gate:
     latch_faults: true
     require_explicit_enable: true
     lock_vehicle_state_signature: true
+    allow_controlled_mux_handoff: false

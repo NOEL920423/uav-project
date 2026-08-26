@@ -8,12 +8,22 @@ from enum import Enum
 VALID_COMMAND_FRAME = "px4_ned"
 HOLD = "HOLD"
 ASTAR_EXPERT = "ASTAR_EXPERT"
+FLIGHT_LIFECYCLE = "FLIGHT_LIFECYCLE"
+BC_POLICY = "BC_POLICY"
 HUMAN_JOYSTICK = "HUMAN_JOYSTICK"
 NAVRL_POLICY = "NAVRL_POLICY"
-MOVEMENT_SOURCES = (ASTAR_EXPERT, HUMAN_JOYSTICK, NAVRL_POLICY)
+MOVEMENT_SOURCES = (
+    ASTAR_EXPERT,
+    FLIGHT_LIFECYCLE,
+    BC_POLICY,
+    HUMAN_JOYSTICK,
+    NAVRL_POLICY,
+)
 CONTROL_SOURCES = (HOLD,) + MOVEMENT_SOURCES
 SOURCE_TOPICS = {
     ASTAR_EXPERT: "/uav/control/astar_command",
+    FLIGHT_LIFECYCLE: "/uav/control/lifecycle_command",
+    BC_POLICY: "/uav/control/bc_command",
     HUMAN_JOYSTICK: "/uav/control/joystick_command",
     NAVRL_POLICY: "/uav/control/navrl_command",
     HOLD: "/uav/control/hold_command",
@@ -28,6 +38,8 @@ class ControlMuxState(str, Enum):
     HOLD_WAITING_SOURCE = "HOLD_WAITING_SOURCE"
     HOLD_SWITCH_BARRIER = "HOLD_SWITCH_BARRIER"
     ACTIVE_ASTAR_EXPERT = "ACTIVE_ASTAR_EXPERT"
+    ACTIVE_FLIGHT_LIFECYCLE = "ACTIVE_FLIGHT_LIFECYCLE"
+    ACTIVE_BC_POLICY = "ACTIVE_BC_POLICY"
     ACTIVE_HUMAN_JOYSTICK = "ACTIVE_HUMAN_JOYSTICK"
     ACTIVE_NAVRL_POLICY = "ACTIVE_NAVRL_POLICY"
     HOLD_STALE_SOURCE = "HOLD_STALE_SOURCE"
@@ -40,6 +52,8 @@ class ControlMuxState(str, Enum):
 
 ACTIVE_STATES = {
     ASTAR_EXPERT: ControlMuxState.ACTIVE_ASTAR_EXPERT,
+    FLIGHT_LIFECYCLE: ControlMuxState.ACTIVE_FLIGHT_LIFECYCLE,
+    BC_POLICY: ControlMuxState.ACTIVE_BC_POLICY,
     HUMAN_JOYSTICK: ControlMuxState.ACTIVE_HUMAN_JOYSTICK,
     NAVRL_POLICY: ControlMuxState.ACTIVE_NAVRL_POLICY,
 }
@@ -76,6 +90,8 @@ class ControlMuxConfig:
     default_source: str = HOLD
     publish_rate_hz: float = 50.0
     astar_timeout_s: float = 0.25
+    lifecycle_timeout_s: float = 0.20
+    bc_timeout_s: float = 0.20
     joystick_timeout_s: float = 0.20
     navrl_timeout_s: float = 0.20
     hold_timeout_s: float = 0.50
@@ -100,6 +116,8 @@ class ControlMuxConfig:
         positive = (
             "publish_rate_hz",
             "astar_timeout_s",
+            "lifecycle_timeout_s",
+            "bc_timeout_s",
             "joystick_timeout_s",
             "navrl_timeout_s",
             "hold_timeout_s",
@@ -149,6 +167,8 @@ class ControlMuxConfig:
         """Return the exact configured receipt timeout for one source."""
         timeouts = {
             ASTAR_EXPERT: self.astar_timeout_s,
+            FLIGHT_LIFECYCLE: self.lifecycle_timeout_s,
+            BC_POLICY: self.bc_timeout_s,
             HUMAN_JOYSTICK: self.joystick_timeout_s,
             NAVRL_POLICY: self.navrl_timeout_s,
             HOLD: self.hold_timeout_s,

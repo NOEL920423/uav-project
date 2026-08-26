@@ -260,6 +260,45 @@ def test_source_handoff_while_enabled_latches_state_change() -> None:
     assert result.fault_latched
 
 
+def test_controlled_lifecycle_to_bc_handoff_keeps_zero_barrier_safe() -> None:
+    """Keep streaming through the mux zero barrier only when opted in."""
+    gate = Px4OutputSafetyGate(Px4MappingConfig(
+        allow_controlled_mux_handoff=True,
+        lock_vehicle_state_signature=False,
+    ))
+    lifecycle = replace(candidate(), source="FLIGHT_LIFECYCLE")
+    lifecycle_mux = mux(active_source="FLIGHT_LIFECYCLE")
+    assert gate.request_enable(True).accepted
+    assert not step(
+        gate, cand=lifecycle, health=lifecycle_mux
+    ).safe_to_forward
+    assert step(
+        gate,
+        1.01,
+        cand=replace(lifecycle, selected_receipt_time_s=1.01),
+        health=mux(1.01, active_source="FLIGHT_LIFECYCLE"),
+    ).safe_to_forward
+    barrier = replace(
+        candidate(1.02, 1_020_000),
+        source="HOLD",
+        velocity_ned_mps=(0.0, 0.0, 0.0),
+        yaw_rate_ned_radps=0.0,
+    )
+    assert step(
+        gate,
+        1.02,
+        cand=barrier,
+        health=mux(1.02, active_source="HOLD", hold_active=True),
+    ).safe_to_forward
+    bc = replace(candidate(1.03, 1_030_000), source="BC_POLICY")
+    assert step(
+        gate,
+        1.03,
+        cand=bc,
+        health=mux(1.03, active_source="BC_POLICY"),
+    ).safe_to_forward
+
+
 def test_hold_and_unknown_active_source_never_forward() -> None:
     """HOLD and unknown mux owners never receive permission."""
     for health in (

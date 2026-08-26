@@ -26,6 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetPx4OutputEnable.srv"
   "srv/SetPx4StreamEnable.srv"
   "srv/SetPx4FlightEnable.srv"
+  "srv/SendPx4VehicleCommand.srv"
   "action/RunEpisode.action"
   DEPENDENCIES action_msgs builtin_interfaces geometry_msgs std_msgs
 )

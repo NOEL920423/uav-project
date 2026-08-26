@@ -18,6 +18,7 @@ setup(
             "share/" + package_name + "/config",
             [
                 "config/control_mux.yaml",
+                "config/bc_flight.yaml",
                 "config/px4_mapping_gate.yaml",
                 "config/px4_setpoint_streamer.yaml",
                 "config/px4_sitl_flight.yaml",
@@ -33,6 +34,7 @@ setup(
                 "launch/px4_boundary_offline.launch.py",
                 "launch/px4_sitl_stream.launch.py",
                 "launch/px4_sitl_flight.launch.py",
+                "launch/bc_flight.launch.py",
             ],
         ),
     ],
@@ -46,6 +48,11 @@ setup(
     entry_points={
         "console_scripts": [
             "control_mux_node = uav_px4_control.control_mux_node:main",
+            "bc_policy_node = uav_px4_control.bc_policy_node:main",
+            "bc_flight_supervisor_node = "
+            "uav_px4_control.bc_flight_supervisor_node:main",
+            "bc_episode_monitor_node = "
+            "uav_px4_control.bc_episode_monitor_node:main",
             "px4_mapping_gate_node = "
             "uav_px4_control.px4_mapping_gate_node:main",
             "px4_setpoint_streamer_node = "
@@ -60,6 +67,8 @@ setup(
             "uav_px4_control.px4_stream_fixtures:main",
             "px4_odometry_bridge_node = "
             "uav_px4_control.px4_odometry_bridge_node:main",
+            "px4_vehicle_command_owner_node = "
+            "uav_px4_control.px4_vehicle_command_owner_node:main",
             "px4_sitl_flight_supervisor_node = "
             "uav_px4_control.px4_sitl_flight_supervisor_node:main",
             "px4_sitl_flight_monitor = "

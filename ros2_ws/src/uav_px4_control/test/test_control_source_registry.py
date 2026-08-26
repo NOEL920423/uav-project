@@ -7,9 +7,11 @@ import pytest
 from uav_px4_control.control_mux import fixed_candidate
 from uav_px4_control.control_source_models import (
     ASTAR_EXPERT,
+    BC_POLICY,
     CONTROL_SOURCES,
     ControlCommand,
     ControlMuxConfig,
+    FLIGHT_LIFECYCLE,
     HOLD,
     HUMAN_JOYSTICK,
     NAVRL_POLICY,
@@ -20,12 +22,19 @@ from uav_px4_control.control_source_registry import ControlSourceRegistry
 
 
 def test_exact_source_registry_and_topic_contract() -> None:
-    """Expose only the four canonical source identifiers and topics."""
+    """Expose only the canonical source identifiers and topics."""
     assert CONTROL_SOURCES == (
-        HOLD, ASTAR_EXPERT, HUMAN_JOYSTICK, NAVRL_POLICY
+        HOLD,
+        ASTAR_EXPERT,
+        FLIGHT_LIFECYCLE,
+        BC_POLICY,
+        HUMAN_JOYSTICK,
+        NAVRL_POLICY,
     )
     assert SOURCE_TOPICS == {
         ASTAR_EXPERT: "/uav/control/astar_command",
+        FLIGHT_LIFECYCLE: "/uav/control/lifecycle_command",
+        BC_POLICY: "/uav/control/bc_command",
         HUMAN_JOYSTICK: "/uav/control/joystick_command",
         NAVRL_POLICY: "/uav/control/navrl_command",
         HOLD: "/uav/control/hold_command",
@@ -37,6 +46,8 @@ def test_exact_source_registry_and_topic_contract() -> None:
     [
         ("publish_rate_hz", 0.0),
         ("astar_timeout_s", -1.0),
+        ("lifecycle_timeout_s", -1.0),
+        ("bc_timeout_s", -1.0),
         ("switch_hold_duration_s", -0.1),
         ("maximum_selected_speed_mps", math.nan),
         ("hold_command_epsilon", math.inf),

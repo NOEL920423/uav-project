@@ -76,6 +76,7 @@ def test_mapping_gate_config_contains_all_locked_parameters() -> None:
         "latch_faults",
         "require_explicit_enable",
         "lock_vehicle_state_signature",
+        "allow_controlled_mux_handoff",
     }
     assert names == expected
 

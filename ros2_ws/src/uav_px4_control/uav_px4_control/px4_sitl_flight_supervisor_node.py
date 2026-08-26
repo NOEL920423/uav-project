@@ -24,6 +24,7 @@ from uav_interfaces.msg import (
     TrajectoryTrackingStatus,
 )
 from uav_interfaces.srv import (
+    SendPx4VehicleCommand,
     SetControlSource,
     SetPx4FlightEnable,
     SetPx4OutputEnable,
@@ -59,16 +60,17 @@ from uav_px4_control.px4_setpoint_streamer_node import (
     STREAM_STATUS_TOPIC,
     VEHICLE_ODOMETRY_TOPIC,
     VEHICLE_STATUS_TOPIC,
-    px4_input_qos,
     px4_output_qos,
     sitl_process_matches,
     xrce_agent_detected,
+)
+from uav_px4_control.px4_vehicle_command_owner_node import (
+    SEND_VEHICLE_COMMAND_SERVICE,
 )
 
 
 FLIGHT_STATUS_TOPIC = "/uav/px4/flight_status"
 SET_FLIGHT_ENABLE_SERVICE = "/uav/px4/set_flight_enable"
-VEHICLE_COMMAND_TOPIC = "/fmu/in/vehicle_command"
 VEHICLE_COMMAND_ACK_TOPIC = "/fmu/out/vehicle_command_ack"
 VEHICLE_LAND_DETECTED_TOPIC = "/fmu/out/vehicle_land_detected"
 PLANNER_STATUS_TOPIC = "/uav/planner/status"
@@ -81,6 +83,10 @@ EXTERNAL_SCENE_OBSTACLES_TOPIC = "/uav/isaac/scene/obstacles"
 EXTERNAL_SCENE_START_TOPIC = "/uav/isaac/scene/start"
 EXTERNAL_SCENE_GOAL_TOPIC = "/uav/isaac/scene/goal"
 ISAAC_BRIDGE_STATUS_TOPIC = "/uav/isaac/bridge_status"
+MSG_SUPERVISOR_DISABLED = (
+    "SITL flight supervisor starts disabled; lifecycle commands "
+    "use the sole VehicleCommand owner"
+)
 
 
 class Px4SitlFlightSupervisorNode(Node):
@@ -241,11 +247,6 @@ class Px4SitlFlightSupervisorNode(Node):
         self._goal_publisher = self.create_publisher(
             PoseStamped, SCENE_GOAL_TOPIC, durable_qos()
         )
-        self._command_publisher = self.create_publisher(
-            self._VehicleCommand,
-            VEHICLE_COMMAND_TOPIC,
-            px4_input_qos(),
-        )
         self._status_publisher = self.create_publisher(
             Px4FlightStatus, FLIGHT_STATUS_TOPIC, qos
         )
@@ -266,11 +267,11 @@ class Px4SitlFlightSupervisorNode(Node):
         self._tracking_client = self.create_client(
             SetBool, SET_TRACKING_ENABLE_SERVICE
         )
-        self._timer = self.create_timer(0.05, self._tick)
-        self.get_logger().warning(
-            "SITL flight supervisor starts disabled and is the sole "
-            "VehicleCommand publisher"
+        self._vehicle_command_client = self.create_client(
+            SendPx4VehicleCommand, SEND_VEHICLE_COMMAND_SERVICE
         )
+        self._timer = self.create_timer(0.05, self._tick)
+        self.get_logger().warning(MSG_SUPERVISOR_DISABLED)
 
     def _now_seconds(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9
@@ -674,21 +675,22 @@ class Px4SitlFlightSupervisorNode(Node):
                 now,
             )
 
-    def _request_service(self, key, client, request, now: float) -> None:
+    def _request_service(self, key, client, request, now: float) -> bool:
         previous = self._last_action_time.get(key, -math.inf)
         if now - previous < self.config.command_retry_s:
-            return
+            return False
         future = self._pending_services.get(key)
         if future is not None and not future.done():
-            return
+            return False
         if not client.service_is_ready():
-            return
+            return False
         self._last_action_time[key] = now
         future = client.call_async(request)
         self._pending_services[key] = future
         future.add_done_callback(
             lambda completed, action=key: self._service_done(action, completed)
         )
+        return True
 
     def _service_done(self, action: str, future) -> None:
         try:
@@ -714,24 +716,17 @@ class Px4SitlFlightSupervisorNode(Node):
         **parameters: float,
     ) -> None:
         key = f"vehicle_command_{command}"
-        previous = self._last_action_time.get(key, -math.inf)
-        if now - previous < self.config.command_retry_s:
-            return
-        self._last_action_time[key] = now
-        message = self._VehicleCommand()
-        message.timestamp = self.get_clock().now().nanoseconds // 1000
+        request = SendPx4VehicleCommand.Request()
         for index in range(1, 8):
             value = float(parameters.get(f"param{index}", 0.0))
-            setattr(message, f"param{index}", value)
-        message.command = int(command)
-        message.target_system = 1
-        message.target_component = 1
-        message.source_system = 1
-        message.source_component = 1
-        message.from_external = True
-        self._command_publisher.publish(message)
-        self._vehicle_command_count += 1
-        self.get_logger().info(f"VEHICLE_COMMAND command={command}")
+            setattr(request, f"param{index}", value)
+        request.command = int(command)
+        requested = self._request_service(
+            key, self._vehicle_command_client, request, now
+        )
+        if requested:
+            self._vehicle_command_count += 1
+            self.get_logger().info(f"VEHICLE_COMMAND command={command}")
 
     def _publish_takeoff_scene(self) -> None:
         if self._vehicle_odometry is None or self._scene_kind == "takeoff":

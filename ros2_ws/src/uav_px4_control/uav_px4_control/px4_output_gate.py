@@ -144,11 +144,16 @@ class Px4OutputSafetyGate:
                 mux is not None
                 and mux.active_source != self._safe_active_source
             ):
-                state = Px4OutputGateState.DISABLED_STATE_CHANGE
-                reason = "active control source changed while gate was enabled"
-                self.fault_latched = self.config.latch_faults
-                self.enabled = False
-                healthy = False
+                if self.config.allow_controlled_mux_handoff:
+                    self._safe_active_source = mux.active_source
+                else:
+                    state = Px4OutputGateState.DISABLED_STATE_CHANGE
+                    reason = (
+                        "active control source changed while gate was enabled"
+                    )
+                    self.fault_latched = self.config.latch_faults
+                    self.enabled = False
+                    healthy = False
 
         self._set_state(state, reason)
         return Px4OutputGateResult(
@@ -282,7 +287,10 @@ class Px4OutputSafetyGate:
             math.isfinite(age)
             and 0.0 <= age <= self.config.selected_command_timeout_s
             and mux.selected_command_valid
-            and not mux.hold_active
+            and (
+                not mux.hold_active
+                or self.config.allow_controlled_mux_handoff
+            )
             and bool(mux.active_source)
         )
 

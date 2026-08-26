@@ -50,6 +50,7 @@ class Px4MappingConfig:
     latch_faults: bool = True
     require_explicit_enable: bool = True
     lock_vehicle_state_signature: bool = True
+    allow_controlled_mux_handoff: bool = False
 
     def __post_init__(self) -> None:
         """Reject expanded, non-finite, or contradictory limits."""
@@ -75,6 +76,7 @@ class Px4MappingConfig:
             "latch_faults",
             "require_explicit_enable",
             "lock_vehicle_state_signature",
+            "allow_controlled_mux_handoff",
         )
         for name in boolean_fields:
             if not isinstance(getattr(self, name), bool):

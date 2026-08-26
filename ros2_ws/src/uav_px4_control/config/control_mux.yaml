@@ -4,6 +4,8 @@ control_mux:
     default_source: HOLD
     publish_rate_hz: 50.0
     astar_timeout_s: 0.25
+    lifecycle_timeout_s: 0.20
+    bc_timeout_s: 0.20
     joystick_timeout_s: 0.20
     navrl_timeout_s: 0.20
     hold_timeout_s: 0.50

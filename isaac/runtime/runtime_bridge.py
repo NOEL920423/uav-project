@@ -71,6 +71,9 @@ BOOTSTRAP_SCENE_ROOT = "/World/BootstrapScene"
 SCENE_ROOT = "/World/GeneratedEpisode"
 CAMERA_WIDTH = FPV_RGB_WIDTH
 CAMERA_HEIGHT = FPV_RGB_HEIGHT
+MSG_WEBRTC_VIEWPORT = (
+    "[IsaacRuntimeBridge] WebRTC viewport uses the fixed TOP camera."
+)
 
 JPEG_QUALITY = 85
 DEPTH_PUBLISH_PERIOD_S = 0.20
@@ -221,6 +224,10 @@ class IsaacRuntimeBridge:
         self._depth_error = "disabled"
         self._fpv_camera_position = None
         self._observer_camera_position = None
+        self._observer_viewport_requested = (
+            os.environ.get("UAV_OBSERVER_VIEWPORT", "0") == "1"
+        )
+        self._observer_viewport_selected = False
         if self._camera_enabled:
             self._setup_camera()
         self._episode_command_subscription = self._node.create_subscription(
@@ -326,10 +333,25 @@ class IsaacRuntimeBridge:
             )
             self._observer_camera_error = "warming"
             self._depth_error = "warming"
+            if self._observer_viewport_requested:
+                self._select_observer_viewport()
         print(
             f"[IsaacRuntimeBridge] FPV render product: "
             f"{CAMERA_WIDTH}x{CAMERA_HEIGHT} JPEG quality {JPEG_QUALITY}"
         )
+
+    def _select_observer_viewport(self):
+        """Show the fixed observer camera without changing its render product."""
+        from omni.kit.viewport.utility import get_active_viewport
+
+        viewport = get_active_viewport()
+        if viewport is None:
+            return False
+        viewport.set_active_camera(OBSERVER_CAMERA_PATH)
+        if not self._observer_viewport_selected:
+            print(MSG_WEBRTC_VIEWPORT)
+        self._observer_viewport_selected = True
+        return True
 
     def _episode_command_callback(self, message):
         """Apply one seeded scene only while the vehicle is safely landed."""
@@ -697,6 +719,11 @@ class IsaacRuntimeBridge:
     def _on_update(self, _event):
         if self._stopped:
             return
+        if (
+            self._observer_viewport_requested
+            and not self._observer_viewport_selected
+        ):
+            self._select_observer_viewport()
         rclpy.spin_once(self._node, timeout_sec=0.0)
         now_monotonic = time.monotonic()
         if now_monotonic - self._last_publish_monotonic < PUBLISH_PERIOD_S:

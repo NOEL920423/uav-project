@@ -6,6 +6,7 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).parents[1] / "uav_px4_control"
 SUPERVISOR = PACKAGE / "px4_sitl_flight_supervisor_node.py"
+COMMAND_OWNER = PACKAGE / "px4_vehicle_command_owner_node.py"
 FLIGHT_CONFIG = PACKAGE.parent / "config" / "px4_sitl_flight.yaml"
 
 
@@ -45,12 +46,12 @@ def test_vehicle_command_has_exactly_one_tracked_owner():
     for source in sorted(PACKAGE.glob("*.py")):
         if "/fmu/in/vehicle_command" in _publisher_topics(source):
             owners.append(source.name)
-    assert owners == [SUPERVISOR.name]
+    assert owners == [COMMAND_OWNER.name]
 
 
 def test_flight_supervisor_does_not_duplicate_setpoint_publishers():
     """The supervisor leaves both Phase 8 setpoint topics to the streamer."""
-    assert _publisher_topics(SUPERVISOR) == ["/fmu/in/vehicle_command"]
+    assert _publisher_topics(SUPERVISOR) == []
 
 
 def test_supervisor_accepts_existing_phase4_trajectory_provenance():

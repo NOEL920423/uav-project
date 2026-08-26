@@ -65,13 +65,14 @@ Commands:
   isaac-bc-collect  Collect synchronized clean RGB/state/A* demonstrations
   latent-prepare    Encode demonstrations and calculate train-only normalization
   latent-bc-train   Train the 72-D latent/state BC actor
-  bc-closed-loop    Evaluate BC closed-loop on unseen Isaac city seeds
+  bc-closed-loop    Deprecated alias for the software surrogate evaluator
   ppo-train        Advanced PPO command; most users should run ./train_ppo.sh 50k
   dataset-generate-synthetic  Create a labeled software-only BC fixture
   dataset-check   Validate a versioned BC dataset and print statistics
   bc-smoke-test   Run the mandatory tiny-overfit/checkpoint smoke test
   bc-train        Train and offline-evaluate the formal BC baseline
-  bc-eval         Evaluate the trained BC baseline closed-loop on unseen seeds
+  bc-eval         Fly a TOP RGB BC policy through Isaac/Pegasus/PX4
+  bc-eval-surrogate  Run the legacy rendering and custom-dynamics evaluator
   ml-test         Run ROS/Isaac-independent ML regression tests
   px4-stream-offline-check  Validate the PX4-independent stream boundary
   px4-sitl-doctor     Read-only check of an already-running SITL/XRCE graph
@@ -113,13 +114,13 @@ Examples:
   ./uav isaac-bc-collect --headless --enable_cameras
   ./uav latent-prepare
   ./uav latent-bc-train
-  ./uav bc-closed-loop --headless --enable_cameras
+  ./uav bc-eval-surrogate --episodes 20
   ./train_ppo.sh 50k
   ./uav dataset-generate-synthetic --output datasets/bc_v0 --episodes 8
   ./uav dataset-check --dataset datasets/bc_v0
   ./uav bc-smoke-test --device cpu
   ./uav bc-train --dataset bc_expert_cube --epochs 500
-  ./uav bc-eval --episodes 20
+  ./uav bc-eval --image-source top_rgb --episodes 1 --visible
   ./uav ml-test
   ./uav px4-stream-offline-check
   ./uav px4-sitl-doctor
@@ -964,6 +965,30 @@ internal_expert_run_episode() {
     info "Expert episode launch status=$launch_status evidence=$episode_evidence"
 }
 
+internal_bc_flight_run() {
+    local result_path="$1"
+    local episode="$2"
+    local random_seed="$3"
+    local image_source="$4"
+    local checkpoint_path="$5"
+    local ml_python="$6"
+    local device="$7"
+    clean_bootstrap required
+    require_px4_msgs
+    local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-180}"
+    warn "AUTHORIZED BC SITL FLIGHT episode=$episode seed=$random_seed"
+    timeout "${timeout_seconds}s" \
+        ros2 launch uav_px4_control bc_flight.launch.py \
+        repository_root:="$REPO_ROOT" \
+        result_path:="$result_path" \
+        episode:="$episode" \
+        seed:="$random_seed" \
+        image_source:="$image_source" \
+        checkpoint_path:="$checkpoint_path" \
+        ml_python:="$ml_python" \
+        device:="$device"
+}
+
 stop_managed_process_group() {
     local process_id="$1"
     local label="$2"
@@ -1199,6 +1224,9 @@ internal_dispatch() {
             ;;
         expert-run-episode)
             internal_expert_run_episode "$@"
+            ;;
+        bc-flight-run)
+            internal_bc_flight_run "$@"
             ;;
         topics)
             clean_bootstrap required
@@ -1471,6 +1499,7 @@ main() {
         bc-closed-loop)
             require_repository
             shift
+            warn "bc-closed-loop is deprecated; use bc-eval-surrogate"
             [[ -x "$ISAACLAB_SH" ]] || die "IsaacLab launcher is missing: $ISAACLAB_SH"
             TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p scripts/ml/evaluate_isaac_bc_closed_loop.py "$@"
             ;;
@@ -1503,10 +1532,11 @@ main() {
         bc-eval)
             require_repository
             shift
-            if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-                python3 -m uav_ml.tools.bc_evaluation --help
-                return
-            fi
+            python3 -m uav_ml.tools.bc_flight_evaluation "$@"
+            ;;
+        bc-eval-surrogate)
+            require_repository
+            shift
             [[ -x "$ISAACLAB_SH" ]] || die "IsaacLab launcher is missing: $ISAACLAB_SH"
             TERM="${TERM:-xterm}" "$ISAACLAB_SH" -p \
                 scripts/ml/evaluate_bc_baseline.py \
@@ -1538,7 +1568,7 @@ main() {
             shift
             python3 -m uav_ml.tools.validate_expert_collection "$@"
             ;;
-        expert-runtime-wait|expert-run-episode)
+        expert-runtime-wait|expert-scene-prepare|expert-run-episode|bc-flight-run)
             require_repository
             require_ros_base
             require_workspace_overlay

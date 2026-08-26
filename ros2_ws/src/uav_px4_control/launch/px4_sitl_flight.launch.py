@@ -134,6 +134,11 @@ def generate_launch_description() -> LaunchDescription:
         ),
         Node(
             package="uav_px4_control",
+            executable="px4_vehicle_command_owner_node",
+            output="screen",
+        ),
+        Node(
+            package="uav_px4_control",
             executable="px4_sitl_flight_supervisor_node",
             parameters=[flight, {
                 "use_external_scene": use_external_scene,

@@ -53,7 +53,7 @@ string status_message
     assert text(path) == expected
 
 
-def test_mux_config_contains_exact_nineteen_contract_parameters() -> None:
+def test_mux_config_contains_exact_contract_parameters() -> None:
     """Keep one installed YAML with all locked Phase 6 mux parameters."""
     config = text(PACKAGE / "config/control_mux.yaml")
     names = {
@@ -64,7 +64,8 @@ def test_mux_config_contains_exact_nineteen_contract_parameters() -> None:
     names.remove("use_sim_time")
     expected = {
         "default_source", "publish_rate_hz", "astar_timeout_s",
-        "joystick_timeout_s", "navrl_timeout_s", "hold_timeout_s",
+        "lifecycle_timeout_s", "bc_timeout_s", "joystick_timeout_s",
+        "navrl_timeout_s", "hold_timeout_s",
         "switch_hold_duration_s", "minimum_source_dwell_time_s",
         "maximum_selected_speed_mps",
         "maximum_selected_horizontal_speed_mps",
