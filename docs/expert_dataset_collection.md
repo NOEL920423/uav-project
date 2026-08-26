@@ -13,37 +13,39 @@ committed.
 
 ## Commands
 
-Add 100 episodes to a new dataset:
+Collect 100 accepted, validated successful episodes into a new dataset:
 
 ```bash
 ./uav expert-collect --episodes 100
 ```
 
-If that 100-episode run is interrupted, resume it with the same count:
+If that run is interrupted, resume toward the same dataset-wide accepted target:
 
 ```bash
 ./uav expert-collect --episodes 100 --resume
 ```
 
-`--episodes` is the number of episodes to add in the current run, not a fixed
-dataset-wide target. After a run completes, any positive count can be appended
-without `--resume`. For example, this adds 5 episodes to an existing dataset:
+`--episodes` is the dataset-wide number of accepted successful episodes, not
+the number of seed attempts. Existing accepted episodes count toward the target.
+For example, if a dataset already has 8 accepted episodes, this collects 92 more:
 
 ```bash
-./uav expert-collect --episodes 5
+./uav expert-collect --episodes 100 --resume
 ```
 
-If that 5-episode run stops partway through, use
-`./uav expert-collect --episodes 5 --resume`. The resume count must match the
-unfinished run so the tool cannot accidentally create a second plan or skip
-episodes. When no run is unfinished, `--resume` is also accepted and starts a
-new append run. There is no configured total-episode ceiling; IDs retain at
-least six digits and expand naturally after `episode_999999`.
+Each rejected attempt advances to the next canonical seed and remains in the
+append-only attempt history. Collection stops when the accepted target is met
+or the total attempt limit is reached. The default limit is
+`ceil(1.5 * --episodes)`; it can be set explicitly:
 
-The manifest's accumulated `target_episodes` grows after each append. Completed
-episode directories are never overwritten. Any incomplete directory is moved
-to the Git-ignored recovery log before that episode is retried with its
-original seed.
+```bash
+./uav expert-collect --episodes 100 --max-attempts 150 --resume
+```
+
+Completed episode directories are never overwritten. Any incomplete directory
+is moved to the Git-ignored recovery log before that interrupted attempt is
+resumed. Episode IDs retain at least six digits and expand naturally after
+`episode_999999`.
 
 Inspect command options or validate an existing completed collection:
 
@@ -87,11 +89,14 @@ runs the finite guarded ASTAR_EXPERT flight, records synchronized streams,
 lands, attaches safe terminal evidence, validates the episode, cleans all owned
 process groups, and advances automatically.
 
-Normal mission failures (for example a safe A* or goal failure) are finalized,
-validated for landed/disarmed evidence, recorded as failed episodes, and do not
-stop later episodes. Missing recorder/evidence, unsafe terminal state, runtime
-readiness failure, or loss of process ownership is an infrastructure failure;
-the batch stops and leaves a resumable manifest.
+Normal mission failures (collision/tracking, blocked scene, safe A*/goal
+failure, image QA failure, or episode dataset validation failure) are finalized,
+recorded as rejected attempts, and do not stop later seeds. Their episode
+directories remain in place and `rejected_attempts/attempt_XXXXXX.json` indexes
+the seed, category, reason, episode/flight/validation evidence, and runtime log.
+Missing recorder/evidence, unsafe terminal state, corrupt filesystem output,
+runtime readiness failure, internal exception, or loss of process ownership is
+an infrastructure failure; the batch aborts and leaves a resumable manifest.
 
 Planner readiness accepts both a separately validated B-spline and the
 planner's collision-checked `ASTAR_FALLBACK` final path. A rejected B-spline
@@ -100,11 +105,11 @@ therefore does not discard a valid A* route. The formal takeoff supervisor's
 terminal-position tolerance, preventing a settled takeoff trajectory from
 remaining just below the mission-transition boundary.
 
-`collection_manifest.json` is the resume source of truth. It stores the
-append-only episode/seed plan, collection-run and append history, per-episode
-lifecycle status, accepted/rejected counts,
-terminal reason, outcome, dataset bytes, Visual QA status, and final aggregate
-validation. `dataset_manifest.json` retains the unchanged BC dataset contract.
+`collection_manifest.json` is the resume source of truth and complete audit
+trail for accepted and rejected attempts. `dataset_manifest.json` is the
+BC-facing accepted manifest and contains only accepted episode IDs.
+`collection_summary.json` records requested, attempted, accepted, rejected,
+rejection categories, infrastructure failures, and completion state.
 
 ## Progress and Visual QA
 
