@@ -1,16 +1,19 @@
-# FPV RGB Autoencoder baseline
+# FPV/TOP/depth Autoencoder baseline
 
 ## Purpose and boundary
 
-This baseline tests whether the legacy FPV RGB collection can train a compact
-image representation. It does not train a flight policy and does not report
-navigation success. The legacy images expose simulator-only red goal and cyan
-path/waypoint geometry, so this result is not map-free navigation evidence.
+This is Stage A of the two-stage baseline: train `RgbAutoencoderV0` with
+reconstruction MSE. Stage B freezes its encoder and trains BC separately.
+There is no joint reconstruction/action loss or navigation reward here.
 
 ## Data split
 
-The audit-selected data uses A* expert FPV only. TOP observer images and two BC
-policy rollouts are excluded. Splits are disjoint at the episode level:
+The default dataset is the formal expert collection. `fpv_rgb`, `top`, and
+`fpv_depth` all use the complete formal TOP comparison cohort. Splits are
+deterministic, disjoint at episode level, and use the same 80/10/10 algorithm
+and seed as BC. The older legacy dataset remains available by explicitly
+passing `--dataset ./uav_vision_dataset --split-file
+uav_vision_dataset/_audit/autoencoder_split.json` with `fpv_rgb`.
 
 | Split | Episodes | FPV frames |
 |---|---:|---:|
@@ -23,9 +26,10 @@ selects the checkpoint; test is evaluated once after training.
 
 ## Input, latent, and output
 
-External input is one FPV RGB frame. The loader converts it to RGB, resizes the
-legacy 960x540 frame to 128x72 with bilinear interpolation, converts HWC to CHW,
-and scales bytes to `[0,1]` float32.
+RGB sources use RGB conversion, bilinear 128x72 resize, CHW layout, and
+`[0,1]` scaling. Depth uses recorded uint16 millimetres, maps invalid zero to
+zero, clips valid values to 50--30000 mm, scales to `[0,1]`, and repeats the
+single channel three times to retain the existing architecture and 64D latent.
 
 ```text
 model input:    [batch, 3, 72, 128] float32 RGB in [0,1]
@@ -51,12 +55,41 @@ Command:
 
 ```bash
 ./uav ae-train \
+  --dataset ./uav_vision_dataset \
+  --split-file uav_vision_dataset/_audit/autoencoder_split.json \
+  --image-source fpv_rgb \
   --epochs 20 \
   --batch-size 128 \
   --workers 4 \
   --device cuda \
   --output-dir autoencoder_runs/rgb_ae_v0_baseline_20260811
 ```
+
+Use a source-matched encoder for Stage B:
+
+```bash
+./uav ae-train --dataset bc_expert_cube --epochs 200
+./uav bc-train --dataset bc_expert_cube --epochs 500
+```
+
+TOP is the default image source. AE output is automatically placed under
+`artifacts/experiments/autoencoder/<dataset>/top/run_<timestamp>`, and a
+completed provenance index lets BC select the matching encoder without a glob.
+The advanced `--image-source`, `--output-dir`, and BC `--encoder` overrides
+remain available.
+
+Each training CLI starts a managed localhost TensorBoard server by default and
+keeps it running after successful training until Ctrl+C; use `--no-tensorboard`
+for tests or batch jobs. Each run writes
+`reconstruction_loss_curves.png`, preserves the legacy
+`loss_curve.png`, and writes TensorBoard scalars
+`ae/train_reconstruction_loss` and
+`ae/validation_reconstruction_loss`. Fixed validation samples are logged as
+`ae/<image_source>/validation_original_vs_reconstructed` at the configured
+image interval. Start TensorBoard with:
+
+After training, the retained events can still be reopened manually with
+`tensorboard --logdir <run-directory>/tensorboard`.
 
 Best checkpoint was epoch 20:
 

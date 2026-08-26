@@ -16,13 +16,13 @@ committed.
 Collect 100 accepted, validated successful episodes into a new dataset:
 
 ```bash
-./uav expert-collect --episodes 100
+./uav expert-collect --episodes 100 --dataset bc_expert_cube
 ```
 
 If that run is interrupted, resume toward the same dataset-wide accepted target:
 
 ```bash
-./uav expert-collect --episodes 100 --resume
+./uav expert-collect --episodes 100 --dataset bc_expert_cube --resume
 ```
 
 `--episodes` is the dataset-wide number of accepted successful episodes, not
@@ -30,7 +30,7 @@ the number of seed attempts. Existing accepted episodes count toward the target.
 For example, if a dataset already has 8 accepted episodes, this collects 92 more:
 
 ```bash
-./uav expert-collect --episodes 100 --resume
+./uav expert-collect --episodes 100 --dataset bc_expert_cube --resume
 ```
 
 Each rejected attempt advances to the next canonical seed and remains in the
@@ -39,7 +39,8 @@ or the total attempt limit is reached. The default limit is
 `ceil(1.5 * --episodes)`; it can be set explicitly:
 
 ```bash
-./uav expert-collect --episodes 100 --max-attempts 150 --resume
+./uav expert-collect --episodes 100 --dataset bc_expert_cube \
+  --max-attempts 150 --resume
 ```
 
 Completed episode directories are never overwritten. Any incomplete directory

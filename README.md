@@ -23,8 +23,8 @@ bootstrap is `isaac/runtime/bootstrap.py`.
 The formal resumable expert dataset workflow is:
 
 ```bash
-./uav expert-collect --episodes 100           # append 100 episodes
-./uav expert-collect --episodes 100 --resume  # resume that run if interrupted
+./uav expert-collect --episodes 100 --dataset bc_expert_cube
+./uav expert-collect --episodes 100 --dataset bc_expert_cube --resume
 ./uav expert-collect --help
 ```
 
@@ -60,8 +60,10 @@ metrics, and plots are not committed.
 
 ```bash
 ./uav ml-doctor
+python3 -m pip install -r requirements-ml.txt
+./uav ae-train --dataset bc_expert_cube --epochs 200
 ./uav bc-train --help
-./uav bc-train
+./uav bc-train --dataset bc_expert_cube --epochs 500
 ./uav bc-eval --help
 ./uav bc-eval --episodes 20
 ./uav ml-test

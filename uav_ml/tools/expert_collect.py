@@ -20,6 +20,11 @@ from PIL import UnidentifiedImageError
 
 from isaac.runtime.episode_scene import generate_episode_scene
 from uav_ml.tools.expert_visual_qa import create_contact_sheet
+from uav_ml.tools.training_cli import (
+    DatasetLocation,
+    print_dataset_location,
+    resolve_dataset,
+)
 from uav_ml.tools.validate_expert_collection import (
     COLLECTION_MANIFEST,
     DEFAULT_AUTOENCODER,
@@ -1533,6 +1538,13 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--dataset",
+        help=(
+            "dataset name under artifacts/datasets, or an explicit relative/"
+            "absolute path (default: bc_expert_cylinder_v1)"
+        ),
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help=(
@@ -1574,12 +1586,17 @@ def main() -> int:
         parser.error("--seed requires --episodes 1")
     if args.seed is not None and args.resume:
         parser.error("--seed starts an isolated run and cannot use --resume")
+    if args.dataset is not None and (args.dry_run or args.seed is not None):
+        parser.error(
+            "--dataset cannot be combined with isolated --dry-run/--seed modes"
+        )
     repository_root = Path(__file__).resolve().parents[2]
     if args.dry_run:
         dry_root = repository_root / "run_logs" / f"expert-dry-run_{_stamp()}"
         dataset_root = dry_root / "mock_dataset"
         backend: SubprocessBackend | DryRunBackend = DryRunBackend()
         runtime_root = dry_root / "runtime"
+        dataset_location = DatasetLocation(dataset_root.name, dataset_root.resolve())
     elif args.seed is not None:
         dataset_root = (
             repository_root
@@ -1589,10 +1606,17 @@ def main() -> int:
         )
         backend = SubprocessBackend(repository_root)
         runtime_root = None
+        dataset_location = DatasetLocation(dataset_root.name, dataset_root.resolve())
     else:
-        dataset_root = repository_root / DEFAULT_DATASET
+        dataset_location = resolve_dataset(
+            args.dataset or DEFAULT_DATASET,
+            must_exist=False,
+            project_root=repository_root,
+        )
+        dataset_root = dataset_location.path
         backend = SubprocessBackend(repository_root)
         runtime_root = None
+    print_dataset_location(dataset_location)
     collector = ExpertCollector(
         repository_root=repository_root,
         dataset_root=dataset_root,

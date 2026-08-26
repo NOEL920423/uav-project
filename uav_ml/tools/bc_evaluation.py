@@ -152,6 +152,12 @@ class BcPolicyRuntime:
             raise ValueError("checkpoint is not a formal BC baseline checkpoint")
         if payload.get("model_class") != "LatentBcPolicy":
             raise ValueError("checkpoint model class is not LatentBcPolicy")
+        image_source = payload.get("image_source", "fpv_rgb")
+        if image_source != "fpv_rgb":
+            raise ValueError(
+                f"closed-loop runtime currently supplies FPV RGB, but this "
+                f"checkpoint requires image_source={image_source!r}"
+            )
         if payload.get("physical_action_limits") != {
             "v_forward_mps": 1.0,
             "v_right_mps": 0.8,

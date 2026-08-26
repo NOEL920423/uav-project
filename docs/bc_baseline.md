@@ -4,8 +4,8 @@ This is the formal first behavior-cloning reference for the canonical
 high-rise expert dataset. It deliberately remains small and reproducible:
 
 ```text
-FPV RGB 320x180
-  -> PIL RGB, bilinear resize to 128x72, float32 [0,1]
+FPV RGB / TOP RGB / FPV depth
+  -> source-specific preprocessing to 3x72x128 float32 [0,1]
   -> frozen RgbAutoencoderV0
   -> latent64
 
@@ -19,8 +19,8 @@ latent64 + body-state8
 The 8D state is body forward/right velocity, body-frame unit goal direction,
 goal distance divided by 10 m and clipped to 1, and the previous normalized
 three-axis action. Physical action limits remain 1.0 m/s forward, 0.8 m/s
-right and 1.0 rad/s yaw. The policy receives no depth, observer camera, map,
-obstacle truth, full scene state, or A* action.
+right and 1.0 rad/s yaw. Only the selected image stream is used. The policy
+receives no map, obstacle truth, full scene state, reward, or auxiliary target.
 
 `LatentBcPolicy` is reused because it already implements the required
 72D-to-3D MLP. The older class named `BcPolicyV0` has a depth/state input and
@@ -33,23 +33,30 @@ Run training explicitly after the dataset collection has completed and passed
 its validator:
 
 ```bash
-./uav bc-train
-./uav bc-train --epochs 100
+./uav bc-train --dataset bc_expert_cube --epochs 500
+./uav bc-train --dataset bc_expert_cube --image-source fpv_rgb --epochs 100 \
+  --encoder <fpv-ae-run>/best.pt
+./uav bc-train --dataset bc_expert_cube --image-source fpv_depth --epochs 100 \
+  --encoder <depth-ae-run>/best.pt
 ./uav bc-train --help
 ```
 
 Defaults are the formal dataset at
-`artifacts/datasets/bc_expert_highrise_v1`, the existing frozen encoder at
+`artifacts/datasets/bc_expert_cylinder_v1`, the existing frozen encoder at
 `autoencoder_runs/rgb_ae_v0_baseline_20260811/best.pt`, Adam with learning rate
-`1e-3`, batch size 64, at most 100 epochs, patience 12, and a fixed seed.
+`1e-3`, batch size 64, at most 100 epochs, patience 12, and a fixed seed. TOP
+is the default image source. Without `--encoder`, BC reads only the completed
+matching AE provenance index for the same dataset/source and validates its
+summary, checkpoint metadata, hash, preprocessing, architecture, and 64D
+latent contract. It never falls back to another source or dataset.
 
-Before tensor construction, the tool independently checks the collection and
-validation artifacts, successful terminal status, per-episode validation,
-encoder hash, sample counts, finite state/action values, normalized action
-bounds, synchronization tolerance, and every FPV image. Failed, missing, or
-corrupt episodes are excluded; data are never replaced by zeros or synthetic
-actions. The terminal prints total, usable and excluded episodes, reasons, and
-accepted samples.
+FPV RGB is read from `samples.csv.image_path`. TOP RGB and FPV depth are joined
+from `auxiliary.csv.observer_rgb_path` and `fpv_depth_path` by exact
+`episode_id`/`sample_id` identity and primary timestamp. Availability, matched
+status, timestamp error, and files are checked; there is no source fallback.
+All three sources use the complete `fixed_global_top` comparison cohort and
+therefore receive the same deterministic split for the same seed. Sparse
+legacy TOP episodes are explicitly excluded from this comparison cohort.
 
 The split is deterministic and episode-level, approximately 80/10/10. Frames
 from one episode cannot cross train, validation, or test. The test split is
@@ -68,6 +75,7 @@ artifacts/experiments/bc_baseline/run_<UTC timestamp>/
   training_history.csv
   metrics.json
   summary.json
+  tensorboard/events.out.tfevents.*
   plots/loss_curves.png
   plots/per_action_rmse.png
   plots/expert_vs_predicted.png
@@ -84,6 +92,24 @@ default.
 Offline metrics include equal-component normalized action MSE plus per-action
 MSE, MAE, and RMSE. They answer: **can BC imitate held-out expert actions?**
 They do not establish that the UAV can navigate successfully.
+
+BC output is automatically placed under
+`artifacts/experiments/bc/<dataset>/<source>/run_<timestamp>`. The CLI starts a
+managed TensorBoard server by default and keeps it running after successful
+training until Ctrl+C; `--no-tensorboard` disables only the server, not
+event-file recording. TensorBoard records
+`bc/train_action_loss` and
+`bc/validation_action_loss` each epoch. It records
+`bc/test_forward_rmse`, `bc/test_right_rmse`, and
+`bc/test_yaw_rate_rmse` once after reloading `best.pt`. Start it with:
+
+Retained events can later be reopened with
+`tensorboard --logdir <run-directory>/tensorboard`.
+
+For a remote server, use an SSH tunnel such as
+`ssh -L 6006:localhost:6006 user@server`, then open
+`http://localhost:6006` locally. TOP/depth checkpoints are offline baselines;
+the current closed-loop runtime is fail-closed because it supplies FPV RGB.
 
 ## Closed-loop evaluation
 

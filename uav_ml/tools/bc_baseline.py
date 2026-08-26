@@ -18,8 +18,17 @@ from PIL import Image
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ModuleNotFoundError:  # Keep --help usable before optional install.
+    SummaryWriter = None  # type: ignore[assignment,misc]
 
-from uav_ml.datasets.rgb_episode_dataset import preprocess_rgb_image
+from uav_ml.datasets.expert_image_dataset import (
+    IMAGE_PREPROCESSING,
+    IMAGE_SOURCES,
+    preprocess_expert_image,
+    select_episode_images,
+)
 from uav_ml.models import (
     LatentBcPolicy,
     LatentBcPolicyConfig,
@@ -27,8 +36,14 @@ from uav_ml.models import (
     RgbAutoencoderV0,
 )
 from uav_ml.tools.validate_expert_collection import (
-    DEFAULT_AUTOENCODER,
     DEFAULT_DATASET,
+)
+from uav_ml.tools.training_cli import (
+    TensorBoardServer,
+    add_tensorboard_arguments,
+    experiment_run_directory,
+    resolve_dataset,
+    select_autoencoder_checkpoint,
 )
 from uav_ml.train_bc import resolve_device, set_seeds
 
@@ -133,11 +148,19 @@ def _validate_sample_row(dataset_root: Path, row: dict) -> None:
         image.verify()
 
 
-def audit_dataset(dataset_root: Path, encoder_checkpoint: Path) -> dict:
+def audit_dataset(
+    dataset_root: Path,
+    encoder_checkpoint: Path | None = None,
+    image_source: str = "fpv_rgb",
+) -> dict:
     """Select only complete, validated, readable successful episodes."""
     dataset_root = dataset_root.resolve()
-    encoder_checkpoint = encoder_checkpoint.resolve()
-    if not encoder_checkpoint.is_file():
+    if image_source not in IMAGE_SOURCES:
+        raise ValueError(f"unsupported image source: {image_source}")
+    encoder_checkpoint = (
+        encoder_checkpoint.resolve() if encoder_checkpoint is not None else None
+    )
+    if encoder_checkpoint is not None and not encoder_checkpoint.is_file():
         raise FileNotFoundError(
             f"frozen encoder checkpoint is missing: {encoder_checkpoint}"
         )
@@ -152,7 +175,25 @@ def audit_dataset(dataset_root: Path, encoder_checkpoint: Path) -> dict:
     entries = collection.get("episodes")
     if not isinstance(entries, list) or not entries:
         raise ValueError("collection manifest contains no episodes")
-    encoder_hash = _sha256(encoder_checkpoint)
+    encoder_hash = _sha256(encoder_checkpoint) if encoder_checkpoint else None
+    # When the dataset contains the formal one-to-one TOP stream, all image
+    # sources use that same cohort. This keeps FPV/TOP/depth comparisons on an
+    # identical episode universe while explicitly excluding legacy sparse TOP.
+    formal_top_episodes: set[str] = set()
+    for entry in entries:
+        episode_id = str(entry.get("episode_id", ""))
+        episode_path = dataset_root / episode_id / "episode.json"
+        if not episode_path.is_file():
+            continue
+        episode = _read_json(episode_path)
+        runtime = (
+            episode.get("available_sensor_streams", {}).get(
+                "runtime_status", {}
+            )
+        )
+        if runtime.get("phase10c_observer_mode") == "fixed_global_top":
+            formal_top_episodes.add(episode_id)
+    comparison_cohort_enabled = bool(formal_top_episodes)
     usable: list[dict] = []
     excluded: list[dict] = []
     reasons: Counter[str] = Counter()
@@ -166,6 +207,9 @@ def audit_dataset(dataset_root: Path, encoder_checkpoint: Path) -> dict:
             )
         else:
             reason = ""
+            if comparison_cohort_enabled and episode_id not in formal_top_episodes:
+                reason = "outside_formal_image_comparison_cohort"
+        if not reason:
             try:
                 episode_path = dataset_root / episode_id / "episode.json"
                 per_validation_path = (
@@ -181,15 +225,23 @@ def audit_dataset(dataset_root: Path, encoder_checkpoint: Path) -> dict:
                     or validation.get("episode_success") is not True
                 ):
                     raise ValueError("success/validation contract failed")
-                if validation.get("autoencoder_checkpoint_sha256") != encoder_hash:
-                    raise ValueError("encoder hash differs from validation")
                 with samples_path.open(newline="", encoding="utf-8") as stream:
                     rows = list(csv.DictReader(stream))
                 if not rows or len(rows) != int(validation.get("sample_count", -1)):
                     raise ValueError("accepted sample count is inconsistent")
                 for row in rows:
                     _validate_sample_row(dataset_root, row)
+                # Validate every selected input. Formal TOP cohort membership
+                # above makes each image-source run share the same episodes.
+                selected = select_episode_images(dataset_root, episode_id, image_source)
+                if len(selected) != len(rows):
+                    raise ValueError("selected image count differs from samples")
             except (OSError, KeyError, TypeError, ValueError) as error:
+                if image_source != "fpv_rgb":
+                    raise ValueError(
+                        f"{image_source} association failed loudly for "
+                        f"{episode_id}: {error}"
+                    ) from error
                 reason = f"invalid_or_corrupt:{error}"
             else:
                 usable.append({
@@ -214,11 +266,19 @@ def audit_dataset(dataset_root: Path, encoder_checkpoint: Path) -> dict:
         "format_version": FORMAT_VERSION,
         "created_utc": _utc_now(),
         "dataset_root": str(dataset_root),
+        "image_source": image_source,
+        "image_preprocessing": IMAGE_PREPROCESSING[image_source],
+        "comparison_cohort": (
+            "fixed_global_top_complete" if comparison_cohort_enabled else
+            "legacy_dataset_eligibility"
+        ),
         "collection_manifest": str(collection_path.resolve()),
         "collection_manifest_sha256": _sha256(collection_path),
         "collection_validation": str(validation_path.resolve()),
         "collection_validation_sha256": _sha256(validation_path),
-        "encoder_checkpoint": str(encoder_checkpoint),
+        "encoder_checkpoint": (
+            str(encoder_checkpoint) if encoder_checkpoint is not None else None
+        ),
         "encoder_sha256": encoder_hash,
         "total_episodes": len(entries),
         "usable_episodes": len(usable),
@@ -288,6 +348,7 @@ def _episode_arrays(
     encoder: RgbAutoencoderV0,
     device: torch.device,
     encode_batch_size: int,
+    image_source: str = "fpv_rgb",
 ) -> tuple[np.ndarray, np.ndarray]:
     with (dataset_root / episode_id / "samples.csv").open(
         newline="", encoding="utf-8"
@@ -301,16 +362,20 @@ def _episode_arrays(
         [[float(row[name]) for name in TARGET_FIELDS] for row in rows],
         dtype=np.float32,
     )
+    selected = select_episode_images(dataset_root, episode_id, image_source)
+    if len(selected) != len(rows):
+        raise ValueError(f"{episode_id}: selected image/sample count mismatch")
     latents = []
     for start in range(0, len(rows), encode_batch_size):
-        images = []
-        for row in rows[start:start + encode_batch_size]:
-            with Image.open(dataset_root / row["image_path"]) as image:
-                images.append(preprocess_rgb_image(
-                    image.convert("RGB"),
-                    image_width=encoder.config.image_width,
-                    image_height=encoder.config.image_height,
-                ))
+        images = [
+            preprocess_expert_image(
+                item["image_path"],
+                image_source,
+                image_width=encoder.config.image_width,
+                image_height=encoder.config.image_height,
+            )
+            for item in selected[start:start + encode_batch_size]
+        ]
         batch = torch.stack(images).to(device)
         with torch.inference_mode():
             latents.append(encoder.encode(batch).cpu().numpy())
@@ -327,8 +392,9 @@ def encode_splits(
     encoder: RgbAutoencoderV0,
     device: torch.device,
     encode_batch_size: int,
+    image_source: str = "fpv_rgb",
 ) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
-    """Encode FPV RGB once and return tensors grouped by episode split."""
+    """Encode selected images once and return tensors by episode split."""
     result = {}
     for split, episode_ids in split_manifest["splits"].items():
         observations = []
@@ -340,6 +406,7 @@ def encode_splits(
                 encoder,
                 device,
                 encode_batch_size,
+                image_source,
             )
             observations.append(observation)
             targets.append(target)
@@ -408,6 +475,8 @@ def _checkpoint(
     config: TrainingConfig,
     audit: dict,
     split_manifest: dict,
+    image_source: str,
+    encoder: RgbAutoencoderV0,
 ) -> dict:
     return {
         "format_version": FORMAT_VERSION,
@@ -430,11 +499,10 @@ def _checkpoint(
         "autoencoder_checkpoint_sha256": audit["encoder_sha256"],
         "encoder_architecture": "RgbAutoencoderV0",
         "encoder_frozen": True,
-        "encoder_preprocessing": (
-            "PIL RGB -> bilinear 128x72 -> CHW float32 [0,1]"
-        ),
-        "rgb_resolution": [320, 180],
-        "latent_dimension": 64,
+        "image_source": image_source,
+        "image_preprocessing": IMAGE_PREPROCESSING[image_source],
+        "encoder_preprocessing": IMAGE_PREPROCESSING[image_source],
+        "latent_dimension": encoder.config.latent_dimension,
         "observation_contract": "latent64_plus_body_state8_v1.0",
         "action_contract": "normalized_body_forward_right_yaw_v1.0",
         "physical_action_limits": PHYSICAL_ACTION_LIMITS,
@@ -559,8 +627,18 @@ def train_baseline(
     config: TrainingConfig,
     device_name: str,
     encode_batch_size: int = 128,
+    image_source: str = "fpv_rgb",
+    dataset_name: str | None = None,
+    tensorboard_enabled: bool = False,
+    tensorboard_port: int = 6006,
+    encoder_selection: str = "explicit",
 ) -> dict:
     """Run reproducible BC training and held-out offline evaluation."""
+    if SummaryWriter is None:
+        raise RuntimeError(
+            "TensorBoard is required; run: python3 -m pip install -r "
+            "requirements-ml.txt"
+        )
     if min(
         config.epochs,
         config.batch_size,
@@ -568,14 +646,35 @@ def train_baseline(
         encode_batch_size,
     ) <= 0 or config.learning_rate <= 0:
         raise ValueError("training counts and learning rate must be positive")
-    audit = audit_dataset(dataset_root, encoder_checkpoint)
+    audit = audit_dataset(dataset_root, encoder_checkpoint, image_source)
+    resolved_dataset_name = dataset_name or Path(audit["dataset_root"]).name
+    audit["dataset_name"] = resolved_dataset_name
     split_manifest = create_episode_split(audit, config.seed)
+    split_manifest["dataset_name"] = resolved_dataset_name
+    split_manifest["dataset_path"] = audit["dataset_root"]
     if output_dir.exists():
-        raise FileExistsError(f"refusing to overwrite experiment: {output_dir}")
-    output_dir.mkdir(parents=True)
+        unexpected = [
+            path for path in output_dir.iterdir() if path.name != "tensorboard"
+        ]
+        if unexpected:
+            raise FileExistsError(f"refusing to overwrite experiment: {output_dir}")
+    else:
+        output_dir.mkdir(parents=True)
     _write_json(output_dir / "dataset_audit.json", audit)
     _write_json(output_dir / "split_manifest.json", split_manifest)
-    _write_json(output_dir / "training_config.json", asdict(config))
+    training_config = {
+        **asdict(config),
+        "maximum_epochs_requested": config.epochs,
+        "dataset_name": resolved_dataset_name,
+        "dataset_path": audit["dataset_root"],
+        "image_source": image_source,
+        "image_preprocessing": IMAGE_PREPROCESSING[image_source],
+        "tensorboard_enabled": tensorboard_enabled,
+        "tensorboard_port": tensorboard_port,
+        "encoder_checkpoint": str(encoder_checkpoint.resolve()),
+        "encoder_selection": encoder_selection,
+    }
+    _write_json(output_dir / "training_config.json", training_config)
     print(
         "BC Dataset Eligibility\n"
         f"Total episodes     : {audit['total_episodes']}\n"
@@ -591,12 +690,51 @@ def train_baseline(
     encoder, encoder_payload = _load_frozen_encoder(
         encoder_checkpoint.resolve(), device
     )
+    checkpoint_source = encoder_payload.get("metadata", {}).get(
+        "image_source",
+        encoder_payload.get("metadata", {}).get("camera", "fpv_rgb"),
+    )
+    if checkpoint_source == "fpv":
+        checkpoint_source = "fpv_rgb"
+    if checkpoint_source != image_source:
+        raise ValueError(
+            f"encoder image_source={checkpoint_source!r} does not match "
+            f"requested {image_source!r}"
+        )
+    if encoder.config.latent_dimension != 64:
+        raise ValueError("formal BC baseline requires a 64D encoder latent")
+    print(
+        "========== BC Training ==========\n\n"
+        f"Dataset:\n{resolved_dataset_name}\n\n"
+        f"Resolved path:\n{audit['dataset_root']}\n\n"
+        f"Image source:\n{image_source}\n\n"
+        f"Usable episodes:\n{audit['usable_episodes']}\n\n"
+        "Train / Validation / Test:\n"
+        f"{split_manifest['episode_counts']['train']} / "
+        f"{split_manifest['episode_counts']['validation']} / "
+        f"{split_manifest['episode_counts']['test']}\n\n"
+        f"Maximum epochs:\n{config.epochs}\n\n"
+        f"Batch size:\n{config.batch_size}\n\n"
+        f"Learning rate:\n{config.learning_rate}\n\n"
+        f"Early stopping patience:\n"
+        f"{config.early_stopping_patience}\n\n"
+        f"TensorBoard:\n{'enabled' if tensorboard_enabled else 'disabled'}\n\n"
+        f"TensorBoard port:\n{tensorboard_port}\n\n"
+        f"Encoder:\n{encoder_checkpoint.resolve()}\n\n"
+        f"Encoder selection:\n{encoder_selection}\n\n"
+        f"Encoder image source:\n{checkpoint_source}\n\n"
+        f"Output:\n{output_dir.resolve()}\n\n"
+        "Action:\n[v_forward, v_right, yaw_rate]\n\n"
+        "=================================",
+        flush=True,
+    )
     tensors = encode_splits(
         dataset_root.resolve(),
         split_manifest,
         encoder,
         device,
         encode_batch_size,
+        image_source,
     )
     if any(parameter.requires_grad for parameter in encoder.parameters()):
         raise RuntimeError("encoder freeze contract was violated")
@@ -628,67 +766,105 @@ def train_baseline(
     best_loss = math.inf
     best_epoch = 0
     stale_epochs = 0
+    early_stopping_triggered = False
     history = []
     started = time.monotonic()
-    for epoch in range(1, config.epochs + 1):
-        _run_loader(
-            model, loaders["train"], device, optimizer
+    writer = SummaryWriter(log_dir=str(output_dir / "tensorboard"))
+    try:
+        for epoch in range(1, config.epochs + 1):
+            _run_loader(
+                model, loaders["train"], device, optimizer
+            )
+            train_metrics, _, _ = _run_loader(
+                model, loaders["train"], device
+            )
+            validation_metrics, _, _ = _run_loader(
+                model, loaders["validation"], device
+            )
+            history.append(_history_row(
+                epoch, train_metrics, validation_metrics
+            ))
+            payload = _checkpoint(
+                model,
+                optimizer,
+                epoch,
+                validation_metrics,
+                mean,
+                std,
+                config,
+                audit,
+                split_manifest,
+                image_source,
+                encoder,
+            )
+            torch.save(payload, output_dir / "last.pt")
+            if validation_metrics["mse"] < best_loss:
+                best_loss = validation_metrics["mse"]
+                best_epoch = epoch
+                stale_epochs = 0
+                torch.save(payload, output_dir / "best.pt")
+            else:
+                stale_epochs += 1
+            writer.add_scalar(
+                "bc/train_action_loss", train_metrics["mse"], epoch
+            )
+            writer.add_scalar(
+                "bc/validation_action_loss", validation_metrics["mse"], epoch
+            )
+            _progress(
+                epoch,
+                config.epochs,
+                train_metrics["mse"],
+                validation_metrics["mse"],
+                best_loss,
+                optimizer.param_groups[0]["lr"],
+                started,
+            )
+            if stale_epochs >= config.early_stopping_patience:
+                early_stopping_triggered = True
+                break
+    except BaseException:
+        writer.flush()
+        writer.close()
+        raise
+    try:
+        _write_history(output_dir / "training_history.csv", history)
+        best = torch.load(
+            output_dir / "best.pt", map_location=device, weights_only=False
         )
-        train_metrics, _, _ = _run_loader(
-            model, loaders["train"], device
+        best_model = LatentBcPolicy(
+            LatentBcPolicyConfig(**best["model_config"])
+        ).to(device)
+        best_model.load_state_dict(best["model_state"])
+        best_model.eval()
+        test_metrics, prediction, target = _run_loader(
+            best_model, loaders["test"], device
         )
-        validation_metrics, _, _ = _run_loader(
-            model, loaders["validation"], device
-        )
-        history.append(_history_row(
-            epoch, train_metrics, validation_metrics
-        ))
-        payload = _checkpoint(
-            model,
-            optimizer,
-            epoch,
-            validation_metrics,
-            mean,
-            std,
-            config,
-            audit,
-            split_manifest,
-        )
-        torch.save(payload, output_dir / "last.pt")
-        if validation_metrics["mse"] < best_loss:
-            best_loss = validation_metrics["mse"]
-            best_epoch = epoch
-            stale_epochs = 0
-            torch.save(payload, output_dir / "best.pt")
-        else:
-            stale_epochs += 1
-        _progress(
-            epoch,
-            config.epochs,
-            train_metrics["mse"],
-            validation_metrics["mse"],
-            best_loss,
-            optimizer.param_groups[0]["lr"],
-            started,
-        )
-        if stale_epochs >= config.early_stopping_patience:
-            break
-    _write_history(output_dir / "training_history.csv", history)
-    best = torch.load(
-        output_dir / "best.pt", map_location=device, weights_only=False
-    )
-    best_model = LatentBcPolicy(
-        LatentBcPolicyConfig(**best["model_config"])
-    ).to(device)
-    best_model.load_state_dict(best["model_state"])
-    best_model.eval()
-    test_metrics, prediction, target = _run_loader(
-        best_model, loaders["test"], device
-    )
+        tensorboard_action_names = {
+            "v_forward": "forward",
+            "v_right": "right",
+            "yaw_rate": "yaw_rate",
+        }
+        for name in ACTION_NAMES:
+            writer.add_scalar(
+                f"bc/test_{tensorboard_action_names[name]}_rmse",
+                test_metrics["per_action"][name]["rmse"],
+                best_epoch,
+            )
+    except BaseException:
+        writer.flush()
+        writer.close()
+        raise
+    writer.flush()
+    writer.close()
     metrics = {
         "format_version": FORMAT_VERSION,
+        "run_status": "completed",
+        "maximum_epochs_requested": config.epochs,
+        "actual_epochs_trained": len(history),
         "best_epoch": best_epoch,
         "epochs_completed": len(history),
+        "early_stopping_triggered": early_stopping_triggered,
         "train_loss": history[best_epoch - 1]["train_mse"],
         "best_validation_loss": best_loss,
         "test_mse": test_metrics["mse"],
@@ -696,6 +872,14 @@ def train_baseline(
         "sample_counts": split_manifest["sample_counts"],
         "episode_counts": split_manifest["episode_counts"],
         "checkpoint_reload_verified": True,
+        "image_source": image_source,
+        "image_preprocessing": IMAGE_PREPROCESSING[image_source],
+        "tensorboard_dir": str((output_dir / "tensorboard").resolve()),
+        "dataset_name": resolved_dataset_name,
+        "dataset_path": audit["dataset_root"],
+        "tensorboard_enabled": tensorboard_enabled,
+        "tensorboard_port": tensorboard_port,
+        "encoder_selection": encoder_selection,
     }
     plots = create_training_plots(
         output_dir, history, test_metrics, prediction, target
@@ -710,6 +894,9 @@ def train_baseline(
         "last_checkpoint": str((output_dir / "last.pt").resolve()),
         "encoder": {
             "architecture": "RgbAutoencoderV0",
+            "image_source": image_source,
+            "image_preprocessing": IMAGE_PREPROCESSING[image_source],
+            "latent_dimension": encoder.config.latent_dimension,
             "checkpoint": str(encoder_checkpoint.resolve()),
             "sha256": audit["encoder_sha256"],
             "model_config": encoder.config.to_dict(),
@@ -724,6 +911,12 @@ def train_baseline(
         },
     }
     _write_json(output_dir / "summary.json", summary)
+    training_config.update({
+        "actual_epochs_trained": len(history),
+        "best_epoch": best_epoch,
+        "early_stopping_triggered": early_stopping_triggered,
+    })
+    _write_json(output_dir / "training_config.json", training_config)
     latest = output_dir.parent / "latest.json"
     _write_json(latest, {
         "format_version": FORMAT_VERSION,
@@ -736,7 +929,6 @@ def train_baseline(
 
 
 def _parser() -> argparse.ArgumentParser:
-    repository_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(
         prog="./uav bc-train",
         description=(
@@ -745,11 +937,11 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--dataset", default=str(repository_root / DEFAULT_DATASET)
+        "--dataset",
+        default=str(DEFAULT_DATASET),
+        help="dataset name under artifacts/datasets, or explicit path",
     )
-    parser.add_argument(
-        "--encoder", default=str(repository_root / DEFAULT_AUTOENCODER)
-    )
+    parser.add_argument("--encoder")
     parser.add_argument("--output")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -758,33 +950,110 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--encode-batch-size", type=int, default=128)
+    parser.add_argument(
+        "--image-source", choices=IMAGE_SOURCES, default="top"
+    )
+    add_tensorboard_arguments(parser)
     return parser
 
 
 def main() -> int:
     args = _parser().parse_args()
     repository_root = Path(__file__).resolve().parents[2]
+    try:
+        dataset_location = resolve_dataset(
+            args.dataset,
+            must_exist=True,
+            project_root=repository_root,
+        )
+    except (OSError, ValueError) as error:
+        print(f"ERROR: BC baseline training stopped: {error}")
+        return 1
+    try:
+        encoder = select_autoencoder_checkpoint(
+            dataset_location,
+            args.image_source,
+            IMAGE_PREPROCESSING[args.image_source],
+            explicit=Path(args.encoder) if args.encoder else None,
+            project_root=repository_root,
+        )
+    except Exception as error:  # noqa: BLE001 - CLI boundary
+        print(f"ERROR: BC baseline training stopped: {error}")
+        return 1
+    print(
+        f"{'Auto-selected' if encoder.automatic else 'Explicit'} encoder:\n"
+        f"{encoder.checkpoint}\n\n"
+        f"Dataset:\n{dataset_location.name}\n\n"
+        f"Image source:\n{args.image_source}\n\n"
+        "Encoder provenance:\nmatched",
+        flush=True,
+    )
     if args.output:
         output = Path(args.output)
     else:
-        output = repository_root.joinpath(
-            "artifacts", "experiments", "bc_baseline", f"run_{_stamp()}"
+        output = experiment_run_directory(
+            "bc",
+            dataset_location,
+            args.image_source,
+            _stamp(),
+            project_root=repository_root,
         )
     try:
-        train_baseline(
-            Path(args.dataset),
-            Path(args.encoder),
-            output,
-            TrainingConfig(
-                epochs=args.epochs,
-                batch_size=args.batch_size,
-                learning_rate=args.learning_rate,
-                early_stopping_patience=args.patience,
-                seed=args.seed,
-            ),
-            args.device,
-            args.encode_batch_size,
-        )
+        with TensorBoardServer(
+            output / "tensorboard",
+            enabled=args.tensorboard,
+            port=args.tensorboard_port,
+        ) as tensorboard_server:
+            summary = train_baseline(
+                dataset_location.path,
+                encoder.checkpoint,
+                output,
+                TrainingConfig(
+                    epochs=args.epochs,
+                    batch_size=args.batch_size,
+                    learning_rate=args.learning_rate,
+                    early_stopping_patience=args.patience,
+                    seed=args.seed,
+                ),
+                args.device,
+                args.encode_batch_size,
+                args.image_source,
+                dataset_name=dataset_location.name,
+                tensorboard_enabled=args.tensorboard,
+                tensorboard_port=args.tensorboard_port,
+                encoder_selection=(
+                    "automatic" if encoder.automatic else "explicit"
+                ),
+            )
+            test = summary["test"]["per_action"]
+            print(
+                "=========================================\n"
+                "BC training completed successfully\n\n"
+                f"Dataset:\n{dataset_location.name}\n\n"
+                f"Image source:\n{args.image_source}\n\n"
+                f"Maximum epochs requested:\n"
+                f"{summary['maximum_epochs_requested']}\n\n"
+                f"Actual epochs trained:\n"
+                f"{summary['actual_epochs_trained']}\n\n"
+                f"Best epoch:\n{summary['best_epoch']}\n\n"
+                f"Early stopping:\n"
+                f"{'yes' if summary['early_stopping_triggered'] else 'no'}\n\n"
+                "Best validation action loss:\n"
+                f"{summary['best_validation_loss']:.8f}\n\n"
+                "Final test metrics:\n"
+                f"forward RMSE = {test['v_forward']['rmse']:.8f}\n"
+                f"right RMSE = {test['v_right']['rmse']:.8f}\n"
+                f"yaw-rate RMSE = {test['yaw_rate']['rmse']:.8f}\n\n"
+                f"Best checkpoint:\n{summary['best_checkpoint']}\n\n"
+                f"TensorBoard:\n"
+                f"{tensorboard_server.url if tensorboard_server.active else 'not managed'}\n"
+                "=========================================",
+                flush=True,
+            )
+            tensorboard_server.wait_until_interrupted()
+    except KeyboardInterrupt:
+        print("BC training interrupted; TensorBoard was cleaned up.")
+        return 130
     except Exception as error:  # noqa: BLE001 - CLI boundary
         print(f"ERROR: BC baseline training stopped: {error}")
         return 1
