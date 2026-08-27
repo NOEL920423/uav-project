@@ -6,6 +6,7 @@ bc_policy:
     command_publish_rate_hz: 20.0
     inference_timeout_s: 0.50
 
+# 飛行與終止參數
 bc_flight_supervisor:
   ros__parameters:
     flight_altitude_m: 1.5

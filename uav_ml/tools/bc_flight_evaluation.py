@@ -175,7 +175,7 @@ class ManagedFlightRuntime:
     ) -> dict:
         if self._uav(["expert-runtime-wait"], runtime_dir / "ready.log") != 0:
             raise RuntimeError("Isaac/PX4 runtime did not become ready")
-        episode_id = f"bc_eval_{episode:06d}"
+        episode_id = f"episode_{episode:06d}"
         if self._uav(
             ["expert-scene-prepare", episode_id, str(seed)],
             runtime_dir / "scene.log",
