@@ -32,6 +32,8 @@ MSG_RUNNING = "[BC Flight] BC flight started."
 MSG_CLEANUP = "[BC Flight] Cleaning up managed processes..."
 MSG_FINISHED = "[BC Flight] Evaluation finished: {path}"
 MSG_RESULT = "[BC Flight] Episode {episode}: {reason}"
+MSG_PLOTS = "[BC Flight] Plots saved under: {path}"
+MSG_PLOT_WARNING = "[BC Flight] Plot generation failed: {error}"
 MSG_ERROR = "[BC Flight] Error: {error}"
 
 
@@ -295,14 +297,33 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             print(MSG_CLEANUP, flush=True)
             runtime.cleanup()
+    plots = {}
+    plot_error = ""
+    try:
+        from uav_ml.tools.bc_flight_plotting import (
+            generate_evaluation_plots,
+        )
+
+        plots = generate_evaluation_plots(output_root, results)
+        print(MSG_PLOTS.format(path=output_root), flush=True)
+    except Exception as error:  # Plotting must not invalidate flight evidence.
+        plot_error = str(error)
+        print(MSG_PLOT_WARNING.format(error=error), file=sys.stderr)
     summary_path = output_root / "summary.json"
-    summary_path.write_text(json.dumps({
+    summary = {
         "schema": "uav_bc_flight_evaluation/v1",
         "image_source": image_source,
         "checkpoint": identity.checkpoint_path,
         "checkpoint_sha256": identity.checkpoint_sha256,
         "episodes": results,
-    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        "plots": plots,
+    }
+    if plot_error:
+        summary["plot_error"] = plot_error
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     print(MSG_FINISHED.format(path=summary_path), flush=True)
     return 0
 

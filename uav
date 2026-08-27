@@ -72,6 +72,7 @@ Commands:
   bc-smoke-test   Run the mandatory tiny-overfit/checkpoint smoke test
   bc-train        Train and offline-evaluate the formal BC baseline
   bc-eval         Fly a TOP RGB BC policy through Isaac/Pegasus/PX4
+  bc-eval-plot    Regenerate plots from a formal BC evaluation artifact
   bc-eval-surrogate  Run the legacy rendering and custom-dynamics evaluator
   ml-test         Run ROS/Isaac-independent ML regression tests
   px4-stream-offline-check  Validate the PX4-independent stream boundary
@@ -121,6 +122,7 @@ Examples:
   ./uav bc-smoke-test --device cpu
   ./uav bc-train --dataset bc_expert_cube --epochs 500
   ./uav bc-eval --image-source top_rgb --episodes 1 --visible
+  ./uav bc-eval-plot artifacts/evaluations/bc_flight/run_TIMESTAMP
   ./uav ml-test
   ./uav px4-stream-offline-check
   ./uav px4-sitl-doctor
@@ -1533,6 +1535,11 @@ main() {
             require_repository
             shift
             python3 -m uav_ml.tools.bc_flight_evaluation "$@"
+            ;;
+        bc-eval-plot)
+            require_repository
+            shift
+            python3 -m uav_ml.tools.bc_flight_plotting "$@"
             ;;
         bc-eval-surrogate)
             require_repository

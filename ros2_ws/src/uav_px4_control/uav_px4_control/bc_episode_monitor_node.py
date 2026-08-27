@@ -7,7 +7,7 @@ import math
 import time
 from pathlib import Path
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TwistStamped
 
 from nav_msgs.msg import Odometry
 
@@ -25,7 +25,11 @@ from std_msgs.msg import String
 
 from uav_interfaces.msg import ObstacleArray
 
-from uav_ml.inference.bc_flight_contract import yaw_from_quaternion
+from uav_ml.inference.bc_flight_contract import (
+    ACTION_LIMITS,
+    ned_to_body,
+    yaw_from_quaternion,
+)
 
 from uav_px4_control.bc_episode_monitor import (
     TerminationConfig,
@@ -44,12 +48,16 @@ from uav_px4_control.bc_policy_node import (
     POLICY_STATUS_TOPIC,
 )
 from uav_px4_control.control_mux_node import control_qos
+from uav_px4_control.control_source_models import BC_POLICY, SOURCE_TOPICS
 
 
 SCENE_GOAL_TOPIC = "/uav/scene/goal"
+SCENE_START_TOPIC = "/uav/scene/start"
 SCENE_OBSTACLES_TOPIC = "/uav/scene/obstacles"
 ODOMETRY_TOPIC = "/uav/vehicle/odometry"
 RESULT_SCHEMA = "uav_bc_flight_result/v1"
+TRACE_SCHEMA = "uav_bc_flight_trace/v1"
+TRACE_FILENAME = "trajectory_trace.json"
 COLLISION_DETECTOR = "geometric_cylinder_v1"
 
 MSG_RESULT_SAVED = "[BC Flight] Result saved: {path}"
@@ -89,9 +97,11 @@ class BcEpisodeMonitorNode(Node):
         self._episode = int(self.get_parameter("episode").value)
         self._seed = int(self.get_parameter("seed").value)
         self._image_source = str(self.get_parameter("image_source").value)
+        self._start: PoseStamped | None = None
         self._goal: PoseStamped | None = None
         self._obstacles: ObstacleArray | None = None
         self._odometry: Odometry | None = None
+        self._bc_command: TwistStamped | None = None
         self._supervisor: dict = {}
         self._policy: dict = {}
         self._episode_started_s: float | None = None
@@ -105,6 +115,7 @@ class BcEpisodeMonitorNode(Node):
         self._previous_path_position: tuple[float, float] | None = None
         self._result_written = False
         self._last_error = ""
+        self._trace_samples: list[dict] = []
 
         qos = control_qos()
         self._termination_publisher = self.create_publisher(
@@ -119,7 +130,16 @@ class BcEpisodeMonitorNode(Node):
         self.create_subscription(
             Odometry, ODOMETRY_TOPIC, self._odometry_callback, qos
         )
+        self.create_subscription(
+            TwistStamped,
+            SOURCE_TOPICS[BC_POLICY],
+            self._bc_command_callback,
+            qos,
+        )
         durable = scene_qos()
+        self.create_subscription(
+            PoseStamped, SCENE_START_TOPIC, self._start_callback, durable
+        )
         self.create_subscription(
             PoseStamped, SCENE_GOAL_TOPIC, self._goal_callback, durable
         )
@@ -156,8 +176,14 @@ class BcEpisodeMonitorNode(Node):
     def _goal_callback(self, message: PoseStamped) -> None:
         self._goal = message
 
+    def _start_callback(self, message: PoseStamped) -> None:
+        self._start = message
+
     def _obstacles_callback(self, message: ObstacleArray) -> None:
         self._obstacles = message
+
+    def _bc_command_callback(self, message: TwistStamped) -> None:
+        self._bc_command = message
 
     def _odometry_callback(self, message: Odometry) -> None:
         self._odometry = message
@@ -211,6 +237,100 @@ class BcEpisodeMonitorNode(Node):
     @staticmethod
     def _optional(value: float) -> float | None:
         return float(value) if math.isfinite(value) else None
+
+    @staticmethod
+    def _scene_point(message: PoseStamped | None) -> dict | None:
+        if message is None:
+            return None
+        return {
+            "north_m": float(message.pose.position.y),
+            "east_m": float(message.pose.position.x),
+            "altitude_m": float(message.pose.position.z),
+        }
+
+    def _record_trace_sample(
+        self, now: float, goal_distance: float, clearance: float
+    ) -> None:
+        if self._odometry is None or self._bc_started_s is None:
+            return
+        pose = self._odometry.pose.pose
+        yaw = yaw_from_quaternion(
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+        )
+        action_forward = None
+        action_right = None
+        action_yaw_rate = None
+        command_north = None
+        command_east = None
+        if self._bc_command is not None:
+            twist = self._bc_command.twist
+            command_north = float(twist.linear.x)
+            command_east = float(twist.linear.y)
+            body_forward, body_right = ned_to_body(
+                command_north, command_east, yaw
+            )
+            action_forward = body_forward / ACTION_LIMITS[0]
+            action_right = body_right / ACTION_LIMITS[1]
+            action_yaw_rate = (
+                float(twist.angular.z) / ACTION_LIMITS[2]
+            )
+        self._trace_samples.append({
+            "sample": len(self._trace_samples),
+            "time_s": max(0.0, now - self._bc_started_s),
+            "inference_step": self._policy.get("inference_count"),
+            "north_m": float(pose.position.x),
+            "east_m": float(pose.position.y),
+            "down_m": float(pose.position.z),
+            "yaw_rad": yaw,
+            "goal_distance_m": self._optional(goal_distance),
+            "obstacle_clearance_m": self._optional(clearance),
+            "action_forward": action_forward,
+            "action_right": action_right,
+            "action_yaw_rate": action_yaw_rate,
+            "command_north_mps": command_north,
+            "command_east_mps": command_east,
+        })
+
+    def _trace(self) -> dict:
+        obstacles = []
+        if self._obstacles is not None:
+            obstacles = [{
+                "name": item.name,
+                "north_m": float(item.center.y),
+                "east_m": float(item.center.x),
+                "radius_m": float(item.radius),
+            } for item in self._obstacles.obstacles]
+        return {
+            "schema": TRACE_SCHEMA,
+            "episode": self._episode,
+            "seed": self._seed,
+            "image_source": self._image_source,
+            "coordinate_frame": "px4_ned",
+            "action_contract": (
+                "normalized_body_forward_right_yaw_v1.0"
+            ),
+            "start": self._scene_point(self._start),
+            "goal": self._scene_point(self._goal),
+            "obstacles": obstacles,
+            "uav_radius_m": self.config.uav_radius_m,
+            "collision_clearance_threshold_m": (
+                self.config.collision_clearance_threshold_m
+            ),
+            "samples": self._trace_samples,
+        }
+
+    def _write_trace(self) -> Path:
+        path = self._result_path.with_name(TRACE_FILENAME)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(self._trace(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+        return path
 
     def _result(self, now: float) -> dict:
         terminal = self._terminal_reason or str(
@@ -283,6 +403,7 @@ class BcEpisodeMonitorNode(Node):
             "final_yaw_rad": yaw,
             "collision_detector": COLLISION_DETECTOR,
             "physics_contact_verified": False,
+            "trace_file": TRACE_FILENAME,
             "completed_utc": time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
             ),
@@ -291,6 +412,7 @@ class BcEpisodeMonitorNode(Node):
     def _write_result(self, now: float) -> None:
         payload = self._result(now)
         self._result_path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_trace()
         temporary = self._result_path.with_suffix(
             self._result_path.suffix + ".tmp"
         )
@@ -320,6 +442,7 @@ class BcEpisodeMonitorNode(Node):
                 self._minimum_clearance_m = min(
                     self._minimum_clearance_m, clearance
                 )
+            self._record_trace_sample(now, goal_distance, clearance)
             if (
                 not self._terminal_reason
                 and self._odometry is not None
