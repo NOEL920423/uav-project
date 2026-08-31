@@ -18,9 +18,11 @@ from __future__ import annotations
 import asyncio
 import builtins
 import runpy
+import sys
 import traceback
 from pathlib import Path
 
+import carb.settings
 import omni.kit.app
 import omni.usd
 
@@ -29,14 +31,55 @@ from pegasus.simulator.logic.interface.pegasus_interface import PegasusInterface
 from pegasus.simulator.logic.vehicles.multirotor import Multirotor, MultirotorConfig
 from pegasus.simulator.params import ROBOTS, SIMULATION_ENVIRONMENTS, WORLD_SETTINGS
 
-from pxr import Gf, UsdGeom, UsdPhysics
+from pxr import Gf, UsdGeom, UsdLux, UsdPhysics
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+
+from scene_visual_materials import (
+    DISABLE_ENVIRONMENT_LIGHTS,
+    FLOOR_COLOR,
+    OBSTACLE_COLOR,
+    RTX_AMBIENT_OCCLUSION_ENABLED,
+    RTX_SHADOWS_ENABLED,
+    bind_material,
+    create_scene_materials,
+)
+
+
 RUNTIME_BRIDGE_SCRIPT = SCRIPT_ROOT / "runtime_bridge.py"
 PX4_ROOT = Path.home() / "PX4-Autopilot"
 VEHICLE_PRIM_PATH = "/World/quadrotor"
 BOOTSTRAP_SCENE_ROOT = "/World/BootstrapScene"
+ENVIRONMENT_ROOT = "/World/layout"
+
+
+def disable_environment_lights(stage) -> tuple[str, ...]:
+    """Deactivate lights authored by the referenced Pegasus environment."""
+    if not DISABLE_ENVIRONMENT_LIGHTS:
+        return ()
+    lights = tuple(
+        prim
+        for prim in stage.TraverseAll()
+        if str(prim.GetPath()).startswith(ENVIRONMENT_ROOT)
+        and prim.HasAPI(UsdLux.LightAPI)
+    )
+    paths = tuple(str(prim.GetPath()) for prim in lights)
+    for prim in lights:
+        prim.SetActive(False)
+    return paths
+
+
+def configure_ml_renderer() -> None:
+    """Apply the two registered RTX switches needed for shadow-free RGB."""
+    settings = carb.settings.get_settings()
+    settings.set_bool("/rtx/shadows/enabled", RTX_SHADOWS_ENABLED)
+    settings.set_bool(
+        "/rtx/ambientOcclusion/enabled",
+        RTX_AMBIENT_OCCLUSION_ENABLED,
+    )
 
 
 def create_bootstrap_scene(stage) -> None:
@@ -46,6 +89,7 @@ def create_bootstrap_scene(stage) -> None:
         "bootstrap:scene_id",
         "bootstrap_simple_scene_v1",
     )
+    materials = create_scene_materials(stage, BOOTSTRAP_SCENE_ROOT)
 
     # ------------------------------------------------------------
     # Plain visual floor
@@ -68,8 +112,9 @@ def create_bootstrap_scene(stage) -> None:
     )
 
     floor.CreateDisplayColorAttr(
-        [Gf.Vec3f(0.40, 0.40, 0.40)]
+        [Gf.Vec3f(*FLOOR_COLOR)]
     )
+    bind_material(floor.GetPrim(), materials["floor"])
 
     # No CollisionAPI here.
     # Keep the original Pegasus GroundPlane responsible for physics.
@@ -88,8 +133,9 @@ def create_bootstrap_scene(stage) -> None:
     )
 
     obstacle.CreateDisplayColorAttr(
-        [Gf.Vec3f(0.30, 0.30, 0.30)]
+        [Gf.Vec3f(*OBSTACLE_COLOR)]
     )
+    bind_material(obstacle.GetPrim(), materials["obstacle"])
     UsdPhysics.CollisionAPI.Apply(obstacle.GetPrim())
 
     # ------------------------------------------------------------
@@ -135,6 +181,17 @@ async def bootstrap() -> None:
         if stage is None:
             raise RuntimeError("Isaac Sim has no active USD stage after environment loading.")
 
+        disabled_lights = disable_environment_lights(stage)
+        configure_ml_renderer()
+        print(
+            "[UAVBootstrap] Disabled Pegasus environment lights: "
+            + (", ".join(disabled_lights) if disabled_lights else "none")
+        )
+        print(
+            "[UAVBootstrap] RTX shadows="
+            f"{RTX_SHADOWS_ENABLED} ambient_occlusion="
+            f"{RTX_AMBIENT_OCCLUSION_ENABLED}."
+        )
         existing_vehicle = stage.GetPrimAtPath(VEHICLE_PRIM_PATH)
         create_bootstrap_scene(stage)
         if not existing_vehicle or not existing_vehicle.IsValid():

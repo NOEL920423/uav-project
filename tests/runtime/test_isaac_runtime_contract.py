@@ -270,10 +270,11 @@ def test_runtime_creates_canonical_cylinders_and_lights():
     assert "UsdGeom.Cylinder.Define" in cylinder_helper
     assert "CreateRadiusAttr" in cylinder_helper
     assert "CreateHeightAttr" in cylinder_helper
-    assert 'source["color"]' in cylinder_helper
+    assert "OBSTACLE_COLOR" in cylinder_helper
+    assert "bind_material(prim, material)" in cylinder_helper
     assert "UsdPhysics.CollisionAPI.Apply(prim)" in cylinder_helper
     assert "UsdLux.DomeLight.Define" in apply_scene
-    assert "UsdLux.DistantLight.Define" in apply_scene
+    assert "UsdLux.DistantLight.Define" not in apply_scene
 
 
 def test_visual_qa_capture_is_read_only_and_collects_three_flight_phases():

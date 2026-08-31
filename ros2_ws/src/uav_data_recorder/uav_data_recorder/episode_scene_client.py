@@ -103,10 +103,15 @@ class EpisodeSceneClient(Node):
             and status.get("timeline_playing") is True
             and status.get("pose_valid") is True
         ):
+            configuration = status["scene_configuration"]
+            self.get_logger().debug(
+                "EXPERT_SCENE_CONFIGURATION "
+                + json.dumps(configuration, sort_keys=True)
+            )
             self.get_logger().info(
-                "EXPERT_SCENE_READY " + json.dumps(
-                    status["scene_configuration"], sort_keys=True
-                )
+                f"EXPERT_SCENE_READY episode={self.episode_id} "
+                f"seed={self.random_seed} "
+                f"obstacles={configuration['obstacle_count']}"
             )
             self._finish(0, "scene acknowledged from safe reset state")
 
@@ -137,10 +142,8 @@ class EpisodeSceneClient(Node):
             self.get_logger().info
             if code == 0 else self.get_logger().error
         )
-        logger(
-            f"EXPERT_SCENE_RESULT success={str(code == 0).lower()} "
-            f"commands={self.command_count} detail={detail}"
-        )
+        result = f"EXPERT_SCENE_RESULT success={str(code == 0).lower()}"
+        logger(result if code == 0 else f"{result} detail={detail}")
         rclpy.shutdown()
 
 

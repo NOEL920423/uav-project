@@ -991,27 +991,36 @@ internal_bc_flight_run() {
         device:="$device"
 }
 
+process_group_has_live_members() {
+    local process_group_id="$1"
+    [[ "$process_group_id" =~ ^[1-9][0-9]*$ ]] || return 1
+    ps -eo pgid=,stat= | awk -v target="$process_group_id" '
+        $1 == target && $2 !~ /^Z/ { found = 1 }
+        END { exit(found ? 0 : 1) }
+    '
+}
+
 stop_managed_process_group() {
     local process_id="$1"
     local label="$2"
     [[ "$process_id" =~ ^[1-9][0-9]*$ ]] || return 0
-    if kill -0 "$process_id" 2>/dev/null; then
+    if process_group_has_live_members "$process_id"; then
         info "Stopping managed $label process group $process_id"
         kill -INT -- "-$process_id" 2>/dev/null || true
         local attempt
         for ((attempt = 1; attempt <= 20; attempt++)); do
-            kill -0 "$process_id" 2>/dev/null || break
+            process_group_has_live_members "$process_id" || break
             sleep 0.5
         done
-        if kill -0 "$process_id" 2>/dev/null; then
+        if process_group_has_live_members "$process_id"; then
             warn "$label did not exit after SIGINT; sending SIGTERM"
             kill -TERM -- "-$process_id" 2>/dev/null || true
             for ((attempt = 1; attempt <= 20; attempt++)); do
-                kill -0 "$process_id" 2>/dev/null || break
+                process_group_has_live_members "$process_id" || break
                 sleep 0.5
             done
         fi
-        if kill -0 "$process_id" 2>/dev/null; then
+        if process_group_has_live_members "$process_id"; then
             warn "$label did not exit after SIGTERM; sending SIGKILL"
             kill -KILL -- "-$process_id" 2>/dev/null || true
         fi
@@ -1065,6 +1074,26 @@ command_expert_scene_preview() {
         "Isaac streaming launcher missing: $ISAAC_SIM_RELEASE"
     command -v MicroXRCEAgent >/dev/null || die \
         "MicroXRCEAgent is not available"
+    if ! /usr/bin/python3 - \
+        "$REPO_ROOT/isaac/runtime/bootstrap.py" \
+        "$REPO_ROOT/isaac/runtime/episode_scene.py" \
+        "$REPO_ROOT/isaac/runtime/runtime_bridge.py" \
+        "$REPO_ROOT/isaac/runtime/scene_visual_materials.py" <<'PY'
+import pathlib
+import sys
+
+for source_name in sys.argv[1:]:
+    source_path = pathlib.Path(source_name)
+    try:
+        compile(source_path.read_bytes(), str(source_path), "exec")
+    except (OSError, SyntaxError) as error:
+        print(f"ERROR: invalid Isaac runtime source: {error}", file=sys.stderr)
+        raise SystemExit(1)
+PY
+    then
+        die "expert scene preview stopped before launching any process"
+        return 1
+    fi
     if pgrep -x MicroXRCEAgent >/dev/null \
         || pgrep -f "$ISAAC_SIM_RELEASE/kit/kit" >/dev/null \
         || pgrep -f '/PX4-Autopilot/build/px4_sitl_default/bin/px4' \
@@ -1088,7 +1117,7 @@ command_expert_scene_preview() {
         stop_managed_process_group "$preview_agent_pid" "preview XRCE agent"
     }
     trap expert_scene_preview_cleanup EXIT
-    trap 'preview_interrupted=1; expert_scene_preview_cleanup' INT TERM
+    trap 'preview_interrupted=1; expert_scene_preview_cleanup' HUP INT TERM
 
     setsid MicroXRCEAgent udp4 -p 8888 \
         >"$preview_runtime_root/xrce.log" 2>&1 &
@@ -1125,8 +1154,8 @@ command_expert_scene_preview() {
         set -e
     fi
 
-    trap - EXIT INT TERM
     expert_scene_preview_cleanup
+    trap - EXIT HUP INT TERM
     if ((preview_interrupted != 0)); then
         return 130
     fi

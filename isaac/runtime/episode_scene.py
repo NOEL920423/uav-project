@@ -3,8 +3,21 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 import random
 import re
+import sys
+
+
+SCRIPT_ROOT = Path(__file__).resolve().parent
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+
+from scene_visual_materials import (
+    DOME_LIGHT_COLOR,
+    DOME_LIGHT_INTENSITY,
+    OBSTACLE_COLOR,
+)
 
 # 障礙物數量
 NUM_OBSTACLES = 10
@@ -54,7 +67,9 @@ SCENE_DECORATION_ROOF_HEIGHT_MIN = 0.10
 SCENE_DECORATION_ROOF_HEIGHT_MAX = 0.28
 SCENE_DECORATION_ANTENNA_HEIGHT_MIN = 0.25
 SCENE_DECORATION_ANTENNA_HEIGHT_MAX = 0.55
-CYLINDER_COLORS = (
+# Retained only to consume the historical RNG draw; these values are never
+# assigned to rendered obstacles now that visual color is centralized.
+LEGACY_CYLINDER_COLOR_DRAWS = (
     (0.12, 0.18, 0.24),
     (0.20, 0.27, 0.31),
     (0.30, 0.31, 0.34),
@@ -75,24 +90,12 @@ MIN_OBSTACLE_GAP = 0.50
 MAX_PLACEMENT_ATTEMPTS = 1000
 RESET_POSITION_TOLERANCE_M = 0.50
 LIGHTING_CONTRACT = {
-    "mode": "exact_legacy",
+    "mode": "neutral_dome_only",
     "root": "/World/GeneratedEpisode/Lights",
     "dome": {
-        "intensity": 300.0,
+        "intensity": DOME_LIGHT_INTENSITY,
         "exposure": 0.0,
-        "color": [0.92, 0.96, 1.0],
-    },
-    "key": {
-        "intensity": 1300.0,
-        "angle_deg": 4.0,
-        "rotation_deg": [315.0, 0.0, 35.0],
-        "color": [1.0, 0.96, 0.90],
-    },
-    "fill": {
-        "intensity": 650.0,
-        "angle_deg": 6.0,
-        "rotation_deg": [300.0, 0.0, 215.0],
-        "color": [0.84, 0.91, 1.0],
+        "color": list(DOME_LIGHT_COLOR),
     },
 }
 
@@ -153,6 +156,10 @@ def _random_cylinder_spec(rng: random.Random, blocker: bool = False) -> dict:
         if blocker else CYLINDER_HEIGHT_MIN,
         CYLINDER_HEIGHT_MAX,
     )
+    yaw_deg = rng.uniform(OBSTACLE_YAW_MIN_DEG, OBSTACLE_YAW_MAX_DEG)
+    # Preserve this legacy draw so every seed keeps its exact geometry and
+    # decoration RNG sequence even though obstacle color is now fixed.
+    rng.choice(LEGACY_CYLINDER_COLOR_DRAWS)
     return {
         "shape": "cylinder",
         "radius_basis_width": radius_basis_width,
@@ -164,8 +171,8 @@ def _random_cylinder_spec(rng: random.Random, blocker: bool = False) -> dict:
         "blocker_half_extent": 0.5 * min(
             radius_basis_width, radius_basis_depth
         ),
-        "yaw_deg": rng.uniform(OBSTACLE_YAW_MIN_DEG, OBSTACLE_YAW_MAX_DEG),
-        "color": list(rng.choice(CYLINDER_COLORS)),
+        "yaw_deg": yaw_deg,
+        "color": list(OBSTACLE_COLOR),
         "window_on_color": list(rng.choice(SCENE_DECORATION_WINDOW_ON_COLORS)),
         "window_off_color": list(SCENE_DECORATION_WINDOW_OFF_COLOR),
         "roof_style": rng.choice(SCENE_DECORATION_ROOF_STYLES),
@@ -316,7 +323,7 @@ def _blocked_goal_fixture() -> dict:
         "radius": radius,
         "blocker_half_extent": 0.5 * side,
         "yaw_deg": 0.0,
-        "color": list(CYLINDER_COLORS[0]),
+        "color": list(OBSTACLE_COLOR),
         "window_on_color": list(SCENE_DECORATION_WINDOW_ON_COLORS[0]),
         "window_off_color": list(SCENE_DECORATION_WINDOW_OFF_COLOR),
         "roof_style": "flat",

@@ -33,10 +33,10 @@ def test_seed_reproduces_configured_obstacle_scene():
     assert left["obstacles"][0]["placement_mode"] == (
         "guaranteed_direct_path_blocker"
     )
-    assert left["lighting"]["mode"] == "exact_legacy"
-    assert left["lighting"]["dome"]["intensity"] == 300.0
-    assert left["lighting"]["key"]["intensity"] == 1300.0
-    assert left["lighting"]["fill"]["intensity"] == 650.0
+    assert left["lighting"]["mode"] == "neutral_dome_only"
+    assert left["lighting"]["dome"]["intensity"] == 800.0
+    assert "key" not in left["lighting"]
+    assert "fill" not in left["lighting"]
 
 
 def test_three_qa_seeds_are_distinct_and_obey_canonical_constraints():

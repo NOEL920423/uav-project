@@ -50,6 +50,14 @@ from formal_expert_sensor_contract import (
     TOP_RGB_PUBLISH_PERIOD_S,
     TOP_RGB_WIDTH,
 )
+from scene_visual_materials import (
+    FLOOR_COLOR,
+    GOAL_MARKER_COLOR,
+    OBSTACLE_COLOR,
+    START_MARKER_COLOR,
+    bind_material,
+    create_scene_materials,
+)
 
 
 VEHICLE_BODY_PATH = "/World/quadrotor/body"
@@ -399,17 +407,19 @@ class IsaacRuntimeBridge:
         root.GetPrim().SetCustomDataByKey(
             "episode:generator", scene["generator"]
         )
+        materials = create_scene_materials(self._stage, SCENE_ROOT)
         # ------------------------------------------------------------
         # Plain visual floor
         # ------------------------------------------------------------
         # 地板方形墊子的參數(僅外型，沒有碰撞)
-        self._create_box(
+        floor = self._create_box(
             f"{SCENE_ROOT}/PlainFloor",
             (100.0, 100.0, 0.01), # 地板尺寸
             (0.0, 0.0, 0.01), # 位置
-            (0.40, 0.40, 0.40), # 預設顏色
+            FLOOR_COLOR,
             collision=False,
         )
+        bind_material(floor, materials["floor"])
         self._create_episode_lighting(scene["lighting"])
         UsdGeom.Xform.Define(
             self._stage,
@@ -423,6 +433,7 @@ class IsaacRuntimeBridge:
             obstacle = self._create_cylinder_obstacle(
                 source,
                 index,
+                materials["obstacle"],
             )
 
             obstacle.SetCustomDataByKey(
@@ -445,7 +456,8 @@ class IsaacRuntimeBridge:
         start.AddTranslateOp().Set(Gf.Vec3d(
             scene["start"][0], scene["start"][1], 0.025
         ))
-        start.CreateDisplayColorAttr([Gf.Vec3f(0.0, 0.3, 1.0)])
+        start.CreateDisplayColorAttr([Gf.Vec3f(*START_MARKER_COLOR)])
+        bind_material(start.GetPrim(), materials["start_marker"])
         goal = UsdGeom.Cylinder.Define(
             self._stage, f"{SCENE_ROOT}/Target/TargetDisk"
         )
@@ -454,7 +466,8 @@ class IsaacRuntimeBridge:
         goal.AddTranslateOp().Set(Gf.Vec3d(
             scene["target_marker"][0], scene["target_marker"][1], 0.025
         ))
-        goal.CreateDisplayColorAttr([Gf.Vec3f(1.0, 0.0, 0.0)])
+        goal.CreateDisplayColorAttr([Gf.Vec3f(*GOAL_MARKER_COLOR)])
+        bind_material(goal.GetPrim(), materials["goal_marker"])
 
     @staticmethod
     def _set_prim_transform(prim, position, rotation_deg=None, scale=None):
@@ -484,7 +497,7 @@ class IsaacRuntimeBridge:
             UsdPhysics.CollisionAPI.Apply(prim)
         return prim
 
-    def _create_cylinder_obstacle(self, source, index):
+    def _create_cylinder_obstacle(self, source, index, material):
         name = str(source.get("name") or f"Obstacle_{index:03d}")
         path = f"{SCENE_ROOT}/Obstacles/{name}"
         cylinder = UsdGeom.Cylinder.Define(self._stage, path)
@@ -495,7 +508,8 @@ class IsaacRuntimeBridge:
             prim,
             (source["x"], source["y"], source["z"]),
         )
-        self._set_display_color(prim, source["color"])
+        self._set_display_color(prim, OBSTACLE_COLOR)
+        bind_material(prim, material)
         if bool(source["collision"]):
             UsdPhysics.CollisionAPI.Apply(prim)
         return prim
@@ -508,19 +522,6 @@ class IsaacRuntimeBridge:
         dome.CreateIntensityAttr(float(dome_spec["intensity"]))
         dome.CreateExposureAttr(float(dome_spec["exposure"]))
         dome.CreateColorAttr(Gf.Vec3f(*map(float, dome_spec["color"])))
-        for name in ("key", "fill"):
-            spec = lighting[name]
-            light = UsdLux.DistantLight.Define(
-                self._stage, f"{light_root}/{name.title()}"
-            )
-            light.CreateIntensityAttr(float(spec["intensity"]))
-            light.CreateAngleAttr(float(spec["angle_deg"]))
-            light.CreateColorAttr(Gf.Vec3f(*map(float, spec["color"])))
-            self._set_prim_transform(
-                light.GetPrim(),
-                (0.0, 0.0, 8.0),
-                rotation_deg=spec["rotation_deg"],
-            )
 
     def _update_camera_pose(self):
         if self._camera_transform is None:
