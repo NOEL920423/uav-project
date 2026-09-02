@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import os
 import runpy
 import sys
 import traceback
@@ -50,6 +51,7 @@ from scene_visual_materials import (
 
 
 RUNTIME_BRIDGE_SCRIPT = SCRIPT_ROOT / "runtime_bridge.py"
+PERSISTENT_SMOKE_CONTROL_SCRIPT = SCRIPT_ROOT / "persistent_smoke_control.py"
 PX4_ROOT = Path.home() / "PX4-Autopilot"
 VEHICLE_PRIM_PATH = "/World/quadrotor"
 BOOTSTRAP_SCENE_ROOT = "/World/BootstrapScene"
@@ -166,6 +168,9 @@ async def wait_for_updates(count: int) -> None:
 
 async def bootstrap() -> None:
     try:
+        persistent_smoke = (
+            os.environ.get("UAV_PERSISTENT_RUNTIME_SMOKE", "0") == "1"
+        )
         print("[UAVBootstrap] Starting automatic Isaac/Pegasus/PX4 setup.")
         await wait_for_updates(10)
 
@@ -197,14 +202,15 @@ async def bootstrap() -> None:
         if not existing_vehicle or not existing_vehicle.IsValid():
             backend_config = PX4MavlinkBackendConfig({
                 "vehicle_id": 0,
-                "px4_autolaunch": True,
+                "px4_autolaunch": not persistent_smoke,
                 "px4_dir": str(PX4_ROOT),
                 "px4_vehicle_model": "gazebo-classic_iris",
-                "enable_lockstep": True,
+                "enable_lockstep": not persistent_smoke,
             })
+            px4_backend = PX4MavlinkBackend(config=backend_config)
             multirotor_config = MultirotorConfig()
-            multirotor_config.backends = [PX4MavlinkBackend(config=backend_config)]
-            Multirotor(
+            multirotor_config.backends = [px4_backend]
+            vehicle = Multirotor(
                 VEHICLE_PRIM_PATH,
                 ROBOTS["Iris"],
                 0,
@@ -212,9 +218,19 @@ async def bootstrap() -> None:
                 [0.0, 0.0, 0.0, 1.0],
                 config=multirotor_config,
             )
-            print("[UAVBootstrap] Iris spawned with PX4 auto-launch enabled.")
+            print(
+                "[UAVBootstrap] Iris spawned with PX4 auto-launch "
+                f"{'disabled' if persistent_smoke else 'enabled'}."
+            )
         else:
             print("[UAVBootstrap] Existing Iris retained.")
+            vehicle = pegasus.get_vehicle(VEHICLE_PRIM_PATH)
+            px4_backend = vehicle._backends[0]
+
+        if persistent_smoke:
+            builtins._isaac_uav_smoke_world = pegasus.world
+            builtins._isaac_uav_smoke_vehicle = vehicle
+            builtins._isaac_uav_smoke_backend = px4_backend
 
         await wait_for_updates(30)
         await pegasus.world.play_async()
@@ -230,6 +246,17 @@ async def bootstrap() -> None:
             run_name="__isaac_runtime_bridge__",
         )
         print("[UAVBootstrap] Isaac ROS 2 runtime bridge started.")
+        if persistent_smoke:
+            if not PERSISTENT_SMOKE_CONTROL_SCRIPT.is_file():
+                raise FileNotFoundError(
+                    "Persistent smoke control not found: "
+                    f"{PERSISTENT_SMOKE_CONTROL_SCRIPT}"
+                )
+            runpy.run_path(
+                str(PERSISTENT_SMOKE_CONTROL_SCRIPT),
+                run_name="__isaac_persistent_smoke_control__",
+            )
+            print("[UAVBootstrap] Persistent runtime smoke control started.")
     except Exception as exc:
         builtins._isaac_uav_bootstrap_error = f"{type(exc).__name__}: {exc}"
         print(f"[UAVBootstrap][ERROR] {builtins._isaac_uav_bootstrap_error}")

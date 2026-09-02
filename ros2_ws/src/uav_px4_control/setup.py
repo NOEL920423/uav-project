@@ -73,6 +73,10 @@ setup(
             "uav_px4_control.px4_sitl_flight_supervisor_node:main",
             "px4_sitl_flight_monitor = "
             "uav_px4_control.px4_sitl_flight_monitor:main",
+            "px4_generation_probe = "
+            "uav_px4_control.px4_generation_probe:main",
+            "runtime_smoke_lifecycle_client = "
+            "uav_px4_control.runtime_smoke_lifecycle_client:main",
             "px4_boundary_result_monitor = "
             "uav_px4_control.offline_px4_boundary_harness:monitor_main",
             "synthetic_px4_telemetry = "

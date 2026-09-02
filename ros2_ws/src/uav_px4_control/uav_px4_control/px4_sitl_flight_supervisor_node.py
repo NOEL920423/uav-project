@@ -347,17 +347,18 @@ class Px4SitlFlightSupervisorNode(Node):
     def _stream_callback(self, message: Px4StreamStatus) -> None:
         self._stream_status = message
         if message.state != self._last_stream_state:
-            log = (
-                self.get_logger().warning
-                if message.state.startswith(("STOPPED_", "LATCHED_"))
-                else self.get_logger().info
-            )
-            log(
+            transition = (
                 f"STREAM_TRANSITION {self._last_stream_state or 'NONE'}"
                 f"->{message.state} reason={message.stop_reason} "
                 f"rate={message.observed_rate_hz:.3f} "
                 f"max_gap={message.maximum_publish_gap:.3f}"
             )
+            # rclpy binds severity to a call site, so INFO/WARN need distinct
+            # source lines when a stream later crosses into a fault state.
+            if message.state.startswith(("STOPPED_", "LATCHED_")):
+                self.get_logger().warning(transition)
+            else:
+                self.get_logger().info(transition)
             self._last_stream_state = message.state
 
     def _vehicle_status_callback(self, message) -> None:

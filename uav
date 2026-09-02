@@ -87,6 +87,7 @@ Commands:
   phase10c-visual-qa  Capture three canonical high-rise flight visual-QA sets
   phase10c-visual-qa-check  Validate an existing three-scene preview artifact
   expert-collect  Collect a resumable canonical cylinder expert dataset
+  expert-runtime-smoke  Restart PX4 episodes in one persistent Isaac runtime
   expert-scene-preview  Preview one formal expert scene over WebRTC
   expert-validate  Validate the formal cylinder expert dataset
   topics         Inspect the current ROS graph and reject /fmu/in/ topics
@@ -136,6 +137,7 @@ Examples:
   ./uav phase10c-visual-qa
   ./uav phase10c-visual-qa-check
   ./uav expert-collect --episodes 100 --dataset bc_expert_cube
+  ./uav expert-runtime-smoke --episodes 2
   ./uav expert-collect --episodes 100 --dataset bc_expert_cube --max-attempts 150 --resume
   ./uav expert-scene-preview --seed 103001
   ./uav expert-validate --episodes 100
@@ -1587,6 +1589,11 @@ main() {
             require_repository
             shift
             python3 -m uav_ml.tools.expert_collect "$@"
+            ;;
+        expert-runtime-smoke)
+            require_repository
+            shift
+            python3 -m uav_ml.tools.expert_runtime_smoke "$@"
             ;;
         expert-scene-preview)
             require_repository
