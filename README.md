@@ -26,12 +26,6 @@
 ./uav expert-collect --help
 ```
 
-Each completed invocation may append any positive episode count; there is no
-fixed total target. It writes only to
-`artifacts/datasets/bc_expert_highrise_v1/`. See
-[`docs/expert_dataset_collection.md`](docs/expert_dataset_collection.md) for
-the frozen scene/camera/data contracts, progress, resume, QA, and validation.
-
 ## 目前專案主要包含：
 
 - Isaac Sim 無人機模擬環境
@@ -49,4 +43,4 @@ the frozen scene/camera/data contracts, progress, resume, QA, and validation.
 ## Notes
 
 Dataset、rosbag、log、image、video、checkpoint 與其他實驗輸出不會丟到 github 上，畢竟現在是一坨 💩 。
-
+![就是坨拔拔](docs/images/PoopPoopingGIF.gif)
