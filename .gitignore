@@ -47,6 +47,13 @@ pegasus_test/
 *.pt
 *.pth
 
+# Keep documentation images
+!docs/images/
+!docs/images/*.png
+!docs/images/*.jpg
+!docs/images/*.jpeg
+!docs/images/*.gif
+
 # ML Phase 1 generated artifacts
 /datasets/
 /checkpoints/

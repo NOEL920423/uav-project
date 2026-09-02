@@ -1,6 +1,9 @@
-# 這個 Repository 用來記錄我的碩論跟中正大學孫計畫的開發，所以內容會隨研究進度持續調整，能否畢業全看祂了，現在看來還遙遙無期 --2026/09/02
+# 子型無人機之導航飛控
+基於多幾何強化學習與模仿學習之無人機偵蒐視角決策與搜尋策略技術 -- 題目老師想好的
 
+這個 Repository 用來記錄我的碩論跟中正大學孫計畫的開發，所以內容會隨研究進度持續調整，能否畢業全看祂了，現在看來還遙遙無期 --2026/09/02
 
+![Isaac Sim UAV Simulation](docs/images/isaac_sim_uav.png)
 
 ## Repository の 結構
 
@@ -45,5 +48,5 @@ the frozen scene/camera/data contracts, progress, resume, QA, and validation.
 
 ## Notes
 
-Dataset、rosbag、log、image、video、checkpoint 與其他實驗輸出不會丟到 github 上，畢竟現在是一坨 ![alt text](image.png) 。
+Dataset、rosbag、log、image、video、checkpoint 與其他實驗輸出不會丟到 github 上，畢竟現在是一坨 💩 。
 
