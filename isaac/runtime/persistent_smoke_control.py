@@ -197,6 +197,7 @@ class PersistentSmokeControl:
                     raise RuntimeError("Pegasus backend did not resume")
                 if self._backend._connection is None:
                     raise RuntimeError("MAVLink listener was not recreated")
+                builtins._isaac_uav_runtime_generation = generation
                 self._state = "ready_for_px4"
             self._generation = generation
             self._last_command_id = command_id

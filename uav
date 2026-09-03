@@ -197,6 +197,21 @@ clean_environment_command() {
     if [[ -n "${TERM:-}" ]]; then
         clean_variables+=("TERM=$TERM")
     fi
+    local persistent_variable
+    for persistent_variable in \
+        UAV_EXPERT_SCENE_PREPARED \
+        UAV_EXPERT_RUNTIME_GENERATION \
+        UAV_EXPERT_SCENE_REVISION \
+        UAV_EXPERT_MIN_FPV_FRAME \
+        UAV_EXPERT_MIN_OBSERVER_FRAME \
+        UAV_EXPERT_MIN_DEPTH_FRAME
+    do
+        if [[ -n "${!persistent_variable:-}" ]]; then
+            clean_variables+=(
+                "$persistent_variable=${!persistent_variable}"
+            )
+        fi
+    done
 
     env -i "${clean_variables[@]}" \
         /usr/bin/bash "$SCRIPT_PATH" __clean "$internal_command" "$@"
@@ -933,11 +948,13 @@ internal_expert_run_episode() {
         return 1
     fi
 
-    ros2 run uav_data_recorder episode_scene_client --ros-args \
-        -p episode_id:="$episode_id" \
-        -p random_seed:="$random_seed" \
-        -p scene_mode:=normal \
-        -p timeout_s:=20.0
+    if [[ "${UAV_EXPERT_SCENE_PREPARED:-0}" != "1" ]]; then
+        ros2 run uav_data_recorder episode_scene_client --ros-args \
+            -p episode_id:="$episode_id" \
+            -p random_seed:="$random_seed" \
+            -p scene_mode:=normal \
+            -p timeout_s:=20.0
+    fi
 
     local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-180}"
     local timestamp evidence_path episode_evidence launch_status
@@ -957,6 +974,11 @@ internal_expert_run_episode() {
         episode_id:="$episode_id" \
         collection_mode:=batch \
         random_seed:="$random_seed" \
+        expected_runtime_generation:="${UAV_EXPERT_RUNTIME_GENERATION:--1}" \
+        expected_scene_revision:="${UAV_EXPERT_SCENE_REVISION:-0}" \
+        minimum_fpv_frame_count:="${UAV_EXPERT_MIN_FPV_FRAME:-0}" \
+        minimum_observer_frame_count:="${UAV_EXPERT_MIN_OBSERVER_FRAME:-0}" \
+        minimum_depth_frame_count:="${UAV_EXPERT_MIN_DEPTH_FRAME:-0}" \
         start_delay_s:=5.0
     launch_status=$?
     set -e

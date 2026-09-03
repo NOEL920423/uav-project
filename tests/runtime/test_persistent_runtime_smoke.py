@@ -8,18 +8,25 @@ import signal
 import subprocess
 from unittest import mock
 
+import pytest
+
 from uav_ml.tools.expert_runtime_smoke import (
     _live_process_group_members,
     _parser,
     _process_start_ticks,
     _stop_process,
 )
+from uav_ml.tools.persistent_runtime import (
+    FatalRuntimeError,
+    PersistentRuntimeManager,
+    RecoverableAttemptError,
+)
 
 
 ROOT = Path(__file__).parents[2]
 BOOTSTRAP = ROOT / "isaac/runtime/bootstrap.py"
 CONTROL = ROOT / "isaac/runtime/persistent_smoke_control.py"
-ORCHESTRATOR = ROOT / "uav_ml/tools/expert_runtime_smoke.py"
+RUNTIME_MANAGER = ROOT / "uav_ml/tools/persistent_runtime.py"
 COLLECTOR = ROOT / "uav_ml/tools/expert_collect.py"
 GENERATION_PROBE = (
     ROOT / "ros2_ws/src/uav_px4_control/uav_px4_control/"
@@ -38,19 +45,24 @@ def test_smoke_cli_defaults_to_two_isolated_episodes():
     assert arguments.episode_timeout > arguments.runtime_timeout
 
 
-def test_production_collector_does_not_import_or_dispatch_smoke_runtime():
+def test_production_collector_uses_shared_runtime_not_smoke_command():
     source = COLLECTOR.read_text(encoding="utf-8")
     assert "expert_runtime_smoke" not in source
     assert "UAV_PERSISTENT_RUNTIME_SMOKE" not in source
-    assert "self._start_runtime(runtime_dir)" in source
-    assert "finally:\n                    self.backend.cleanup()" in source
+    assert "PersistentRuntimeManager" in source
+    assert "self.backend.cleanup_episode(" in source
+    assert "finally:\n            self.backend.cleanup()" in source
 
 
 def test_bootstrap_changes_px4_and_lockstep_only_under_smoke_flag():
     source = BOOTSTRAP.read_text(encoding="utf-8")
-    assert 'os.environ.get("UAV_PERSISTENT_RUNTIME_SMOKE", "0") == "1"' in source
-    assert '"px4_autolaunch": not persistent_smoke' in source
-    assert '"enable_lockstep": not persistent_smoke' in source
+    assert 'os.environ.get("UAV_PERSISTENT_RUNTIME", "0") == "1"' in source
+    assert (
+        'os.environ.get("UAV_PERSISTENT_RUNTIME_SMOKE", "0") == "1"'
+        in source
+    )
+    assert '"px4_autolaunch": not persistent_runtime' in source
+    assert '"enable_lockstep": not persistent_runtime' in source
     assert "PERSISTENT_SMOKE_CONTROL_SCRIPT" in source
 
 
@@ -73,13 +85,11 @@ def test_smoke_control_reuses_resources_and_performs_full_reset():
 
 
 def test_orchestrator_owns_one_isaac_one_agent_and_external_px4():
-    source = ORCHESTRATOR.read_text(encoding="utf-8")
+    source = RUNTIME_MANAGER.read_text(encoding="utf-8")
     assert source.count("self.isaac = subprocess.Popen(") == 1
     assert source.count("self.xrce = subprocess.Popen(") == 1
     assert source.count("self.px4 = subprocess.Popen(") == 1
     assert '"PX4_SIM_MODEL": PX4_MODEL' in source
-    assert '"use_external_scene:=false"' in source
-    assert '"require_isaac_evidence:=false"' in source
     assert "tempfile.mkdtemp(" in source
     assert '"px4_autolaunch"' not in source
     assert "set -eo pipefail" in source
@@ -124,9 +134,25 @@ def test_fresh_dds_probe_requires_changing_post_subscription_streams():
         "all(right > left",
         "receive_times[0] >= self.started_monotonic",
         "safe_landed_disarmed",
+        "reset_state_matches",
         "status_endpoint_gids",
     ):
         assert token in source
+
+
+def test_two_consecutive_reset_failures_escalate_to_job_fatal(tmp_path):
+    manager = PersistentRuntimeManager(ROOT, tmp_path)
+    manager.isaac = mock.Mock(pid=1001)
+    manager.xrce = mock.Mock(pid=1002)
+    manager.assert_job_alive = mock.Mock()
+    manager.lifecycle = mock.Mock(
+        side_effect=RecoverableAttemptError("fixture reset failure")
+    )
+
+    with pytest.raises(RecoverableAttemptError):
+        manager.prepare_attempt(1, tmp_path / "attempt_1")
+    with pytest.raises(FatalRuntimeError):
+        manager.prepare_attempt(2, tmp_path / "attempt_2")
 
 
 def test_stream_transition_logging_uses_fixed_severity_call_sites():

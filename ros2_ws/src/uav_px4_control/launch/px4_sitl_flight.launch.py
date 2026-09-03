@@ -42,6 +42,17 @@ def generate_launch_description() -> LaunchDescription:
     episode_id = LaunchConfiguration("episode_id")
     collection_mode = LaunchConfiguration("collection_mode")
     random_seed = LaunchConfiguration("random_seed")
+    expected_runtime_generation = LaunchConfiguration(
+        "expected_runtime_generation"
+    )
+    expected_scene_revision = LaunchConfiguration("expected_scene_revision")
+    minimum_fpv_frame_count = LaunchConfiguration("minimum_fpv_frame_count")
+    minimum_observer_frame_count = LaunchConfiguration(
+        "minimum_observer_frame_count"
+    )
+    minimum_depth_frame_count = LaunchConfiguration(
+        "minimum_depth_frame_count"
+    )
     return LaunchDescription([
         DeclareLaunchArgument(
             "evidence_path",
@@ -63,6 +74,15 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("episode_id", default_value="episode_000001"),
         DeclareLaunchArgument("collection_mode", default_value="single"),
         DeclareLaunchArgument("random_seed", default_value="0"),
+        DeclareLaunchArgument(
+            "expected_runtime_generation", default_value="-1"
+        ),
+        DeclareLaunchArgument("expected_scene_revision", default_value="0"),
+        DeclareLaunchArgument("minimum_fpv_frame_count", default_value="0"),
+        DeclareLaunchArgument(
+            "minimum_observer_frame_count", default_value="0"
+        ),
+        DeclareLaunchArgument("minimum_depth_frame_count", default_value="0"),
         Node(
             package="uav_scene_bridge",
             executable="scene_bridge_node",
@@ -104,6 +124,13 @@ def generate_launch_description() -> LaunchDescription:
                 "episode_id": episode_id,
                 "collection_mode": collection_mode,
                 "random_seed": random_seed,
+                "expected_runtime_generation": expected_runtime_generation,
+                "expected_scene_revision": expected_scene_revision,
+                "minimum_fpv_frame_count": minimum_fpv_frame_count,
+                "minimum_observer_frame_count": (
+                    minimum_observer_frame_count
+                ),
+                "minimum_depth_frame_count": minimum_depth_frame_count,
                 "synchronization_tolerance_s": 0.100,
             }],
             condition=IfCondition(record_expert_dataset),

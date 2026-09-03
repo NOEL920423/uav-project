@@ -37,6 +37,7 @@ from uav_ml.tools.expert_collect import (
     default_max_attempts,
 )
 from uav_ml.tools.expert_visual_qa import create_contact_sheet
+from uav_ml.tools.persistent_runtime import RecoverableAttemptError
 from uav_ml.tools.validate_expert_batch import _validate_auxiliary
 from uav_ml.tools.validate_expert_collection import (
     validate_episode_metadata,
@@ -64,8 +65,40 @@ class InterruptingBackend(DryRunBackend):
 class InfrastructureFailureBackend(DryRunBackend):
     """Fail from the managed runtime boundary."""
 
+    def __init__(self) -> None:
+        self.cleanup_job_count = 0
+
     def run_episode(self, **kwargs) -> int:
         raise RuntimeError("runtime readiness lost")
+
+    def cleanup(self) -> None:
+        self.cleanup_job_count += 1
+
+
+class RecoverableFailureBackend(DryRunBackend):
+    """Fail one attempt while tracking job- and attempt-level cleanup."""
+
+    def __init__(self) -> None:
+        self.start_job_count = 0
+        self.cleanup_job_count = 0
+        self.cleanup_episode_count = 0
+        self.attempt_count = 0
+
+    def start_job(self, runtime_root: Path) -> dict:
+        self.start_job_count += 1
+        return super().start_job(runtime_root)
+
+    def run_episode(self, **kwargs) -> int:
+        self.attempt_count += 1
+        if self.attempt_count == 1:
+            raise RecoverableAttemptError("fixture PX4 readiness timeout")
+        return super().run_episode(**kwargs)
+
+    def cleanup_episode(self, index: int, runtime_dir: Path) -> None:
+        self.cleanup_episode_count += 1
+
+    def cleanup(self) -> None:
+        self.cleanup_job_count += 1
 
 
 class ExpertCollectionToolTest(unittest.TestCase):
@@ -341,9 +374,11 @@ class ExpertCollectionToolTest(unittest.TestCase):
 
     def test_infrastructure_failure_leaves_resumable_manifest(self) -> None:
         dataset = self.root / "dataset"
+        backend = InfrastructureFailureBackend()
         with self.assertRaisesRegex(RuntimeError, "readiness lost"), \
                 contextlib.redirect_stdout(io.StringIO()):
-            self._collector(dataset, InfrastructureFailureBackend()).run()
+            self._collector(dataset, backend).run()
+        self.assertEqual(backend.cleanup_job_count, 1)
         manifest = json.loads(
             (dataset / "collection_manifest.json").read_text(encoding="utf-8")
         )
@@ -357,6 +392,37 @@ class ExpertCollectionToolTest(unittest.TestCase):
             (dataset / "collection_summary.json").read_text(encoding="utf-8")
         )
         self.assertEqual(summary["infrastructure_failures"], 1)
+
+    def test_recoverable_attempt_keeps_one_job_runtime_and_continues(
+        self,
+    ) -> None:
+        dataset = self.root / "recoverable-runtime"
+        backend = RecoverableFailureBackend()
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = self._collector(
+                dataset, backend, episodes=2, max_attempts=3
+            ).run()
+
+        self.assertTrue(result["valid"])
+        self.assertEqual(backend.start_job_count, 1)
+        self.assertEqual(backend.cleanup_job_count, 1)
+        self.assertEqual(backend.cleanup_episode_count, 3)
+        manifest = json.loads(
+            (dataset / "collection_manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            [entry["status"] for entry in manifest["episodes"]],
+            ["rejected", "complete", "complete"],
+        )
+        first = manifest["episodes"][0]
+        self.assertEqual(
+            first["failure_classification"],
+            "recoverable_attempt_failure",
+        )
+        self.assertIn("PX4 readiness timeout", first["terminal_reason"])
+        self.assertEqual(len(manifest["persistent_runtime_jobs"]), 1)
 
     def test_episode_failure_is_rejected_and_next_seed_is_attempted(self) -> None:
         dataset = self.root / "dataset"

@@ -99,6 +99,11 @@ class ExpertDatasetRecorderNode(Node):
         self.declare_parameter("episode_id", EPISODE_ID)
         self.declare_parameter("collection_mode", "single")
         self.declare_parameter("random_seed", 0)
+        self.declare_parameter("expected_runtime_generation", -1)
+        self.declare_parameter("expected_scene_revision", 0)
+        self.declare_parameter("minimum_fpv_frame_count", 0)
+        self.declare_parameter("minimum_observer_frame_count", 0)
+        self.declare_parameter("minimum_depth_frame_count", 0)
         self.declare_parameter(
             "synchronization_tolerance_s", SYNCHRONIZATION_TOLERANCE_S
         )
@@ -110,6 +115,23 @@ class ExpertDatasetRecorderNode(Node):
             self.get_parameter("collection_mode").value
         )
         self.random_seed = int(self.get_parameter("random_seed").value)
+        self.expected_runtime_generation = int(
+            self.get_parameter("expected_runtime_generation").value
+        )
+        self.expected_scene_revision = int(
+            self.get_parameter("expected_scene_revision").value
+        )
+        self._minimum_camera_counts = {
+            "fpv_rgb": int(
+                self.get_parameter("minimum_fpv_frame_count").value
+            ),
+            "observer_rgb": int(
+                self.get_parameter("minimum_observer_frame_count").value
+            ),
+            "fpv_depth": int(
+                self.get_parameter("minimum_depth_frame_count").value
+            ),
+        }
         self.tolerance_s = float(
             self.get_parameter("synchronization_tolerance_s").value
         )
@@ -162,6 +184,13 @@ class ExpertDatasetRecorderNode(Node):
         self._finalized = False
         self._scene_configuration: dict | None = None
         self._sensor_runtime_status: dict = {}
+        self._boundary_guard_enabled = bool(
+            self.expected_runtime_generation >= 0
+            or self.expected_scene_revision > 0
+        )
+        self._episode_boundary_ready = not self._boundary_guard_enabled
+        self._episode_boundary_timestamp_s: float | None = None
+        self._boundary_discarded = Counter()
         self._planner_path: dict | None = None
         self._planner_status = ""
         self._fpv_rgb_received = 0
@@ -312,31 +341,49 @@ class ExpertDatasetRecorderNode(Node):
             self._goal = message
 
     def _image_callback(self, message: CompressedImage) -> None:
-        self._fpv_rgb_received += 1
         item = self._timed(message)
         if item is None:
             self._rejections["invalid_image_timestamp"] += 1
             return
+        if not self._image_after_boundary("fpv_rgb", item.timestamp_s):
+            return
+        self._fpv_rgb_received += 1
         self._observe_stream_time("fpv_rgb", item.timestamp_s)
         self._images.append(TimedValue(item.timestamp_s, bytes(message.data)))
 
     def _observer_image_callback(self, message: CompressedImage) -> None:
-        self._observer_rgb_received += 1
         item = self._timed(message)
-        if item is not None:
-            self._observe_stream_time("observer_rgb", item.timestamp_s)
-            self._observer_images.append(TimedValue(
-                item.timestamp_s, (bytes(message.data), message.format)
-            ))
+        if item is None or not self._image_after_boundary(
+            "observer_rgb", item.timestamp_s
+        ):
+            return
+        self._observer_rgb_received += 1
+        self._observe_stream_time("observer_rgb", item.timestamp_s)
+        self._observer_images.append(TimedValue(
+            item.timestamp_s, (bytes(message.data), message.format)
+        ))
 
     def _depth_image_callback(self, message: CompressedImage) -> None:
-        self._fpv_depth_received += 1
         item = self._timed(message)
-        if item is not None:
-            self._observe_stream_time("fpv_depth", item.timestamp_s)
-            self._depth_images.append(TimedValue(
-                item.timestamp_s, (bytes(message.data), message.format)
-            ))
+        if item is None or not self._image_after_boundary(
+            "fpv_depth", item.timestamp_s
+        ):
+            return
+        self._fpv_depth_received += 1
+        self._observe_stream_time("fpv_depth", item.timestamp_s)
+        self._depth_images.append(TimedValue(
+            item.timestamp_s, (bytes(message.data), message.format)
+        ))
+
+    def _image_after_boundary(self, name: str, timestamp_s: float) -> bool:
+        if not self._episode_boundary_ready:
+            self._boundary_discarded[name] += 1
+            return False
+        boundary = self._episode_boundary_timestamp_s
+        if boundary is not None and timestamp_s < boundary:
+            self._boundary_discarded[name] += 1
+            return False
+        return True
 
     def _runtime_status_callback(self, message: String) -> None:
         try:
@@ -350,12 +397,43 @@ class ExpertDatasetRecorderNode(Node):
             for runtime_key, dataset_key
             in RUNTIME_TO_DATASET_STATUS_FIELDS.items()
         }
-        if (
+        episode_matches = (
             status.get("episode_id") == self.episode_id
             and status.get("random_seed") == self.random_seed
             and isinstance(status.get("scene_configuration"), dict)
+        )
+        generation_matches = bool(
+            self.expected_runtime_generation < 0
+            or status.get("runtime_generation")
+            == self.expected_runtime_generation
+        )
+        revision_matches = bool(
+            self.expected_scene_revision <= 0
+            or status.get("scene_revision") == self.expected_scene_revision
+        )
+        camera_counts_advanced = bool(
+            not self._boundary_guard_enabled
+            or all((
+                int(status.get(runtime_name, 0))
+                > self._minimum_camera_counts[dataset_name]
+            ) for runtime_name, dataset_name in (
+                ("fpv_rgb_frame_count", "fpv_rgb"),
+                ("observer_rgb_frame_count", "observer_rgb"),
+                ("fpv_depth_frame_count", "fpv_depth"),
+            ))
+        )
+        if (
+            episode_matches
+            and generation_matches
+            and revision_matches
+            and camera_counts_advanced
         ):
             self._scene_configuration = status["scene_configuration"]
+            if not self._episode_boundary_ready:
+                self._episode_boundary_timestamp_s = (
+                    self.get_clock().now().nanoseconds / 1e9
+                )
+            self._episode_boundary_ready = True
 
     def _planner_path_callback(self, message: PathMessage) -> None:
         points = [pose.pose.position for pose in message.poses]
@@ -408,6 +486,9 @@ class ExpertDatasetRecorderNode(Node):
             "fpv_rgb_received": self._fpv_rgb_received,
             "observer_rgb_received": self._observer_rgb_received,
             "fpv_depth_received": self._fpv_depth_received,
+            "episode_boundary_ready": self._episode_boundary_ready,
+            "runtime_generation": self.expected_runtime_generation,
+            "scene_revision": self.expected_scene_revision,
         })
 
     def _process_ready_images(self) -> None:
@@ -685,11 +766,15 @@ class ExpertDatasetRecorderNode(Node):
             self._observed_landing_commanded,
             self._observed_landed_after_landing,
         )
-        failure = "" if success else (
-            "flight status unavailable" if status is None else
-            status.failure_reason
-            or f"terminal flight state was {status.state}"
-        )
+        if self._boundary_guard_enabled and not self._episode_boundary_ready:
+            success = False
+            failure = "persistent runtime recorder boundary was not ready"
+        else:
+            failure = "" if success else (
+                "flight status unavailable" if status is None else
+                status.failure_reason
+                or f"terminal flight state was {status.state}"
+            )
         for row in self._rows:
             row["success"] = success
             row["failure"] = failure
@@ -812,6 +897,17 @@ class ExpertDatasetRecorderNode(Node):
                     ),
                 },
                 "runtime_status": self._sensor_runtime_status,
+            },
+            "persistent_runtime_boundary": {
+                "guard_enabled": self._boundary_guard_enabled,
+                "ready": self._episode_boundary_ready,
+                "runtime_generation": self.expected_runtime_generation,
+                "scene_revision": self.expected_scene_revision,
+                "minimum_camera_frame_counts": self._minimum_camera_counts,
+                "boundary_timestamp_s": self._episode_boundary_timestamp_s,
+                "discarded_pre_boundary_frames": dict(
+                    sorted(self._boundary_discarded.items())
+                ),
             },
             "maximum_state_image_error_s": max(
                 (float(row["state_image_error_s"]) for row in self._rows),

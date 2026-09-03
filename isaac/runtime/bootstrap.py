@@ -168,8 +168,9 @@ async def wait_for_updates(count: int) -> None:
 
 async def bootstrap() -> None:
     try:
-        persistent_smoke = (
-            os.environ.get("UAV_PERSISTENT_RUNTIME_SMOKE", "0") == "1"
+        persistent_runtime = (
+            os.environ.get("UAV_PERSISTENT_RUNTIME", "0") == "1"
+            or os.environ.get("UAV_PERSISTENT_RUNTIME_SMOKE", "0") == "1"
         )
         print("[UAVBootstrap] Starting automatic Isaac/Pegasus/PX4 setup.")
         await wait_for_updates(10)
@@ -202,10 +203,10 @@ async def bootstrap() -> None:
         if not existing_vehicle or not existing_vehicle.IsValid():
             backend_config = PX4MavlinkBackendConfig({
                 "vehicle_id": 0,
-                "px4_autolaunch": not persistent_smoke,
+                "px4_autolaunch": not persistent_runtime,
                 "px4_dir": str(PX4_ROOT),
                 "px4_vehicle_model": "gazebo-classic_iris",
-                "enable_lockstep": not persistent_smoke,
+                "enable_lockstep": not persistent_runtime,
             })
             px4_backend = PX4MavlinkBackend(config=backend_config)
             multirotor_config = MultirotorConfig()
@@ -220,14 +221,14 @@ async def bootstrap() -> None:
             )
             print(
                 "[UAVBootstrap] Iris spawned with PX4 auto-launch "
-                f"{'disabled' if persistent_smoke else 'enabled'}."
+                f"{'disabled' if persistent_runtime else 'enabled'}."
             )
         else:
             print("[UAVBootstrap] Existing Iris retained.")
             vehicle = pegasus.get_vehicle(VEHICLE_PRIM_PATH)
             px4_backend = vehicle._backends[0]
 
-        if persistent_smoke:
+        if persistent_runtime:
             builtins._isaac_uav_smoke_world = pegasus.world
             builtins._isaac_uav_smoke_vehicle = vehicle
             builtins._isaac_uav_smoke_backend = px4_backend
@@ -246,7 +247,7 @@ async def bootstrap() -> None:
             run_name="__isaac_runtime_bridge__",
         )
         print("[UAVBootstrap] Isaac ROS 2 runtime bridge started.")
-        if persistent_smoke:
+        if persistent_runtime:
             if not PERSISTENT_SMOKE_CONTROL_SCRIPT.is_file():
                 raise FileNotFoundError(
                     "Persistent smoke control not found: "
@@ -256,7 +257,7 @@ async def bootstrap() -> None:
                 str(PERSISTENT_SMOKE_CONTROL_SCRIPT),
                 run_name="__isaac_persistent_smoke_control__",
             )
-            print("[UAVBootstrap] Persistent runtime smoke control started.")
+            print("[UAVBootstrap] Persistent runtime control started.")
     except Exception as exc:
         builtins._isaac_uav_bootstrap_error = f"{type(exc).__name__}: {exc}"
         print(f"[UAVBootstrap][ERROR] {builtins._isaac_uav_bootstrap_error}")

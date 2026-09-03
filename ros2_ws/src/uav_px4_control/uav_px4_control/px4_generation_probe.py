@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -63,6 +64,8 @@ class Px4GenerationProbe(Node):
         self.declare_parameter("timeout_s", 45.0)
         self.declare_parameter("minimum_samples", 5)
         self.declare_parameter("minimum_span_s", 0.5)
+        self.declare_parameter("maximum_reset_position_m", 0.50)
+        self.declare_parameter("maximum_reset_speed_mps", 0.50)
         self.declare_parameter("evidence_path", "/tmp/px4_generation.json")
         self.expected_pid = int(self.get_parameter("expected_pid").value)
         self.expected_start_ticks = int(
@@ -75,6 +78,12 @@ class Px4GenerationProbe(Node):
         )
         self.minimum_span_s = float(
             self.get_parameter("minimum_span_s").value
+        )
+        self.maximum_reset_position_m = float(
+            self.get_parameter("maximum_reset_position_m").value
+        )
+        self.maximum_reset_speed_mps = float(
+            self.get_parameter("maximum_reset_speed_mps").value
         )
         self.evidence_path = Path(
             str(self.get_parameter("evidence_path").value)
@@ -97,6 +106,7 @@ class Px4GenerationProbe(Node):
         self.land_samples: list[tuple[int, float]] = []
         self.latest_status = None
         self.latest_land = None
+        self.latest_odometry = None
         self.finished = False
         self.exit_code = 1
         self.create_subscription(
@@ -123,6 +133,7 @@ class Px4GenerationProbe(Node):
         self._append_sample(self.status_samples, message)
 
     def _odometry(self, message) -> None:
+        self.latest_odometry = message
         self._append_sample(self.odometry_samples, message)
 
     def _land(self, message) -> None:
@@ -164,6 +175,22 @@ class Px4GenerationProbe(Node):
             and not status.failsafe
         )
 
+    def _reset_state_matches(self) -> bool:
+        odometry = self.latest_odometry
+        if odometry is None:
+            return False
+        position = [float(value) for value in odometry.position]
+        velocity = [float(value) for value in odometry.velocity]
+        return bool(
+            len(position) >= 3
+            and len(velocity) >= 3
+            and all(math.isfinite(value) for value in position + velocity)
+            and math.sqrt(sum(value * value for value in position[:3]))
+            <= self.maximum_reset_position_m
+            and math.sqrt(sum(value * value for value in velocity[:3]))
+            <= self.maximum_reset_speed_mps
+        )
+
     def _endpoint_gids(self, topic: str) -> list[str]:
         result = []
         for endpoint in self.get_publishers_info_by_topic(topic):
@@ -185,6 +212,7 @@ class Px4GenerationProbe(Node):
         }
 
     def _payload(self, success: bool, reason: str) -> dict:
+        odometry = self.latest_odometry
         return {
             "success": success,
             "failure_reason": "" if success else reason,
@@ -197,6 +225,15 @@ class Px4GenerationProbe(Node):
             "odometry": self._sample_payload(self.odometry_samples),
             "land": self._sample_payload(self.land_samples),
             "safe_landed_disarmed": self._safe_state(),
+            "reset_state_matches": self._reset_state_matches(),
+            "latest_odometry_position": (
+                None if odometry is None
+                else [float(value) for value in odometry.position]
+            ),
+            "latest_odometry_velocity": (
+                None if odometry is None
+                else [float(value) for value in odometry.velocity]
+            ),
             "status_endpoint_gids": self._endpoint_gids(STATUS_TOPIC),
             "odometry_endpoint_gids": self._endpoint_gids(ODOMETRY_TOPIC),
         }
@@ -211,11 +248,15 @@ class Px4GenerationProbe(Node):
             self._stream_is_fresh(self.status_samples)
             and self._stream_is_fresh(self.odometry_samples)
             and self._safe_state()
+            and self._reset_state_matches()
         ):
             self._finish(True, "")
             return
         if time.monotonic() - self.started_monotonic > self.timeout_s:
-            self._finish(False, "fresh landed/disarmed telemetry timed out")
+            self._finish(
+                False,
+                "fresh landed/disarmed reset-state telemetry timed out",
+            )
 
     def _finish(self, success: bool, reason: str) -> None:
         if self.finished:

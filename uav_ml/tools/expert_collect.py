@@ -11,7 +11,6 @@ import math
 import os
 from pathlib import Path
 import shutil
-import signal
 import subprocess
 import time
 from typing import Callable
@@ -20,6 +19,13 @@ from PIL import UnidentifiedImageError
 
 from isaac.runtime.episode_scene import generate_episode_scene
 from uav_ml.tools.expert_visual_qa import create_contact_sheet
+from uav_ml.tools.persistent_runtime import (
+    FatalRuntimeError,
+    PersistentRuntimeManager,
+    RecoverableAttemptError,
+    stop_process,
+    stop_process_group,
+)
 from uav_ml.tools.training_cli import (
     DatasetLocation,
     print_dataset_location,
@@ -456,95 +462,55 @@ class CollectionManifestStore:
 
 
 class SubprocessBackend:
-    """Own Isaac, XRCE, and the finite ROS/PX4 flight for one episode."""
+    """Own one persistent runtime and one fresh PX4 per attempt."""
 
     produces_dataset = True
 
     def __init__(self, repository_root: Path, timeout_s: int = 180) -> None:
         self.repository_root = repository_root.resolve()
         self.timeout_s = timeout_s
-        self.isaac_release = Path(
-            os.environ.get(
-                "UAV_ISAAC_SIM_RELEASE",
-                str(Path.home() / "isaacsim/_build/linux-x86_64/release"),
-            )
-        ).resolve()
-        self.launcher = self.isaac_release / "isaac-sim.streaming.sh"
-        self.bootstrap = self.repository_root / "isaac/runtime/bootstrap.py"
         self.uav = self.repository_root / "uav"
-        self._processes: list[subprocess.Popen] = []
-        self._streams: list[object] = []
+        self.runtime: PersistentRuntimeManager | None = None
         self._flight: subprocess.Popen | None = None
+        self._flight_stream = None
+        self._job_started = False
+        self._last_attempt_evidence: dict = {}
 
     def preflight(self) -> None:
         """Verify dependencies and exclusive ownership before runtime."""
-        if not self.launcher.is_file() or not os.access(
-            self.launcher, os.X_OK
-        ):
-            raise RuntimeError(
-                f"Isaac streaming launcher missing: {self.launcher}"
-            )
-        if shutil.which("MicroXRCEAgent") is None:
-            raise RuntimeError("MicroXRCEAgent is not available")
         if not self.uav.is_file() or not os.access(self.uav, os.X_OK):
             raise RuntimeError(f"uav command is not executable: {self.uav}")
-        for command in (
-            ["pgrep", "-x", "MicroXRCEAgent"],
-            ["pgrep", "-f", f"{self.isaac_release}/kit/kit"],
-            [
-                "pgrep", "-f",
-                "/PX4-Autopilot/build/px4_sitl_default/bin/px4",
-            ],
-        ):
-            if subprocess.run(
-                command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            ).returncode == 0:
-                raise RuntimeError(
-                    "expert collection requires no pre-existing "
-                    "Isaac/PX4/XRCE process"
-                )
-
-    def _open_log(self, path: Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        stream = path.open("w", encoding="utf-8")
-        self._streams.append(stream)
-        return stream
-
-    def _start_runtime(self, runtime_dir: Path) -> None:
-        xrce = subprocess.Popen(
-            ["MicroXRCEAgent", "udp4", "-p", "8888"],
-            cwd=self.repository_root,
-            stdout=self._open_log(runtime_dir / "xrce.log"),
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
+        probe = PersistentRuntimeManager(
+            self.repository_root,
+            self.repository_root / "run_logs" / "expert-preflight-unused",
         )
-        environment = os.environ.copy()
-        environment.pop("DISPLAY", None)
-        environment.pop("WAYLAND_DISPLAY", None)
-        environment["UAV_EXPERT_SENSORS"] = "1"
-        isaac = subprocess.Popen(
-            [
-                str(self.launcher),
-                "--livestream", "2",
-                "--exec", str(self.bootstrap),
-            ],
-            cwd=self.isaac_release,
-            env=environment,
-            stdout=self._open_log(runtime_dir / "isaac.log"),
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        self._processes = [isaac, xrce]
+        probe.preflight()
 
-    def _run_control(self, arguments: list[str], log_path: Path) -> int:
-        with log_path.open("w", encoding="utf-8") as stream:
-            return subprocess.run(
-                [str(self.uav), *arguments],
-                cwd=self.repository_root,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                timeout=self.timeout_s + 30,
-            ).returncode
+    def start_job(self, runtime_root: Path) -> dict:
+        """Start and verify the one job-level Isaac/XRCE runtime."""
+        if self._job_started:
+            raise RuntimeError("expert persistent runtime already started")
+        self.runtime = PersistentRuntimeManager(
+            self.repository_root,
+            runtime_root / "job_runtime",
+            runtime_timeout_s=120.0,
+        )
+        self.runtime.preflight()
+        evidence = self.runtime.start_job()
+        self._job_started = True
+        return evidence
+
+    @property
+    def job_evidence(self) -> dict:
+        """Return additive job-level runtime evidence for the manifest."""
+        return {} if self.runtime is None else self.runtime.job_evidence
+
+    @property
+    def attempt_evidence(self) -> dict:
+        """Return additive evidence from the most recent attempt."""
+        if self.runtime is not None:
+            return self.runtime.attempt_evidence
+        return dict(self._last_attempt_evidence)
 
     def run_episode(
         self,
@@ -556,35 +522,68 @@ class SubprocessBackend:
         runtime_dir: Path,
         progress: Callable[[dict], None],
     ) -> int:
-        """Start runtime, run a finite flight, and report progress."""
-        self.preflight()
-        self._start_runtime(runtime_dir)
-        wait_status = self._run_control(
-            ["expert-runtime-wait"], runtime_dir / "runtime_wait.log"
+        """Reset, apply scene, start fresh PX4, and run one ROS graph."""
+        if self.runtime is None or not self._job_started:
+            raise FatalRuntimeError("persistent runtime job was not started")
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        self.runtime.prepare_attempt(index, runtime_dir)
+        scene = self.runtime.prepare_scene(
+            index, episode_id, seed, runtime_dir
         )
-        if wait_status != 0:
-            raise RuntimeError(
-                f"managed Isaac/PX4 runtime failed readiness for {episode_id}"
-            )
-        flight_log = self._open_log(runtime_dir / "flight.log")
+        self.runtime.start_px4(index, runtime_dir)
+        self.runtime.probe_px4(index, runtime_dir)
+        flight_log = runtime_dir / "flight.log"
+        self._flight_stream = flight_log.open("w", encoding="utf-8")
         environment = os.environ.copy()
         environment["UAV_OFFLINE_TIMEOUT_SECONDS"] = str(self.timeout_s)
-        self._flight = subprocess.Popen(
-            [
-                str(self.uav),
-                "expert-run-episode",
-                episode_id,
-                str(seed),
-                str(dataset_root),
-            ],
-            cwd=self.repository_root,
-            env=environment,
-            stdout=flight_log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
+        environment["UAV_EXPERT_SCENE_PREPARED"] = "1"
+        environment["UAV_EXPERT_RUNTIME_GENERATION"] = str(index)
+        environment["UAV_EXPERT_SCENE_REVISION"] = str(
+            scene["scene_revision"]
+        )
+        boundary = scene.get("scene_camera_boundary") or {}
+        environment["UAV_EXPERT_MIN_FPV_FRAME"] = str(
+            boundary.get("fpv_rgb_frame_count", 0)
+        )
+        environment["UAV_EXPERT_MIN_OBSERVER_FRAME"] = str(
+            boundary.get("observer_rgb_frame_count", 0)
+        )
+        environment["UAV_EXPERT_MIN_DEPTH_FRAME"] = str(
+            boundary.get("fpv_depth_frame_count", 0)
+        )
+        try:
+            self._flight = subprocess.Popen(
+                [
+                    str(self.uav),
+                    "expert-run-episode",
+                    episode_id,
+                    str(seed),
+                    str(dataset_root),
+                ],
+                cwd=self.repository_root,
+                env=environment,
+                stdout=self._flight_stream,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except OSError as error:
+            self._flight_stream.close()
+            self._flight_stream = None
+            raise RecoverableAttemptError(
+                f"could not start ROS episode graph: {error}"
+            ) from error
+        self.runtime.record_attempt_evidence(
+            flight_process_group_id=self._flight.pid,
+            flight_log=str(flight_log.resolve()),
         )
         progress_path = dataset_root / episode_id / "progress.json"
+        deadline = time.monotonic() + self.timeout_s + 30.0
         while self._flight.poll() is None:
+            self.runtime.assert_job_alive()
+            self.runtime.assert_px4_alive()
+            if time.monotonic() >= deadline:
+                stop_process(self._flight)
+                return 124
             if progress_path.is_file():
                 try:
                     progress(_read_json(progress_path))
@@ -598,36 +597,41 @@ class SubprocessBackend:
                 pass
         return int(self._flight.returncode or 0)
 
-    @staticmethod
-    def _stop_process(process: subprocess.Popen) -> None:
-        if process.poll() is not None:
-            return
-        for sent_signal, timeout in (
-            (signal.SIGINT, 10.0),
-            (signal.SIGTERM, 5.0),
-            (signal.SIGKILL, 2.0),
-        ):
+    def cleanup_episode(self, index: int, runtime_dir: Path) -> None:
+        """Stop the ROS graph, backend listener, and current PX4 only."""
+        if self._flight is not None:
+            flight_group = self._flight.pid
+            flight_shutdown = stop_process(self._flight)
+            group_shutdown = stop_process_group(flight_group)
+            if self.runtime is not None:
+                self.runtime.record_attempt_evidence(
+                    flight_shutdown=flight_shutdown,
+                    flight_group_shutdown=group_shutdown,
+                    flight_processes_remaining=group_shutdown.get(
+                        "remaining", []
+                    ),
+                )
+            self._flight = None
+        if self._flight_stream is not None:
+            self._flight_stream.close()
+            self._flight_stream = None
+        if self.runtime is not None:
             try:
-                os.killpg(process.pid, sent_signal)
-            except ProcessLookupError:
-                return
-            try:
-                process.wait(timeout=timeout)
-                return
-            except subprocess.TimeoutExpired:
-                continue
+                self.runtime.stop_episode(index, runtime_dir)
+            finally:
+                self._last_attempt_evidence = self.runtime.attempt_evidence
 
     def cleanup(self) -> None:
-        """Stop all owned process groups and close their log streams."""
+        """Stop episode resources and the one job-level runtime."""
         if self._flight is not None:
-            self._stop_process(self._flight)
+            stop_process(self._flight)
             self._flight = None
-        for process in self._processes:
-            self._stop_process(process)
-        self._processes.clear()
-        for stream in self._streams:
-            stream.close()
-        self._streams.clear()
+        if self._flight_stream is not None:
+            self._flight_stream.close()
+            self._flight_stream = None
+        if self.runtime is not None:
+            self.runtime.cleanup_job()
+        self._job_started = False
 
 
 class DryRunBackend:
@@ -638,6 +642,31 @@ class DryRunBackend:
     def preflight(self) -> None:
         """Require no live dependencies for the offline fixture."""
         return None
+
+    def start_job(self, runtime_root: Path) -> dict:
+        """Return deterministic job evidence without starting processes."""
+        return {
+            "dry_run": True,
+            "isaac_pid": None,
+            "xrce_pid": None,
+            "isaac_restart_count": 0,
+            "camera_recreated": False,
+        }
+
+    @property
+    def job_evidence(self) -> dict:
+        """Return the intentionally empty dry-run runtime evidence."""
+        return {"dry_run": True}
+
+    @property
+    def attempt_evidence(self) -> dict:
+        """Return deterministic dry-run attempt evidence."""
+        return {
+            "dry_run": True,
+            "reset_success": True,
+            "fresh_dds_verified": True,
+            "camera_recreated": False,
+        }
 
     def run_episode(
         self,
@@ -667,6 +696,10 @@ class DryRunBackend:
 
     def cleanup(self) -> None:
         """Perform the fixture's intentionally empty cleanup."""
+        return None
+
+    def cleanup_episode(self, index: int, runtime_dir: Path) -> None:
+        """Perform the fixture's intentionally empty attempt cleanup."""
         return None
 
 
@@ -757,7 +790,27 @@ class ExpertCollector:
         )
         if accepted < self.episodes and attempted < self.max_attempts:
             self.backend.preflight()
+            runtime_evidence = self.backend.start_job(self.runtime_root)
+            self.store.data.setdefault("persistent_runtime_jobs", []).append({
+                "run_number": self.store.data.get("active_run_number"),
+                **runtime_evidence,
+            })
+            self.store.save()
         self.store.set_collection_state("collecting")
+
+    def _update_runtime_job_evidence(self) -> None:
+        """Persist the latest additive job-level lifecycle evidence."""
+        if not self._manifest_prepared or not self.store.data:
+            return
+        jobs = self.store.data.setdefault("persistent_runtime_jobs", [])
+        run_number = self.store.data.get("active_run_number")
+        evidence = self.backend.job_evidence
+        for job in reversed(jobs):
+            if job.get("run_number") == run_number:
+                job.update(evidence)
+                break
+        self.store.data["persistent_runtime"] = evidence
+        self.store.save()
 
     def _recover_incomplete_episodes(self) -> None:
         recovery_root = self.runtime_root / "recovered_incomplete"
@@ -1293,6 +1346,9 @@ class ExpertCollector:
                         rejected_samples=0,
                         dataset_bytes=outcome.dataset_bytes,
                         failure_category=outcome.failure_category,
+                        failure_classification=(
+                            "recoverable_attempt_failure"
+                        ),
                         terminal_reason=outcome.terminal_reason,
                         completed_utc=_utc_now(),
                         command_status=None,
@@ -1325,6 +1381,9 @@ class ExpertCollector:
                     scene_validation=scene_summary,
                 )
                 self.display.transition(current_index, "Scene ready")
+                command_status: int | None = None
+                outcome: EpisodeOutcome | None = None
+                fatal_error: BaseException | None = None
                 try:
                     command_status = self.backend.run_episode(
                         index=current_index,
@@ -1336,12 +1395,85 @@ class ExpertCollector:
                             self._live_progress(i, s, payload)
                         ),
                     )
+                except RecoverableAttemptError as error:
+                    reason = f"recoverable_runtime: {error}"
+                    outcome = EpisodeOutcome(
+                        success=False,
+                        accepted_samples=0,
+                        rejected_samples=0,
+                        terminal_reason=reason,
+                        dataset_bytes=_directory_size(
+                            self.dataset_root / episode_id
+                        ),
+                        failure_category=_failure_category(reason),
+                        validation_result={
+                            "valid": False,
+                            "recoverable": True,
+                            "error": str(error),
+                        },
+                    )
+                except (FatalRuntimeError, KeyboardInterrupt) as error:
+                    fatal_error = error
                 finally:
-                    self.backend.cleanup()
-                outcome = (
-                    self._finalize_real_episode(episode_id, command_status)
-                    if self.backend.produces_dataset
-                    else self._dry_run_outcome()
+                    try:
+                        self.backend.cleanup_episode(
+                            current_index, runtime_dir
+                        )
+                    except RecoverableAttemptError as error:
+                        if fatal_error is None:
+                            reason = f"recoverable_cleanup: {error}"
+                            outcome = EpisodeOutcome(
+                                False, 0, 0, reason,
+                                _directory_size(
+                                    self.dataset_root / episode_id
+                                ),
+                                _failure_category(reason),
+                                {
+                                    "valid": False,
+                                    "recoverable": True,
+                                    "error": str(error),
+                                },
+                            )
+                    except FatalRuntimeError as error:
+                        if fatal_error is None:
+                            fatal_error = error
+                if fatal_error is not None:
+                    raise fatal_error
+                if outcome is None:
+                    if self.backend.produces_dataset:
+                        try:
+                            outcome = self._finalize_real_episode(
+                                episode_id, int(command_status or 0)
+                            )
+                        except RuntimeError as error:
+                            missing_output = (
+                                "recorder/evidence missing after status"
+                                in str(error)
+                            )
+                            if not missing_output:
+                                raise
+                            reason = f"recoverable_episode_output: {error}"
+                            outcome = EpisodeOutcome(
+                                False, 0, 0, reason,
+                                _directory_size(
+                                    self.dataset_root / episode_id
+                                ),
+                                "dataset_validation",
+                                {
+                                    "valid": False,
+                                    "recoverable": True,
+                                    "error": str(error),
+                                },
+                            )
+                    else:
+                        outcome = self._dry_run_outcome()
+                runtime_evidence = self.backend.attempt_evidence
+                failure_classification = (
+                    "accepted" if outcome.success
+                    else "recoverable_attempt_failure"
+                )
+                runtime_evidence["failure_classification"] = (
+                    failure_classification
                 )
                 terminal_state = "complete" if outcome.success else "rejected"
                 self.store.update_episode(
@@ -1359,6 +1491,24 @@ class ExpertCollector:
                     validation_result=outcome.validation_result,
                     completed_utc=_utc_now(),
                     command_status=command_status,
+                    runtime_evidence=runtime_evidence,
+                    px4_pid=runtime_evidence.get("px4_pid"),
+                    px4_start_ticks=runtime_evidence.get(
+                        "px4_start_ticks"
+                    ),
+                    runtime_generation=runtime_evidence.get(
+                        "runtime_generation"
+                    ),
+                    reset_success=runtime_evidence.get("reset_success"),
+                    scene_revision=runtime_evidence.get("scene_revision"),
+                    fresh_dds_verified=runtime_evidence.get(
+                        "fresh_dds_verified"
+                    ),
+                    camera_identity=runtime_evidence.get("camera_identity"),
+                    camera_recreated=runtime_evidence.get(
+                        "camera_recreated"
+                    ),
+                    failure_classification=failure_classification,
                 )
                 if not outcome.success:
                     rejection_path = self._record_rejection(
@@ -1378,6 +1528,9 @@ class ExpertCollector:
                 if self.backend.produces_dataset and outcome.success:
                     qa_error = self._visual_qa(success_count, episode_id)
                 if qa_error is not None:
+                    runtime_evidence["failure_classification"] = (
+                        "recoverable_attempt_failure"
+                    )
                     outcome = EpisodeOutcome(
                         success=False,
                         accepted_samples=0,
@@ -1395,6 +1548,10 @@ class ExpertCollector:
                         accepted_samples=0,
                         failure_category="image_qa",
                         terminal_reason=outcome.terminal_reason,
+                        failure_classification=(
+                            "recoverable_attempt_failure"
+                        ),
+                        runtime_evidence=runtime_evidence,
                     )
                     rejection_path = self._record_rejection(
                         self.store.data["episodes"][current_index - 1],
@@ -1454,7 +1611,6 @@ class ExpertCollector:
             summary = self._summary("complete")
             return {**validation, "summary": summary}
         except KeyboardInterrupt:
-            self.backend.cleanup()
             if self._manifest_prepared and current_index is not None:
                 self.store.update_episode(
                     current_index,
@@ -1472,15 +1628,27 @@ class ExpertCollector:
                 self._summary("interrupted")
             raise
         except Exception as error:
-            self.backend.cleanup()
             if self._manifest_prepared and self.store.data:
                 if current_index is not None:
                     entry = self.store.data["episodes"][current_index - 1]
                     if entry.get("status") not in TERMINAL_STATES:
+                        runtime_evidence = self.backend.attempt_evidence
+                        runtime_evidence["failure_classification"] = (
+                            "fatal_job_failure"
+                        )
                         self.store.update_episode(
                             current_index,
                             status="infrastructure_failure",
                             terminal_reason=str(error),
+                            failure_classification="fatal_job_failure",
+                            runtime_evidence=runtime_evidence,
+                            px4_pid=runtime_evidence.get("px4_pid"),
+                            px4_start_ticks=runtime_evidence.get(
+                                "px4_start_ticks"
+                            ),
+                            runtime_generation=runtime_evidence.get(
+                                "runtime_generation"
+                            ),
                         )
                 self.store.data.setdefault(
                     "infrastructure_failures", []
@@ -1511,6 +1679,13 @@ class ExpertCollector:
                     infrastructure_failures=1,
                 )
             raise
+        finally:
+            self.backend.cleanup()
+            try:
+                self._update_runtime_job_evidence()
+            except (OSError, ValueError, json.JSONDecodeError):
+                # Runtime shutdown must not mask the primary collection result.
+                pass
 
 
 def _parser() -> argparse.ArgumentParser:

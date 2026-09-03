@@ -61,7 +61,7 @@ def nearest(values: list[TimedValue], target_s: float) -> TimedValue | None:
 def latest_at_or_before(
     values: list[TimedValue], target_s: float
 ) -> TimedValue | None:
-    """Return the latest causal value whose timestamp does not exceed target."""
+    """Return the latest causal value not newer than the target time."""
     candidates = [item for item in values if item.timestamp_s <= target_s]
     return max(candidates, key=lambda item: item.timestamp_s, default=None)
 

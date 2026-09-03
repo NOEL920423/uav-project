@@ -210,6 +210,7 @@ class IsaacRuntimeBridge:
         self._episode_id = ""
         self._random_seed = None
         self._scene_configuration = None
+        self._scene_camera_boundary = None
         self._episode_command_error = ""
         self._camera_publisher = None
         self._observer_camera_publisher = None
@@ -367,15 +368,26 @@ class IsaacRuntimeBridge:
             command = json.loads(message.data)
             if command.get("command") != "prepare_episode":
                 raise ValueError("unsupported episode command")
+            episode_id = str(command["episode_id"])
+            random_seed = int(command["random_seed"])
+            mode = str(command.get("mode", "normal"))
+            if (
+                self._episode_id == episode_id
+                and self._random_seed == random_seed
+                and isinstance(self._scene_configuration, dict)
+                and self._scene_configuration.get("mode") == mode
+            ):
+                self._episode_command_error = ""
+                return
             pose = _world_pose(self._stage, VEHICLE_BODY_PATH)
             if pose is None or pose[2] > 0.25:
                 raise RuntimeError("vehicle must be landed before scene reset")
             scene = generate_episode_scene(
-                str(command["episode_id"]),
-                int(command["random_seed"]),
+                episode_id,
+                random_seed,
                 pose[0],
                 pose[1],
-                str(command.get("mode", "normal")),
+                mode,
             )
             self._apply_scene(scene)
             self._scene_revision += 1
@@ -387,6 +399,11 @@ class IsaacRuntimeBridge:
             self._goal = tuple(scene["goal"])
             self._obstacles = list(scene["obstacles"])
             self._scene_configuration = scene
+            self._scene_camera_boundary = {
+                "fpv_rgb_frame_count": self._camera_frame_count,
+                "observer_rgb_frame_count": self._observer_frame_count,
+                "fpv_depth_frame_count": self._depth_frame_count,
+            }
             self._episode_command_error = ""
             print(
                 f"[IsaacRuntimeBridge] Prepared {self._scene_id} "
@@ -767,6 +784,10 @@ class IsaacRuntimeBridge:
             "episode_id": self._episode_id,
             "random_seed": self._random_seed,
             "scene_configuration": self._scene_configuration,
+            "scene_camera_boundary": self._scene_camera_boundary,
+            "runtime_generation": int(getattr(
+                builtins, "_isaac_uav_runtime_generation", 0
+            )),
             "episode_command_error": self._episode_command_error,
             "fpv_rgb_enabled": self._camera_enabled,
             "fpv_rgb_ready": self._camera_frame_count > 0,
