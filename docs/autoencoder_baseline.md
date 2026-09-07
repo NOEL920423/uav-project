@@ -81,8 +81,8 @@ remain available.
 Each training CLI starts a managed localhost TensorBoard server by default and
 keeps it running after successful training until Ctrl+C; use `--no-tensorboard`
 for tests or batch jobs. Each run writes
-`reconstruction_loss_curves.png`, preserves the legacy
-`loss_curve.png`, and writes TensorBoard scalars
+only `reconstruction_loss_curves.png` for the loss plot. The legacy summary
+artifact key `loss_curve` points to that same file. Each run writes TensorBoard scalars
 `ae/train_reconstruction_loss` and
 `ae/validation_reconstruction_loss`. Fixed validation samples are logged as
 `ae/<image_source>/validation_original_vs_reconstructed` at the configured

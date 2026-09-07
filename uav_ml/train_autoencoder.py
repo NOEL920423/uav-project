@@ -493,7 +493,6 @@ def train(
             metadata,
         )
         _save_history(history, output / "history.csv")
-        _save_loss_curve(history, output / "loss_curve.png")
         _save_loss_curve(history, output / "reconstruction_loss_curves.png")
         best_model, best_payload = _load_model(best_path, device)
         test_metrics = _epoch(best_model, loaders["test"], device, None)
@@ -544,7 +543,7 @@ def train(
             "best_checkpoint": str(best_path.resolve()),
             "last_checkpoint": str(last_path.resolve()),
             "history": str((output / "history.csv").resolve()),
-            "loss_curve": str((output / "loss_curve.png").resolve()),
+            "loss_curve": str((output / "reconstruction_loss_curves.png").resolve()),
             "reconstruction_loss_curves": str(
                 (output / "reconstruction_loss_curves.png").resolve()
             ),
