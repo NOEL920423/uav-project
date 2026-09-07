@@ -1,8 +1,10 @@
 """Sole Phase 8 owner of the two allowed live PX4 SITL input topics."""
 
 import importlib
+import json
 import math
 import os
+from dataclasses import asdict
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -477,6 +479,33 @@ class Px4SetpointStreamerNode(Node):
                     readiness,
                     f"message adapter rejected output: {error}",
                 )
+        diagnostic_key = (
+            result.state, result.stop_reason, self.machine.fault_latched
+        )
+        if diagnostic_key != getattr(self, "_diagnostic_key", None):
+            self._diagnostic_key = diagnostic_key
+            payload = {
+                "component": "streamer", "event": "transition", "time_s": now,
+                "result": asdict(result),
+                "fault_latched": self.machine.fault_latched,
+                "gate": asdict(readiness.gate) if readiness.gate else None,
+                "maximum_publish_gap_s": self.machine.maximum_observed_gap_s,
+                "observed_rate_hz": self.machine.observed_rate_hz,
+                "telemetry_timeout_s": self.config.telemetry_timeout_s,
+                "telemetry_topic_ages_s": {
+                    name: None if receipt is None else now - receipt
+                    for name, receipt in (
+                        ("vehicle_status", self._vehicle_status_receipt),
+                        (
+                            "vehicle_control_mode",
+                            self._vehicle_control_mode_receipt,
+                        ),
+                        ("vehicle_odometry", self._vehicle_odometry_receipt),
+                        ("failsafe_flags", self._failsafe_flags_receipt),
+                    )
+                },
+            }
+            self.get_logger().info("BC_STARTUP_DIAG " + json.dumps(payload))
         self._last_result = result
         self._status_publisher.publish(
             self._status_message(result, now_clock.to_msg())

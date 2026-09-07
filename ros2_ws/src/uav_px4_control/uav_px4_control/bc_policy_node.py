@@ -7,6 +7,8 @@ import json
 import math
 import select
 import subprocess
+import sys
+import threading
 from pathlib import Path
 
 from geometry_msgs.msg import PoseStamped, TwistStamped
@@ -142,6 +144,10 @@ class BcPolicyNode(Node):
             text=True,
             bufsize=1,
         )
+        self._worker_stderr_thread = threading.Thread(
+            target=self._drain_worker_stderr, daemon=True
+        )
+        self._worker_stderr_thread.start()
         handshake = self._read_worker(60.0)
         if not handshake.get("ready"):
             error = handshake.get("error", "worker exited during startup")
@@ -187,6 +193,22 @@ class BcPolicyNode(Node):
         )
         self._timer = self.create_timer(1.0 / publish_rate, self._tick)
         self.get_logger().info(MSG_POLICY_READY)
+
+    def _drain_worker_stderr(self) -> None:
+        """Drain worker diagnostics without mixing them into stdout IPC."""
+        stream = self._worker.stderr
+        if stream is None:
+            return
+        for line in iter(stream.readline, ""):
+            text = line.rstrip("\n")
+            if text:
+                print(f"[Inference][stderr] {text}", file=sys.stderr, flush=True)
+                self.get_logger().error(text)
+        code = self._worker.poll()
+        if code is not None and code != 0:
+            message = f"[Inference] worker exited with return code {code}"
+            print(message, file=sys.stderr, flush=True)
+            self.get_logger().error(message)
 
     def _now_seconds(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9

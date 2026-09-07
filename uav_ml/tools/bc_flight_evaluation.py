@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 import torch
@@ -35,6 +36,8 @@ MSG_RESULT = "[BC Flight] Episode {episode}: {reason}"
 MSG_PLOTS = "[BC Flight] Plots saved under: {path}"
 MSG_PLOT_WARNING = "[BC Flight] Plot generation failed: {error}"
 MSG_ERROR = "[BC Flight] Error: {error}"
+_LAST_ARTIFACT_PATH: Path | None = None
+_ERROR_MARKERS = ("ERROR", "FATAL", "TRACEBACK", "EXCEPTION", "UNEXPECTED EXIT")
 
 
 def _stamp() -> str:
@@ -68,6 +71,26 @@ def _process_exists(arguments: list[str]) -> bool:
     ).returncode == 0
 
 
+def _is_error_line(line: str) -> bool:
+    upper = line.upper()
+    return any(marker in upper for marker in _ERROR_MARKERS)
+
+
+def _tail(path: Path, count: int = 20) -> str:
+    if not path.is_file():
+        return ""
+    return "".join(path.read_text(encoding="utf-8", errors="replace").splitlines(True)[-count:])
+
+
+def _pump(stream, output, *, label: str, verbose: bool) -> None:
+    for line in iter(stream.readline, ""):
+        output.write(line)
+        output.flush()
+        if verbose or _is_error_line(line) or label.endswith("stderr"):
+            print(line, end="", file=sys.stderr if label.endswith("stderr") else sys.stdout, flush=True)
+    stream.close()
+
+
 class ManagedFlightRuntime:
     """Own the XRCE, Isaac/Pegasus/PX4, and ROS launch process groups."""
 
@@ -80,6 +103,7 @@ class ManagedFlightRuntime:
         checkpoint: Path,
         image_source: str,
         timeout_s: float,
+        verbose: bool = False,
     ) -> None:
         self.repository_root = repository_root
         self.isaac_release = isaac_release
@@ -88,9 +112,11 @@ class ManagedFlightRuntime:
         self.checkpoint = checkpoint
         self.image_source = image_source
         self.timeout_s = timeout_s
+        self.verbose = verbose
         self._agent: subprocess.Popen | None = None
         self._isaac: subprocess.Popen | None = None
         self._streams = []
+        self._pump_threads: list[threading.Thread] = []
 
     def preflight(self) -> None:
         launcher = self.isaac_release / (
@@ -131,10 +157,10 @@ class ManagedFlightRuntime:
         self._agent = subprocess.Popen(
             ["MicroXRCEAgent", "udp4", "-p", "8888"],
             cwd=self.repository_root,
-            stdout=self._log(runtime_dir / "xrce.log"),
-            stderr=subprocess.STDOUT,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
             start_new_session=True,
         )
+        self._attach_streams(self._agent, runtime_dir / "xrce.log", "MicroXRCEAgent")
         launcher = self.isaac_release / (
             "isaac-sim.streaming.sh" if self.visible else "isaac-sim.sh"
         )
@@ -150,23 +176,38 @@ class ManagedFlightRuntime:
             command,
             cwd=self.isaac_release,
             env=environment,
-            stdout=self._log(runtime_dir / "isaac.log"),
-            stderr=subprocess.STDOUT,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
             start_new_session=True,
         )
+        self._attach_streams(self._isaac, runtime_dir / "isaac.log", "Isaac Sim/Pegasus/PX4")
+
+    def _attach_streams(self, process: subprocess.Popen, log_path: Path, name: str) -> None:
+        output = self._log(log_path)
+        for stream, label in ((process.stdout, f"{name} stdout"), (process.stderr, f"{name} stderr")):
+            if stream is not None:
+                thread = threading.Thread(target=_pump, args=(stream, output), kwargs={"label": label, "verbose": self.verbose}, daemon=True)
+                self._pump_threads.append(thread)
+                thread.start()
 
     def _uav(self, arguments: list[str], log_path: Path) -> int:
         environment = os.environ.copy()
         environment["UAV_OFFLINE_TIMEOUT_SECONDS"] = str(int(self.timeout_s))
-        with log_path.open("w", encoding="utf-8") as stream:
-            return subprocess.run(
+        process = subprocess.Popen(
                 [str(self.repository_root / "uav"), *arguments],
                 cwd=self.repository_root,
                 env=environment,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                timeout=self.timeout_s + 45.0,
-            ).returncode
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
+            )
+        self._attach_streams(process, log_path, "./uav " + arguments[0])
+        try:
+            code = process.wait(timeout=self.timeout_s + 45.0)
+        except subprocess.TimeoutExpired:
+            _stop_process(process)
+            raise
+        if code != 0:
+            detail = _tail(log_path)
+            print(f"[BC Flight] subprocess failure: stage={arguments[0]} process=./uav {arguments[0]} return code={code}\n{detail}[BC Flight] log: {log_path}", file=sys.stderr, flush=True)
+        return code
 
     def run_episode(
         self,
@@ -205,6 +246,9 @@ class ManagedFlightRuntime:
         _stop_process(self._agent)
         self._isaac = None
         self._agent = None
+        for thread in self._pump_threads:
+            thread.join(timeout=2.0)
+        self._pump_threads.clear()
         for stream in self._streams:
             stream.close()
         self._streams.clear()
@@ -224,6 +268,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--verbose", action="store_true", help="Show all subprocess stdout.")
     display = parser.add_mutually_exclusive_group()
     display.add_argument(
         "--visible", action="store_true", help="Start the WebRTC runtime."
@@ -257,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
         else repository_root / "artifacts/evaluations/bc_flight" / f"run_{_stamp()}"
     )
     output_root.mkdir(parents=True, exist_ok=False)
+    global _LAST_ARTIFACT_PATH
+    _LAST_ARTIFACT_PATH = output_root
     isaac_release = Path(os.environ.get(
         "UAV_ISAAC_SIM_RELEASE",
         str(Path.home() / "isaacsim/_build/linux-x86_64/release"),
@@ -275,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint,
             image_source,
             args.timeout,
+            args.verbose,
         )
         runtime.preflight()
         print(MSG_STARTING, flush=True)
@@ -294,6 +342,14 @@ def main(argv: list[str] | None = None) -> int:
                 episode=episode,
                 reason=result.get("terminal_reason", "unknown"),
             ), flush=True)
+            if result.get("terminal_reason") == "runtime_failure":
+                print(
+                    f"[BC Flight] failure_reason: {result.get('failure_reason', 'unknown')}\n"
+                    f"[BC Flight] flight log: {episode_root / 'flight.log'}\n"
+                    f"{_tail(episode_root / 'flight.log')}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         finally:
             print(MSG_CLEANUP, flush=True)
             runtime.cleanup()
@@ -335,12 +391,11 @@ def cli() -> int:
     except KeyboardInterrupt:
         print(MSG_ERROR.format(error="interrupted by user"), file=sys.stderr)
         return 130
-    except (
-        OSError,
-        RuntimeError,
-        ValueError,
-        subprocess.SubprocessError,
-    ) as error:
+    except Exception as error:
+        import traceback
+        traceback.print_exc()
+        if _LAST_ARTIFACT_PATH:
+            print(f"[BC Flight] Artifacts: {_LAST_ARTIFACT_PATH}", file=sys.stderr)
         print(MSG_ERROR.format(error=error), file=sys.stderr)
         return 1
 

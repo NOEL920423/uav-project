@@ -1,6 +1,8 @@
 """ROS diagnostics adapter for the offline PX4 mapping and output gate."""
 
+import json
 import math
+from dataclasses import asdict
 
 from geometry_msgs.msg import TwistStamped
 
@@ -239,6 +241,23 @@ class Px4MappingGateNode(Node):
         result = self.gate.step(
             now, candidate, validation, mux, self._telemetry
         )
+        diagnostic_key = (
+            result.state, result.hold_reason, result.fault_latched
+        )
+        if diagnostic_key != getattr(self, "_diagnostic_key", None):
+            self._diagnostic_key = diagnostic_key
+            payload = {
+                "component": "gate", "event": "transition", "time_s": now,
+                "result": asdict(result),
+                "validation": asdict(validation) if validation else None,
+                "mux": asdict(mux) if mux else None,
+                "telemetry": (
+                    asdict(self._telemetry) if self._telemetry else None
+                ),
+                "telemetry_timeout_s": self.config.telemetry_timeout_s,
+                "command_timeout_s": self.config.selected_command_timeout_s,
+            }
+            self.get_logger().info("BC_STARTUP_DIAG " + json.dumps(payload))
         self._last_result = result
         stamp = self.get_clock().now().to_msg()
         if candidate is not None and validation is not None:

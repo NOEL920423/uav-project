@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import math
+from dataclasses import asdict
 
 from geometry_msgs.msg import TwistStamped
 
@@ -370,6 +371,9 @@ class BcFlightSupervisorNode(Node):
         if message is None:
             message = getattr(response, "message", "")
         if not accepted:
+            self._log_startup_diagnostic(
+                "service_rejected", action=action, message=message
+            )
             self.get_logger().warning(
                 MSG_ACTION_REJECTED.format(action=action, message=message)
             )
@@ -429,9 +433,42 @@ class BcFlightSupervisorNode(Node):
                 action, self._VehicleCommand.VEHICLE_CMD_NAV_LAND, now
             )
 
+    def _log_startup_diagnostic(self, event: str, **details) -> None:
+        now = self._now_seconds()
+        payload = {
+            "component": "supervisor", "event": event, "time_s": now,
+            "state": self._controller.state.value,
+            "failure_reason": self._controller.failure_reason,
+            "evidence": asdict(self._evidence(now)),
+            "vehicle_status_age_s": (
+                None if self._vehicle_status_receipt_s is None
+                else now - self._vehicle_status_receipt_s
+            ),
+            "odometry_age_s": (
+                None if self._odometry_receipt_s is None
+                else now - self._odometry_receipt_s
+            ),
+            **details,
+        }
+        for name, status, fields in (
+            ("gate", self._gate_status, (
+                "state", "hold_reason",
+                "selected_command_age", "telemetry_age",
+            )),
+            ("streamer", self._stream_status, (
+                "state", "stop_reason", "candidate_age", "gate_status_age",
+                "telemetry_age", "maximum_publish_gap",
+            )),
+        ):
+            payload[name] = None if status is None else {
+                field: getattr(status, field) for field in fields
+            }
+        self.get_logger().info("BC_STARTUP_DIAG " + json.dumps(payload))
+
     def _log_transition(
         self, previous: BcFlightState, current: BcFlightState
     ) -> None:
+        self._log_startup_diagnostic("transition", previous=previous.value)
         if current == BcFlightState.TAKING_OFF:
             self.get_logger().info(MSG_TAKEOFF_STARTED)
         elif current == BcFlightState.ENABLING_BC:

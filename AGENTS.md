@@ -2,6 +2,7 @@
 
 ## 專案說明
 目標: 在虛擬環境蒐集專家資料集，用蒐集到的資料集訓練 autoencoder, PPO, BC，最後在 closed-loop 測試 20 次能夠 100% 飛行。
+此目標為長期研究目標，不代表每一個 Codex 任務都需要自行持續修改直到達成該結果。
 本專案為無人機自主導航研究專案，主要包含：
 
 - NVIDIA Isaac Sim 模擬環境
@@ -17,6 +18,11 @@
 
 ---
 
+## 效率原則
+
+- 如果任務已明確指定相關檔案或模組，優先只讀取這些檔案及其直接依賴，不要無必要地掃描整個 repository。
+- 如果某項測試在本次修改後已經通過，且相關程式未再變更，不要重複執行相同測試。
+
 ## 工作原則
 
 1. 優先修改與目前任務直接相關的程式。
@@ -25,8 +31,18 @@
 4. 修改前先確認問題原因，不要只根據猜測直接大幅改動。
 5. 除非任務明確要求，否則不要改變既有 CLI、資料格式、模型輸入輸出或其他既有介面。
 6. 程式碼、變數名稱、函式名稱與程式註解一律使用英文。
+7. 如果使用者已經指定問題範圍、檔案或 failure path，不要重新進行整個 repository 的廣泛分析。
+8. 如果使用者要求「只檢查」、「只診斷」或「不要修改」，不得修改任何檔案。
+9. 如果問題已經定位，優先針對該 failure path 做最小驗證，不要重新展開已排除的假說。
+10. 優先使用既有 logs、artifacts、diagnostics 與測試，不要在沒有必要時新增新的診斷系統。
 
 ---
+## 昂貴操作原則
+
+- 不要因為修改少量程式就自動執行完整 Isaac Sim regression。
+- 如果一次或少量 targeted reproduction 已能回答問題，就停止繼續重現。
+- 除非使用者要求，不要自行增加 simulation episode 數量。
+- 在執行昂貴測試前，先確認較低成本的 static、syntax、unit 或 targeted test 是否已足夠。
 
 ## 測試原則
 
@@ -42,8 +58,28 @@
 6. Isaac Sim runtime test
 7. 完整實驗
 
+
 如果簡單測試已經可以確認修改正確，不要無必要地執行昂貴或耗時的完整模擬。
 
+## 診斷原則
+
+- Debugging 時優先依據原始 error、stderr、traceback、telemetry、ULog、process exit code 與 artifact。
+- 明確區分「已確認」、「最可能」、「尚未證明」。
+- 不要因時間上相鄰的兩個事件，就直接認定存在因果關係。
+- 如果缺少能區分兩個假說的證據，優先提出最小實驗取得該證據。
+
+## 錯誤與輸出原則
+
+- 不要隱藏原始 stderr、traceback、ERROR、FATAL 或 subprocess 非零退出資訊。
+- 如果程式已有 artifact log，應保留原始 log，同時讓重要錯誤能直接從 terminal 看到。
+- `runtime_failure`、`startup_failure` 等摘要分類不能取代原始 failure reason。
+- 新增 subprocess 或 worker 時，必須確認 stdout/stderr 不會因 PIPE 未持續讀取而阻塞。
+
+## Git 原則
+
+- 不要修改或回復與目前任務無關的既有變更。
+- 不要使用 destructive Git commands，例如 reset --hard、clean -fd 或強制 checkout，除非使用者明確要求。
+- 不要自動 commit、push 或建立 branch，除非使用者明確要求。
 ---
 
 ## 回覆格式
