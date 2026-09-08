@@ -4,6 +4,11 @@ from dataclasses import replace
 
 import pytest
 
+from uav_px4_control.bc_flight_models import (
+    BcFlightController,
+    BcFlightEvidence,
+    BcFlightState,
+)
 from uav_px4_control.px4_boundary_models import (
     CandidateValidation,
     MuxHealthEvidence,
@@ -102,6 +107,53 @@ def test_enable_requires_one_complete_healthy_cycle() -> None:
     assert not pending.safe_to_forward
     assert forwarding.state == Px4OutputGateState.SAFE_TO_FORWARD
     assert forwarding.safe_to_forward
+
+
+def test_mux_switch_barrier_defers_mixed_cycle_validation() -> None:
+    """A mux switch alone preserves safe forwarding and does not latch."""
+    gate = Px4OutputSafetyGate()
+    enable_healthy(gate)
+    result = step(gate, 1.1, health=mux(1.1, switch_in_progress=True))
+    assert not result.fault_latched
+    assert result.safe_to_forward
+    assert result.state == Px4OutputGateState.SAFE_TO_FORWARD
+
+
+def test_bc_startup_waits_for_delayed_gate_telemetry() -> None:
+    """Replay supervisor readiness arriving before the gate's telemetry."""
+    controller = BcFlightController()
+    gate = Px4OutputSafetyGate()
+    evidence = BcFlightEvidence(
+        runtime_ready=True,
+        observations_ready=True,
+        telemetry_fresh=True,
+        lifecycle_selected=True,
+        source_valid=True,
+    )
+    controller.step(1.0, evidence)
+    for now in (1.1, 1.2, 2.0):
+        decision = controller.step(now, evidence)
+        for action in decision.actions:
+            if action == "ENABLE_OUTPUT":
+                gate.request_enable(True)
+        result = gate.step(now, candidate(now), valid(), mux(now), None)
+        assert result.state == Px4OutputGateState.WAITING_TELEMETRY
+        assert not result.fault_latched
+        assert not result.enabled
+        assert decision.actions == ()
+
+    result = step(gate, 2.1)
+    assert result.state == Px4OutputGateState.READY_DISABLED
+    decision = controller.step(2.1, replace(evidence, output_ready=True))
+    assert decision.actions == ("ENABLE_OUTPUT",)
+    assert gate.request_enable(True).accepted
+    assert step(gate, 2.2).state == Px4OutputGateState.ENABLE_PENDING
+    result = step(gate, 2.3)
+    assert result.safe_to_forward
+    assert not result.fault_latched
+    decision = controller.step(2.3, replace(evidence, output_safe=True))
+    assert decision.state == BcFlightState.ENABLING_STREAM
+    assert decision.actions == ("ENABLE_STREAM",)
 
 
 @pytest.mark.parametrize(

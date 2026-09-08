@@ -167,6 +167,7 @@ class Px4MappingGateNode(Node):
             hold_active=message.hold_active,
             active_source=message.active_source,
             receipt_time_s=receipt,
+            switch_in_progress=message.switch_in_progress,
         )
 
     def _candidate(

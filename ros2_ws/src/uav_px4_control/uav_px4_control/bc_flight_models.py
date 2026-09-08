@@ -122,6 +122,19 @@ class BcFlightController:
             return self._abort(now_s, reason)
         return self._decision(*actions)
 
+    def _require_lifecycle_source(
+        self, now: float, evidence: BcFlightEvidence
+    ) -> BcFlightDecision | None:
+        """Return to lifecycle selection if pre-arm control authority is lost."""
+        if evidence.vehicle_armed:
+            return None
+        if evidence.lifecycle_selected and evidence.source_valid:
+            return None
+        self._set_state(BcFlightState.SELECTING_LIFECYCLE, now)
+        return self._decision(
+            "SELECT_HOLD", "DISABLE_STREAM", "DISABLE_OUTPUT", "SELECT_LIFECYCLE"
+        )
+
     def step(
         self, now_s: float, evidence: BcFlightEvidence
     ) -> BcFlightDecision:
@@ -157,7 +170,10 @@ class BcFlightController:
         if self.state == BcFlightState.SELECTING_LIFECYCLE:
             if evidence.lifecycle_selected and evidence.source_valid:
                 self._set_state(BcFlightState.ENABLING_OUTPUT, now)
-                return self._decision("ENABLE_OUTPUT")
+                # The gate receives telemetry independently of this supervisor.
+                # Enabling before its readiness check would latch a startup fault.
+                actions = ("ENABLE_OUTPUT",) if evidence.output_ready else ()
+                return self._decision(*actions)
             return self._timed_out(
                 now,
                 self.config.service_timeout_s,
@@ -165,6 +181,9 @@ class BcFlightController:
                 "SELECT_LIFECYCLE",
             )
         if self.state == BcFlightState.ENABLING_OUTPUT:
+            guard = self._require_lifecycle_source(now, evidence)
+            if guard is not None:
+                return guard
             if evidence.output_safe:
                 self._set_state(BcFlightState.ENABLING_STREAM, now)
                 return self._decision("ENABLE_STREAM")
@@ -176,6 +195,9 @@ class BcFlightController:
                 *actions,
             )
         if self.state == BcFlightState.ENABLING_STREAM:
+            guard = self._require_lifecycle_source(now, evidence)
+            if guard is not None:
+                return guard
             if evidence.stream_stable:
                 self._set_state(BcFlightState.REQUESTING_OFFBOARD, now)
                 return self._decision("SEND_OFFBOARD")
@@ -186,6 +208,9 @@ class BcFlightController:
                 "ENABLE_STREAM",
             )
         if self.state == BcFlightState.REQUESTING_OFFBOARD:
+            guard = self._require_lifecycle_source(now, evidence)
+            if guard is not None:
+                return guard
             if evidence.offboard_active:
                 self._set_state(BcFlightState.REQUESTING_ARM, now)
                 return self._decision("SEND_ARM")
@@ -196,6 +221,9 @@ class BcFlightController:
                 "SEND_OFFBOARD",
             )
         if self.state == BcFlightState.REQUESTING_ARM:
+            guard = self._require_lifecycle_source(now, evidence)
+            if guard is not None:
+                return guard
             if evidence.vehicle_armed:
                 self._set_state(BcFlightState.TAKING_OFF, now)
                 return self._decision()
@@ -206,6 +234,9 @@ class BcFlightController:
                 "SEND_ARM",
             )
         if self.state == BcFlightState.TAKING_OFF:
+            guard = self._require_lifecycle_source(now, evidence)
+            if guard is not None:
+                return guard
             if not evidence.telemetry_fresh or not evidence.source_valid:
                 return self._abort(
                     now, "takeoff control evidence became stale"
@@ -233,7 +264,12 @@ class BcFlightController:
                 "ENABLE_BC",
             )
         if self.state == BcFlightState.SELECTING_BC:
-            if evidence.bc_selected and evidence.source_valid:
+            if (
+                evidence.bc_selected
+                and evidence.source_valid
+                and evidence.output_safe
+                and evidence.stream_stable
+            ):
                 self._set_state(BcFlightState.NAVIGATING, now)
                 return self._decision()
             return self._timed_out(

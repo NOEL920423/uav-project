@@ -153,6 +153,7 @@ class MuxHealthEvidence:
     hold_active: bool
     active_source: str
     receipt_time_s: float
+    switch_in_progress: bool = False
 
 
 @dataclass(frozen=True, slots=True)

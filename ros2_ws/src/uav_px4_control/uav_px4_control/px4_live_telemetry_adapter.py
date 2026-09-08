@@ -2,6 +2,7 @@
 
 import importlib
 import math
+from dataclasses import dataclass
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -20,6 +21,13 @@ from uav_px4_control.px4_setpoint_streamer_node import (
 )
 
 
+@dataclass
+class _TopicDiagnostic:
+    count: int = 0
+    last_receive_s: float | None = None
+    maximum_gap_s: float = 0.0
+
+
 class Px4LiveTelemetryAdapter(Node):
     """Publish only custom safety evidence derived from four live outputs."""
 
@@ -31,6 +39,12 @@ class Px4LiveTelemetryAdapter(Node):
         self._mode = None
         self._odometry = None
         self._flags = None
+        self._topic_diagnostics = {
+            name: _TopicDiagnostic()
+            for name in ("vehicle_status", "vehicle_control_mode",
+                         "vehicle_odometry", "failsafe_flags")
+        }
+        self._last_diagnostic_log_s = 0.0
         qos = px4_output_qos()
         self.create_subscription(
             message_module.VehicleStatus,
@@ -65,17 +79,48 @@ class Px4LiveTelemetryAdapter(Node):
 
     def _status_callback(self, message) -> None:
         self._status = message
+        self._record_topic("vehicle_status")
 
     def _mode_callback(self, message) -> None:
         self._mode = message
+        self._record_topic("vehicle_control_mode")
 
     def _odometry_callback(self, message) -> None:
         self._odometry = message
+        self._record_topic("vehicle_odometry")
 
     def _flags_callback(self, message) -> None:
         self._flags = message
+        self._record_topic("failsafe_flags")
+
+    def _record_topic(self, name: str) -> None:
+        now = self.get_clock().now().nanoseconds / 1e9
+        diagnostic = self._topic_diagnostics[name]
+        if diagnostic.last_receive_s is not None:
+            diagnostic.maximum_gap_s = max(
+                diagnostic.maximum_gap_s, now - diagnostic.last_receive_s
+            )
+        diagnostic.last_receive_s = now
+        diagnostic.count += 1
 
     def _tick(self) -> None:
+        now = self.get_clock().now().nanoseconds / 1e9
+        if now - self._last_diagnostic_log_s >= 5.0:
+            self._last_diagnostic_log_s = now
+            ages = {
+                name: (None if item.last_receive_s is None
+                       else round(now - item.last_receive_s, 3))
+                for name, item in self._topic_diagnostics.items()
+            }
+            self.get_logger().info(
+                "PX4_TELEMETRY_DIAG "
+                + str({
+                    name: {"received_count": item.count,
+                           "last_receive_age_s": ages[name],
+                           "maximum_observed_gap_s": round(item.maximum_gap_s, 3)}
+                    for name, item in self._topic_diagnostics.items()
+                })
+            )
         if any(
             item is None
             for item in (self._status, self._mode, self._odometry, self._flags)

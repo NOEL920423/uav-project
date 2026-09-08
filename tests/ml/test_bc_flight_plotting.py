@@ -103,11 +103,10 @@ class BcFlightPlottingTests(unittest.TestCase):
             }
             self.assertEqual(episode_names, {
                 PLOT_FILENAMES["trajectory"],
-                PLOT_FILENAMES["goal_distance"],
-                PLOT_FILENAMES["action"],
-                PLOT_FILENAMES["clearance"],
             })
-            self.assertEqual(len(plots["summary"]), 6)
+            self.assertEqual({Path(path).name for path in plots["summary"]}, {
+                PLOT_FILENAMES["outcomes"], PLOT_FILENAMES["status"],
+            })
 
     def test_missing_trace_does_not_create_fake_episode_plots(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -120,7 +119,9 @@ class BcFlightPlottingTests(unittest.TestCase):
             )
             plots = generate_evaluation_plots(run_dir)
             self.assertEqual(plots["episodes"], {})
-            self.assertEqual(len(plots["summary"]), 6)
+            self.assertEqual({Path(path).name for path in plots["summary"]}, {
+                PLOT_FILENAMES["outcomes"], PLOT_FILENAMES["status"],
+            })
 
 
 if __name__ == "__main__":

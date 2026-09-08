@@ -124,6 +124,28 @@ def test_explicit_enable_prestream_stream_and_disable():
     assert result.should_publish is False
 
 
+def test_startup_waits_for_first_complete_telemetry_set():
+    """A stale candidate cannot latch while required telemetry is incomplete."""
+    machine = Px4StreamStateMachine(config())
+    current = prime(machine)
+    assert machine.request_enable(True)[0]
+    incomplete = readiness(
+        10.0,
+        current,
+        telemetry=None,
+    )
+    result = machine.step(10.0, incomplete, 10_000_000)
+    assert result.state == Px4StreamState.WAITING_TELEMETRY
+    assert result.should_publish is False
+    assert machine.fault_latched is False
+    current = candidate(10.5, 10_000_003)
+    machine.observe_candidate(current)
+    complete = readiness(10.5, current)
+    result = machine.step(10.5, complete, 10_500_000)
+    assert result.state == Px4StreamState.WAITING_CANDIDATE
+    assert machine.fault_latched is False
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected"),
     [

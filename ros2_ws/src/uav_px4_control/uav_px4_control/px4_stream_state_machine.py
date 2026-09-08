@@ -286,6 +286,16 @@ class Px4StreamStateMachine:
                 "Phase 7 safe_to_forward is false",
                 True,
             )
+        # During startup, telemetry topics are discovered independently.  Do
+        # not let an old candidate heartbeat become a latched fault until all
+        # required PX4 telemetry has produced its first sample.
+        telemetry = readiness.telemetry
+        if telemetry is None:
+            return (
+                Px4StreamState.WAITING_TELEMETRY,
+                "waiting for all required PX4 telemetry",
+                False,
+            )
         candidate = readiness.candidate
         if candidate is None:
             return (
@@ -314,13 +324,6 @@ class Px4StreamStateMachine:
             return (
                 Px4StreamState.WAITING_CANDIDATE,
                 "waiting for stable monotonic candidate heartbeat window",
-                False,
-            )
-        telemetry = readiness.telemetry
-        if telemetry is None:
-            return (
-                Px4StreamState.WAITING_TELEMETRY,
-                "waiting for all required PX4 telemetry",
                 False,
             )
         telemetry_age = now_s - telemetry.oldest_receipt_time_s

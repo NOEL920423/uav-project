@@ -23,6 +23,10 @@ LINE_WIDTH = 1.8
 MARKER_SIZE = 28
 SHOW_OBSTACLE_LABELS = False
 SHOW_START_GOAL_TEXT = True
+ENABLE_EXTRA_PLOTS = False
+STATUS_FIGURE_SIZE = (12.0, 4.8)
+STATUS_MARKER_SIZE = 130
+STATUS_BAND_ALPHA = 0.085
 
 PLOT_FILENAMES = {
     "trajectory": "trajectory_xy.png",
@@ -30,6 +34,7 @@ PLOT_FILENAMES = {
     "action": "bc_action_vs_time.png",
     "clearance": "obstacle_clearance_vs_time.png",
     "outcomes": "outcome_summary.png",
+    "status": "flight_status_by_episode.png",
     "final_goal": "final_goal_distance_by_episode.png",
     "minimum_goal": "minimum_goal_distance_by_episode.png",
     "path_length": "path_length_by_episode.png",
@@ -37,14 +42,16 @@ PLOT_FILENAMES = {
     "path_goal_scatter": "path_length_vs_final_goal_distance.png",
 }
 
-OUTCOME_ORDER = ("success", "collision", "timeout", "out_of_bounds")
+OUTCOME_ORDER = ("success", "collision", "runtime_failure", "out_of_bounds", "timeout")
 OUTCOME_LABELS = {
+    "runtime_failure": "Control issue",
     "success": "Success",
     "collision": "Collision",
     "timeout": "Timeout",
     "out_of_bounds": "Out of bounds",
 }
 OUTCOME_COLORS = {
+    "runtime_failure": "#8b64bc",
     "success": "#2a9d8f",
     "collision": "#e76f51",
     "timeout": "#e9c46a",
@@ -261,6 +268,9 @@ def create_episode_plots(episode_dir: Path, result: dict) -> list[str]:
         raise ValueError(f"unsupported BC trace schema: {trace_path}")
     plot_dir = episode_dir / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
+    if not ENABLE_EXTRA_PLOTS:
+        path = _trajectory_plot(plot_dir, trace, result)
+        return [path] if path is not None else []
     samples = trace.get("samples", [])
     candidates = [
         _trajectory_plot(plot_dir, trace, result),
@@ -309,6 +319,32 @@ def _episode_metric_plot(
     return _save(figure, plot_dir / PLOT_FILENAMES[filename_key])
 
 
+def _flight_status_plot(plot_dir: Path, records: list[dict]) -> str:
+    """Show one categorical outcome per flight, ordered by episode number."""
+    ordered = sorted(records, key=lambda item: int(item["episode"]))
+    reasons = [str(item.get("terminal_reason", "unknown")) for item in ordered]
+    unknown = set(reasons) - set(OUTCOME_ORDER)
+    if unknown:
+        raise ValueError(f"unsupported flight outcomes: {sorted(unknown)}")
+    figure, axis = plt.subplots(figsize=STATUS_FIGURE_SIZE)
+    for row, reason in enumerate(OUTCOME_ORDER):
+        color = OUTCOME_COLORS[reason]
+        axis.axhspan(row - 0.5, row + 0.5, color=color, alpha=STATUS_BAND_ALPHA)
+        indexes = [index for index, value in enumerate(reasons, 1) if value == reason]
+        axis.scatter(
+            indexes, [row] * len(indexes), s=STATUS_MARKER_SIZE,
+            color=color, edgecolor="white", linewidth=1.3, zorder=3,
+        )
+    axis.set_xticks(range(1, len(ordered) + 1))
+    axis.set_yticks(range(len(OUTCOME_ORDER)), [OUTCOME_LABELS[r] for r in OUTCOME_ORDER])
+    axis.set(
+        xlim=(0.5, len(ordered) + 0.5), ylim=(len(OUTCOME_ORDER) - 0.5, -0.5),
+        xlabel="Flight order", ylabel="Flight status", title="Flight outcome by episode",
+    )
+    axis.grid(axis="x", alpha=0.3, linestyle=":")
+    return _save(figure, plot_dir / PLOT_FILENAMES["status"])
+
+
 def create_summary_plots(run_dir: Path, records: list[dict]) -> list[str]:
     """Create aggregate plots from measured per-episode result files."""
     if not records:
@@ -342,6 +378,9 @@ def create_summary_plots(run_dir: Path, records: list[dict]) -> list[str]:
     paths = [_save(
         figure, plot_dir / PLOT_FILENAMES["outcomes"]
     )]
+    paths.append(_flight_status_plot(plot_dir, records))
+    if not ENABLE_EXTRA_PLOTS:
+        return paths
     metrics = (
         ("final_goal_distance_m", "Final goal distance (m)",
          "Final goal distance by episode", "final_goal"),

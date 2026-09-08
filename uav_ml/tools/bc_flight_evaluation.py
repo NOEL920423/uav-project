@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 
 import torch
 
@@ -41,7 +42,7 @@ _ERROR_MARKERS = ("ERROR", "FATAL", "TRACEBACK", "EXCEPTION", "UNEXPECTED EXIT")
 
 
 def _stamp() -> str:
-    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    return datetime.now().strftime("%Y%m%dT%H%M")
 
 
 def _stop_process(process: subprocess.Popen | None) -> None:
@@ -73,7 +74,22 @@ def _process_exists(arguments: list[str]) -> bool:
 
 def _is_error_line(line: str) -> bool:
     upper = line.upper()
-    return any(marker in upper for marker in _ERROR_MARKERS)
+    return any(marker in upper for marker in _ERROR_MARKERS) or "STALE" in upper
+
+
+def _display_line(line: str) -> str:
+    """Condense large startup diagnostics while preserving stale fault context."""
+    if "BC_STARTUP_DIAG" not in line or "STALE" not in line.upper():
+        return line
+    try:
+        payload = json.loads(line[line.index("{"):])
+    except (ValueError, json.JSONDecodeError):
+        return line
+    values = {"component": payload.get("component"), "state": payload.get("state")}
+    for key, value in payload.items():
+        if any(token in key.lower() for token in ("reason", "age", "timeout", "latch")):
+            values[key] = value
+    return "[BC Flight] STALE_FAULT " + json.dumps(values, sort_keys=True) + "\n"
 
 
 def _tail(path: Path, count: int = 20) -> str:
@@ -87,7 +103,7 @@ def _pump(stream, output, *, label: str, verbose: bool) -> None:
         output.write(line)
         output.flush()
         if verbose or _is_error_line(line) or label.endswith("stderr"):
-            print(line, end="", file=sys.stderr if label.endswith("stderr") else sys.stdout, flush=True)
+            print(_display_line(line), end="", file=sys.stderr if label.endswith("stderr") else sys.stdout, flush=True)
     stream.close()
 
 
@@ -117,6 +133,7 @@ class ManagedFlightRuntime:
         self._isaac: subprocess.Popen | None = None
         self._streams = []
         self._pump_threads: list[threading.Thread] = []
+        self._episode_start_time_s: float | None = None
 
     def preflight(self) -> None:
         launcher = self.isaac_release / (
@@ -149,6 +166,7 @@ class ManagedFlightRuntime:
 
     def start(self, runtime_dir: Path) -> None:
         runtime_dir.mkdir(parents=True, exist_ok=True)
+        self._episode_start_time_s = time.time()
         environment = os.environ.copy()
         environment["UAV_EXPERT_SENSORS"] = "1"
         environment["UAV_OBSERVER_VIEWPORT"] = "1" if self.visible else "0"
@@ -240,6 +258,64 @@ class ManagedFlightRuntime:
                 f"BC flight result is missing after launch status {status}"
             )
         return json.loads(result_path.read_text(encoding="utf-8"))
+
+    def save_ulog(self, runtime_dir: Path, abnormal: bool) -> None:
+        """Snapshot PX4 ULog files before stopping managed processes."""
+        if not abnormal:
+            return
+        destination = runtime_dir / "px4_ulog"
+        destination.mkdir(exist_ok=True)
+        px4_pid = None
+        px4_cwd = None
+        failure_reason = ""
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdigit():
+                continue
+            try:
+                command = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+                if "/PX4-Autopilot/build/px4_sitl_default/bin/px4" not in command:
+                    continue
+                px4_pid = int(proc.name)
+                px4_cwd = Path(os.readlink(proc / "cwd"))
+                break
+            except (OSError, ValueError):
+                continue
+        if px4_pid is None or px4_cwd is None:
+            failure_reason = "live PX4 process PID/cwd could not be obtained"
+        roots = [] if px4_cwd is None else [px4_cwd / "log"]
+        copied = []
+        cutoff = (self._episode_start_time_s or time.time()) - 1.0
+        candidates = []
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for source in root.rglob("*.ulg"):
+                if source.is_file():
+                    stat = source.stat()
+                    selected = stat.st_mtime >= cutoff
+                    record = {"source_path": str(source), "mtime": stat.st_mtime,
+                              "size": stat.st_size, "selected": selected,
+                              "reason": "created_or_updated_after_episode_start" if selected
+                              else "older_than_episode_start"}
+                    candidates.append(record)
+                    if selected:
+                        target = destination / source.name
+                        try:
+                            shutil.copy2(source, target)
+                        except OSError as error:
+                            record["selected"] = False
+                            record["reason"] = f"copy_failed:{error}"
+                        else:
+                            copied.append(record)
+        (destination / "manifest.json").write_text(
+            json.dumps({"copied_files": copied, "candidates": candidates,
+                        "pid": px4_pid, "cwd": None if px4_cwd is None else str(px4_cwd),
+                        "failure_reason": failure_reason,
+                        "episode_start_time": self._episode_start_time_s,
+                        "cutoff_time": cutoff,
+                        "searched_roots": [str(r) for r in roots]}, indent=2),
+            encoding="utf-8",
+        )
 
     def cleanup(self) -> None:
         _stop_process(self._isaac)
@@ -352,6 +428,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
         finally:
             print(MSG_CLEANUP, flush=True)
+            runtime.save_ulog(
+                episode_root,
+                result_path.is_file()
+                and json.loads(result_path.read_text(encoding="utf-8")).get(
+                    "terminal_reason"
+                ) != "success",
+            )
             runtime.cleanup()
     plots = {}
     plot_error = ""
