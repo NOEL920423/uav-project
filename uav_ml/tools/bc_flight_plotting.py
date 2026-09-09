@@ -174,7 +174,7 @@ def _trajectory_plot(
     axis.set_aspect("equal", adjustable="datalim")
     axis.grid(alpha=0.25)
     axis.legend(loc="best")
-    return _save(figure, plot_dir / PLOT_FILENAMES["trajectory"])
+    return _save(figure, plot_dir / f"trajectory_xy_{int(result['episode'])}.png")
 
 
 def _single_series_plot(
@@ -266,14 +266,17 @@ def create_episode_plots(episode_dir: Path, result: dict) -> list[str]:
     trace = _read_json(trace_path)
     if trace.get("schema") != TRACE_SCHEMA:
         raise ValueError(f"unsupported BC trace schema: {trace_path}")
-    plot_dir = episode_dir / "plots"
+    plot_dir = episode_dir.parent / "trajectory_plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
     if not ENABLE_EXTRA_PLOTS:
         path = _trajectory_plot(plot_dir, trace, result)
         return [path] if path is not None else []
     samples = trace.get("samples", [])
+    trajectory_path = _trajectory_plot(plot_dir, trace, result)
+    plot_dir = episode_dir.parent / "extra_plots" / episode_dir.name
+    plot_dir.mkdir(parents=True, exist_ok=True)
     candidates = [
-        _trajectory_plot(plot_dir, trace, result),
+        trajectory_path,
         _single_series_plot(
             plot_dir,
             samples,

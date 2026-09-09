@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import math
+import re
 from dataclasses import asdict
 
 from geometry_msgs.msg import TwistStamped
@@ -36,6 +37,7 @@ from uav_px4_control.bc_flight_models import (
     BcFlightController,
     BcFlightEvidence,
     BcFlightState,
+    StartupStale,
 )
 from uav_px4_control.bc_policy_node import (
     POLICY_STATUS_SCHEMA,
@@ -107,25 +109,44 @@ class BcFlightSupervisorNode(Node):
         for name in defaults.__dataclass_fields__:
             self.declare_parameter(name, getattr(defaults, name))
         self.declare_parameter("command_retry_s", 0.50)
-        self.declare_parameter("telemetry_timeout_s", 0.75)
+        self.declare_parameter("vehicle_status_timeout_s", 1.25)
+        self.declare_parameter("vehicle_control_mode_timeout_s", 1.25)
+        self.declare_parameter("vehicle_odometry_timeout_s", 0.25)
+        self.declare_parameter("failsafe_flags_timeout_s", 1.35)
         self.config = BcFlightConfig(**{
             name: self.get_parameter(name).value
             for name in defaults.__dataclass_fields__
         })
         self._retry_s = float(self.get_parameter("command_retry_s").value)
-        self._telemetry_timeout_s = float(
-            self.get_parameter("telemetry_timeout_s").value
+        self._vehicle_status_timeout_s = float(
+            self.get_parameter("vehicle_status_timeout_s").value
         )
+        self._vehicle_odometry_timeout_s = float(
+            self.get_parameter("vehicle_odometry_timeout_s").value
+        )
+        self._stream_telemetry_thresholds_s = {
+            name: float(self.get_parameter(f"{name}_timeout_s").value)
+            for name in (
+                "vehicle_status", "vehicle_control_mode",
+                "vehicle_odometry", "failsafe_flags",
+            )
+        }
         self._controller = BcFlightController(self.config)
         self._runtime_ready = False
         self._policy_status: dict = {}
         self._termination_reason = ""
         self._mux_status: ControlMuxStatus | None = None
+        self._mux_receipt_s: float | None = None
         self._gate_status: Px4OutputGateStatus | None = None
         self._stream_status: Px4StreamStatus | None = None
         self._vehicle_status = None
         self._vehicle_status_receipt_s: float | None = None
         self._land_detected = None
+        self._land_receipt_s: float | None = None
+        self._gate_receipt_s: float | None = None
+        self._stream_receipt_s: float | None = None
+        self._startup_stale: StartupStale | None = None
+        self._reset_ack_s: dict[str, float] = {}
         self._odometry: Odometry | None = None
         self._odometry_receipt_s: float | None = None
         self._ground_down_m: float | None = None
@@ -227,19 +248,67 @@ class BcFlightSupervisorNode(Node):
 
     def _mux_callback(self, message: ControlMuxStatus) -> None:
         self._mux_status = message
+        self._mux_receipt_s = self._now_seconds()
 
     def _gate_callback(self, message: Px4OutputGateStatus) -> None:
         self._gate_status = message
+        self._gate_receipt_s = self._now_seconds()
+        self._capture_startup_stale(message, "gate")
 
     def _stream_callback(self, message: Px4StreamStatus) -> None:
         self._stream_status = message
+        self._stream_receipt_s = self._now_seconds()
+        self._capture_startup_stale(message, "streamer")
+
+    def _capture_startup_stale(self, message, component: str) -> None:
+        """Cache the transient fault before subsequent latch status hides it."""
+        if self._startup_stale is not None or self._controller.state not in {
+            BcFlightState.SELECTING_LIFECYCLE,
+            BcFlightState.ENABLING_OUTPUT, BcFlightState.ENABLING_STREAM,
+            BcFlightState.REQUESTING_OFFBOARD, BcFlightState.REQUESTING_ARM,
+        }:
+            return
+        fields = {
+            "STOPPED_STALE_CANDIDATE": ("candidate_age", 0.25),
+            "STOPPED_STALE_GATE": ("gate_status_age", 0.50),
+            "DISABLED_STALE_COMMAND": ("selected_command_age", 0.25),
+            "DISABLED_STALE_TELEMETRY": ("telemetry_age", 0.75),
+        }
+        if message.state == "STOPPED_STALE_TELEMETRY":
+            match = re.search(
+                r"stale: (\w+) age_s=([0-9.]+) threshold_s=([0-9.]+)",
+                str(message.stop_reason),
+            )
+            if match is None:
+                return
+            topic, age_text, threshold_text = match.groups()
+            thresholds = self._stream_telemetry_thresholds_s
+            if topic in thresholds and math.isclose(
+                float(threshold_text), thresholds[topic]
+            ):
+                self._startup_stale = StartupStale(
+                    source=f"streamer.{topic}",
+                    age_s=float(age_text),
+                    threshold_s=thresholds[topic],
+                    reason=message.stop_reason,
+                )
+            return
+        if message.state in fields:
+            field, threshold = fields[message.state]
+            self._startup_stale = StartupStale(
+                source=f"{component}.{field}", age_s=float(getattr(message, field)),
+                threshold_s=threshold,
+                reason=getattr(message, "stop_reason", getattr(message, "hold_reason", "")),
+            )
 
     def _vehicle_status_callback(self, message) -> None:
         self._vehicle_status = message
         self._vehicle_status_receipt_s = self._now_seconds()
+        self._controller.observe_flight_authority(self._is_armed(), self._is_offboard())
 
     def _land_callback(self, message) -> None:
         self._land_detected = message
+        self._land_receipt_s = self._now_seconds()
 
     def _odometry_callback(self, message: Odometry) -> None:
         self._odometry = message
@@ -269,6 +338,7 @@ class BcFlightSupervisorNode(Node):
         )
 
     def _evidence(self, now: float) -> BcFlightEvidence:
+        recovering = self._controller.state == BcFlightState.RECOVERING_READINESS
         mux = self._mux_status
         lifecycle_selected = bool(
             mux is not None and mux.active_source == FLIGHT_LIFECYCLE
@@ -276,6 +346,10 @@ class BcFlightSupervisorNode(Node):
         bc_selected = bool(mux is not None and mux.active_source == BC_POLICY)
         source_valid = bool(
             mux is not None
+            and (not recovering or (
+                self._mux_receipt_s is not None
+                and 0.0 <= now - self._mux_receipt_s <= 0.25
+            ))
             and mux.selected_command_valid
             and not mux.hold_active
             and (lifecycle_selected or bc_selected)
@@ -283,6 +357,10 @@ class BcFlightSupervisorNode(Node):
         gate = self._gate_status
         output_ready = bool(
             gate is not None
+            and (not recovering or (
+                self._gate_receipt_s is not None
+                and 0.0 <= now - self._gate_receipt_s <= 0.25
+            ))
             and not gate.enable_requested
             and gate.state == "READY_DISABLED"
         )
@@ -301,8 +379,9 @@ class BcFlightSupervisorNode(Node):
             self._vehicle_status_receipt_s is not None
             and self._odometry_receipt_s is not None
             and now - self._vehicle_status_receipt_s
-            <= self._telemetry_timeout_s
-            and now - self._odometry_receipt_s <= 0.25
+            <= self._vehicle_status_timeout_s
+            and now - self._odometry_receipt_s
+            <= self._vehicle_odometry_timeout_s
         )
         altitude = 0.0
         if self._odometry is not None and self._ground_down_m is not None:
@@ -331,7 +410,36 @@ class BcFlightSupervisorNode(Node):
             ),
             altitude_m=altitude,
             terminal_reason=self._termination_reason,
+            startup_stale=self._startup_stale,
+            recovery_vehicle_state_fresh=bool(
+                self._vehicle_status is not None
+                and self._vehicle_status.arming_state == self._vehicle_status.ARMING_STATE_STANDBY
+                and self._vehicle_status_receipt_s is not None
+                and 0.0 <= now - self._vehicle_status_receipt_s
+                <= self._vehicle_status_timeout_s
+                and self._land_receipt_s is not None
+                # PX4 land detection has a one-second periodic heartbeat.
+                and 0.0 <= now - self._land_receipt_s <= 1.5
+            ),
+            stream_reset_complete=self._reset_confirmed("DISABLE_STREAM", now),
+            output_reset_complete=self._reset_confirmed("DISABLE_OUTPUT", now),
         )
+
+    def _reset_confirmed(self, action: str, now: float) -> bool:
+        """Require a successful reset response followed by fresh disabled status."""
+        ack = self._reset_ack_s.get(action)
+        stream = action == "DISABLE_STREAM"
+        status = self._stream_status if stream else self._gate_status
+        receipt = self._stream_receipt_s if stream else self._gate_receipt_s
+        if ack is None or status is None or receipt is None:
+            return False
+        if ack < self._controller.state_started_s or not ack <= receipt <= now:
+            return False
+        if now - receipt > 0.25:
+            return False
+        if stream:
+            return not status.stream_enable_requested and status.state == "STREAM_DISABLED"
+        return not status.enable_requested and status.state != "LATCHED_FAULT"
 
     def _publish_lifecycle_command(self) -> None:
         message = TwistStamped()
@@ -342,6 +450,13 @@ class BcFlightSupervisorNode(Node):
         self._lifecycle_publisher.publish(message)
 
     def _request(self, key: str, client, request, now: float) -> None:
+        # Serialize opposite requests so an old enable cannot overtake reset.
+        opposite = {
+            "DISABLE_STREAM": "ENABLE_STREAM", "ENABLE_STREAM": "DISABLE_STREAM",
+            "DISABLE_OUTPUT": "ENABLE_OUTPUT", "ENABLE_OUTPUT": "DISABLE_OUTPUT",
+        }.get(key)
+        if opposite in self._pending and not self._pending[opposite].done():
+            return
         if now - self._last_action_s.get(key, -math.inf) < self._retry_s:
             return
         pending = self._pending.get(key)
@@ -377,6 +492,8 @@ class BcFlightSupervisorNode(Node):
             self.get_logger().warning(
                 MSG_ACTION_REJECTED.format(action=action, message=message)
             )
+        elif action in {"DISABLE_STREAM", "DISABLE_OUTPUT"}:
+            self._reset_ack_s[action] = self._now_seconds()
 
     def _publish_vehicle_command(
         self, key: str, command: int, now: float, **parameters: float
@@ -439,6 +556,7 @@ class BcFlightSupervisorNode(Node):
             "component": "supervisor", "event": event, "time_s": now,
             "state": self._controller.state.value,
             "failure_reason": self._controller.failure_reason,
+            **self._controller.recovery_diagnostics,
             "evidence": asdict(self._evidence(now)),
             "vehicle_status_age_s": (
                 None if self._vehicle_status_receipt_s is None
@@ -500,6 +618,7 @@ class BcFlightSupervisorNode(Node):
             "state": self._controller.state.value,
             "terminal_reason": self._controller.terminal_reason,
             "failure_reason": self._controller.failure_reason,
+            **self._controller.recovery_diagnostics,
             "altitude_m": evidence.altitude_m,
             "runtime_ready": evidence.runtime_ready,
             "bc_ready": evidence.bc_ready,
@@ -523,6 +642,11 @@ class BcFlightSupervisorNode(Node):
         evidence = self._evidence(now)
         previous = self._controller.state
         decision = self._controller.step(now, evidence)
+        if (
+            previous == BcFlightState.RECOVERING_OUTPUT
+            and decision.state == BcFlightState.RECOVERING_READINESS
+        ):
+            self._startup_stale = None
         for action in decision.actions:
             self._execute(action, now)
         if decision.state != previous:

@@ -51,7 +51,10 @@ def readiness(now=10.0, current_candidate=None, **overrides):
         ),
         "candidate": current_candidate or candidate(now),
         "telemetry": StreamTelemetry(
-            oldest_receipt_time_s=now,
+            vehicle_status_receipt_time_s=now,
+            vehicle_control_mode_receipt_time_s=now,
+            vehicle_odometry_receipt_time_s=now,
+            failsafe_flags_receipt_time_s=now,
             newest_timestamp_us=int(now * 1e6),
             vehicle_armed=False,
             offboard_active=False,
@@ -98,6 +101,60 @@ def test_startup_and_healthy_gate_remain_disabled():
     assert result.state == Px4StreamState.STREAM_DISABLED
     assert result.streaming is False
     assert result.trajectory_setpoint_count == 0
+
+
+@pytest.mark.parametrize("fault_kind", ["candidate", "telemetry"])
+def test_reset_restarts_full_prestream_count_and_time(fault_kind):
+    """A previous nearly complete prestream cannot shorten the next session."""
+    machine = Px4StreamStateMachine(config(
+        minimum_prestream_duration_s=2.0, minimum_prestream_messages=40,
+        failsafe_flags_timeout_s=0.75,
+    ))
+    _, start, _ = begin_stream(machine)
+    for index in range(1, 39):
+        now = start + index * 0.05
+        current = candidate(now, int(now * 1e6))
+        machine.observe_candidate(current)
+        result = machine.step(now, readiness(now, current), int(now * 1e6))
+        assert result.state == Px4StreamState.PRESTREAMING
+    now += 0.05
+    current = candidate(now, int(now * 1e6))
+    machine.observe_candidate(current)
+    evidence = readiness(now, current)
+    if fault_kind == "candidate":
+        evidence = replace(evidence, candidate=replace(current, receipt_time_s=now - 0.272))
+    else:
+        evidence = replace(evidence, telemetry=replace(
+            evidence.telemetry, failsafe_flags_receipt_time_s=now - 0.759,
+        ))
+    assert not machine.step(now, evidence, int(now * 1e6)).should_publish
+    assert machine.fault_latched
+    assert not machine.request_enable(True)[0]
+    old_count = machine.trajectory_setpoint_count
+    assert machine.request_enable(False)[0]
+    assert machine._session_publish_count == 0
+    assert machine._prestream_start_count == 0
+    assert machine._prestream_start_time_s is None
+    assert machine._candidate_receipts == []
+    assert machine.request_enable(True)[0]
+    start = now + 0.05
+    for index in range(3):
+        tick = start + index * 0.05
+        current = candidate(tick, int(tick * 1e6))
+        machine.observe_candidate(current)
+        result = machine.step(tick, readiness(tick, current), int(tick * 1e6))
+        assert not result.should_publish
+    start = tick + 0.05
+    for index in range(42):
+        tick = start + index * 0.05
+        current = candidate(tick, int(tick * 1e6))
+        machine.observe_candidate(current)
+        result = machine.step(tick, readiness(tick, current), int(tick * 1e6))
+        if tick - start < 2.0:
+            assert result.state == Px4StreamState.PRESTREAMING
+    assert result.state == Px4StreamState.STREAMING
+    # Public counters remain lifetime diagnostics; readiness is session-local.
+    assert machine.trajectory_setpoint_count == old_count + 42
 
 
 def test_explicit_enable_prestream_stream_and_disable():
@@ -197,7 +254,7 @@ def test_runtime_faults_stop_both_publications_and_latch(mutation, expected):
             evidence,
             telemetry=replace(
                 evidence.telemetry,
-                oldest_receipt_time_s=tick - 0.60,
+                vehicle_odometry_receipt_time_s=tick - 0.60,
             ),
         )
     elif mutation == "failsafe":
@@ -234,6 +291,79 @@ def test_runtime_faults_stop_both_publications_and_latch(mutation, expected):
     assert result.state == Px4StreamState.LATCHED_STREAM_FAULT
     assert "latched after:" in result.stop_reason
     assert "disable/reset is required" in result.stop_reason
+
+
+@pytest.mark.parametrize(
+    ("topic", "threshold"),
+    [
+        ("vehicle_status", 1.25),
+        ("vehicle_control_mode", 1.25),
+        ("vehicle_odometry", 0.25),
+        ("failsafe_flags", 1.35),
+    ],
+)
+def test_each_telemetry_topic_uses_its_own_freshness_threshold(
+    topic, threshold,
+):
+    """Accept each receipt at its limit and fail closed only beyond it."""
+    field = f"{topic}_receipt_time_s"
+    machine = Px4StreamStateMachine(config())
+    _, now, _ = begin_stream(machine)
+    tick = now + 0.05
+    current = candidate(tick, 10_000_004)
+    machine.observe_candidate(current)
+    evidence = readiness(tick, current)
+    at_limit = replace(
+        evidence,
+        telemetry=replace(evidence.telemetry, **{field: tick - threshold}),
+    )
+    result = machine.step(tick, at_limit, int(tick * 1e6))
+    assert result.should_publish
+    assert result.telemetry_fresh
+
+    tick += 0.05
+    current = candidate(tick, 10_000_005)
+    machine.observe_candidate(current)
+    evidence = readiness(tick, current)
+    expired = replace(
+        evidence,
+        telemetry=replace(
+            evidence.telemetry, **{field: tick - threshold - 0.001}
+        ),
+    )
+    result = machine.step(tick, expired, int(tick * 1e6))
+    assert result.state == Px4StreamState.STOPPED_STALE_TELEMETRY
+    assert f"stale: {topic} " in result.stop_reason
+    assert not result.telemetry_fresh
+
+
+@pytest.mark.parametrize(
+    ("safety_field", "expected"),
+    [
+        ("failsafe", Px4StreamState.STOPPED_FAILSAFE),
+        ("vehicle_armed", Px4StreamState.STOPPED_ARMED),
+        ("offboard_active", Px4StreamState.STOPPED_OFFBOARD_ACTIVE),
+    ],
+)
+def test_unsafe_content_fails_immediately_even_when_receipts_are_stale(
+    safety_field, expected,
+):
+    """A positive safety fault takes precedence over freshness expiry."""
+    machine = Px4StreamStateMachine(config())
+    _, now, _ = begin_stream(machine)
+    tick = now + 0.05
+    current = candidate(tick, 10_000_004)
+    machine.observe_candidate(current)
+    evidence = readiness(tick, current)
+    unsafe = replace(
+        evidence.telemetry,
+        failsafe_flags_receipt_time_s=tick - 10.0,
+        **{safety_field: True},
+    )
+    result = machine.step(
+        tick, replace(evidence, telemetry=unsafe), int(tick * 1e6)
+    )
+    assert result.state == expected
 
 
 def test_gate_bool_status_disagreement_fails_closed():

@@ -42,7 +42,10 @@ def _readiness(now: float, current: StreamCandidate) -> StreamReadiness:
         ),
         candidate=current,
         telemetry=StreamTelemetry(
-            oldest_receipt_time_s=now,
+            vehicle_status_receipt_time_s=now,
+            vehicle_control_mode_receipt_time_s=now,
+            vehicle_odometry_receipt_time_s=now,
+            failsafe_flags_receipt_time_s=now,
             newest_timestamp_us=int(now * 1e6),
             vehicle_armed=False,
             offboard_active=False,
@@ -137,7 +140,7 @@ def run_stream_offline_fixtures() -> list[tuple[str, bool, str]]:
                 item,
                 telemetry=replace(
                     item.telemetry,
-                    oldest_receipt_time_s=tick - 0.60,
+                    vehicle_odometry_receipt_time_s=tick - 0.60,
                 ),
             ),
             Px4StreamState.STOPPED_STALE_TELEMETRY,

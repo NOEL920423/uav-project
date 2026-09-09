@@ -47,6 +47,7 @@ BC_ACTION_LIMITS = {
 DEFAULT_LATEST_POINTER = Path(
     "artifacts/experiments/bc/bc_expert_cylinder_v1/top/latest.json"
 )
+BC_EXPERIMENTS_ROOT = Path("artifacts/experiments/bc")
 
 
 def sha256_file(path: Path) -> str:
@@ -62,9 +63,25 @@ def resolve_checkpoint(
     repository_root: Path,
     checkpoint: Path | None = None,
 ) -> Path:
-    """Resolve an explicit checkpoint or the current cylinder TOP pointer."""
+    """Resolve an explicit checkpoint or the current cylinder TOP pointer.
+
+    Relative checkpoints may be given either from the current directory or
+    from ``artifacts/experiments/bc`` for concise experiment selection.
+    """
     if checkpoint is not None:
-        path = checkpoint.expanduser().resolve()
+        candidate = checkpoint.expanduser()
+        if candidate.is_absolute():
+            path = candidate.resolve()
+        else:
+            from_working_directory = candidate.resolve()
+            from_bc_experiments = (
+                repository_root.resolve() / BC_EXPERIMENTS_ROOT / candidate
+            ).resolve()
+            path = (
+                from_working_directory
+                if from_working_directory.is_file()
+                else from_bc_experiments
+            )
     else:
         pointer = repository_root.resolve() / DEFAULT_LATEST_POINTER
         if not pointer.is_file():

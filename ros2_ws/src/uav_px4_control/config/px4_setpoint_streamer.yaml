@@ -7,9 +7,10 @@ px4_setpoint_streamer:
     maximum_publish_gap_s: 0.20
     candidate_timeout_s: 0.25
     gate_status_timeout_s: 0.50
-    # Local PX4 v1.14 SIH status/control/failsafe outputs are ~1.7-1.9 Hz.
-    # 0.75 s stays fail-closed while covering the measured 0.575 s interval.
-    telemetry_timeout_s: 0.75
+    vehicle_status_timeout_s: 1.25
+    vehicle_control_mode_timeout_s: 1.25
+    vehicle_odometry_timeout_s: 0.25
+    failsafe_flags_timeout_s: 1.35
     minimum_candidate_updates: 3
     require_safe_to_forward: true
     require_gate_status_agreement: true

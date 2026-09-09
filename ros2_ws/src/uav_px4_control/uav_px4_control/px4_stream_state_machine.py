@@ -326,16 +326,8 @@ class Px4StreamStateMachine:
                 "waiting for stable monotonic candidate heartbeat window",
                 False,
             )
-        telemetry_age = now_s - telemetry.oldest_receipt_time_s
-        if (
-            telemetry_age < 0.0
-            or telemetry_age > self.config.telemetry_timeout_s
-        ):
-            return (
-                Px4StreamState.STOPPED_STALE_TELEMETRY,
-                "required PX4 telemetry is stale",
-                True,
-            )
+        # Safety values close the boundary immediately. Their receipt age is
+        # evaluated separately below and never delays a positive fault value.
         if self.config.require_no_failsafe and telemetry.failsafe:
             return (
                 Px4StreamState.STOPPED_FAILSAFE,
@@ -360,6 +352,17 @@ class Px4StreamStateMachine:
                 "PX4 odometry is invalid",
                 True,
             )
+        for topic, receipt_time_s in telemetry.receipt_times():
+            age_s = now_s - receipt_time_s
+            threshold_s = getattr(self.config, f"{topic}_timeout_s")
+            if age_s < 0.0 or age_s > threshold_s:
+                return (
+                    Px4StreamState.STOPPED_STALE_TELEMETRY,
+                    "required PX4 telemetry is stale: "
+                    f"{topic} age_s={age_s:.9f} "
+                    f"threshold_s={threshold_s:.9f}",
+                    True,
+                )
         return None
 
     def _record_publication(self, now_s: float, timestamp_us: int) -> None:
@@ -438,7 +441,7 @@ class Px4StreamStateMachine:
         telemetry_age = (
             math.inf
             if telemetry is None
-            else now_s - telemetry.oldest_receipt_time_s
+            else max(now_s - receipt for _, receipt in telemetry.receipt_times())
         )
         candidate_valid = False
         if candidate is not None:
@@ -453,7 +456,11 @@ class Px4StreamStateMachine:
         )
         telemetry_fresh = bool(
             telemetry is not None
-            and 0.0 <= telemetry_age <= self.config.telemetry_timeout_s
+            and all(
+                0.0 <= now_s - receipt
+                <= getattr(self.config, f"{topic}_timeout_s")
+                for topic, receipt in telemetry.receipt_times()
+            )
         )
         return Px4StreamResult(
             state=self.state,

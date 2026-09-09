@@ -407,7 +407,10 @@ class Px4SetpointStreamerNode(Node):
         # unexpected OFFBOARD activity is independently fail-closed above.
         failsafe = bool(status.failsafe or flags.fd_critical_failure)
         return StreamTelemetry(
-            oldest_receipt_time_s=min(float(value) for value in receipts),
+            vehicle_status_receipt_time_s=float(receipts[0]),
+            vehicle_control_mode_receipt_time_s=float(receipts[1]),
+            vehicle_odometry_receipt_time_s=float(receipts[2]),
+            failsafe_flags_receipt_time_s=float(receipts[3]),
             newest_timestamp_us=max(
                 int(message.timestamp) for message in messages
             ),
@@ -491,7 +494,13 @@ class Px4SetpointStreamerNode(Node):
                 "gate": asdict(readiness.gate) if readiness.gate else None,
                 "maximum_publish_gap_s": self.machine.maximum_observed_gap_s,
                 "observed_rate_hz": self.machine.observed_rate_hz,
-                "telemetry_timeout_s": self.config.telemetry_timeout_s,
+                "telemetry_thresholds_s": {
+                    name: getattr(self.config, f"{name}_timeout_s")
+                    for name in (
+                        "vehicle_status", "vehicle_control_mode",
+                        "vehicle_odometry", "failsafe_flags",
+                    )
+                },
                 "telemetry_topic_ages_s": {
                     name: None if receipt is None else now - receipt
                     for name, receipt in (

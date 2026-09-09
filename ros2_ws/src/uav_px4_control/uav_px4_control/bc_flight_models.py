@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 
 
@@ -14,6 +15,9 @@ class BcFlightState(str, Enum):
     SELECTING_LIFECYCLE = "SELECTING_LIFECYCLE"
     ENABLING_OUTPUT = "ENABLING_OUTPUT"
     ENABLING_STREAM = "ENABLING_STREAM"
+    RECOVERING_STREAM = "RECOVERING_STREAM"
+    RECOVERING_OUTPUT = "RECOVERING_OUTPUT"
+    RECOVERING_READINESS = "RECOVERING_READINESS"
     REQUESTING_OFFBOARD = "REQUESTING_OFFBOARD"
     REQUESTING_ARM = "REQUESTING_ARM"
     TAKING_OFF = "TAKING_OFF"
@@ -24,6 +28,17 @@ class BcFlightState(str, Enum):
     LANDING = "LANDING"
     COMPLETE = "COMPLETE"
     FAILED = "FAILED"
+
+
+STARTUP_STATES = frozenset({
+    BcFlightState.WAITING_INPUTS, BcFlightState.SELECTING_LIFECYCLE,
+    BcFlightState.ENABLING_OUTPUT, BcFlightState.ENABLING_STREAM,
+    BcFlightState.REQUESTING_OFFBOARD, BcFlightState.REQUESTING_ARM,
+})
+RECOVERY_STATES = frozenset({
+    BcFlightState.RECOVERING_STREAM, BcFlightState.RECOVERING_OUTPUT,
+    BcFlightState.RECOVERING_READINESS,
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +67,16 @@ class BcFlightConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class StartupStale:
+    """Preserve the first observed stale measurement before latch updates."""
+
+    source: str
+    age_s: float
+    threshold_s: float
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class BcFlightEvidence:
     """Actual ROS and PX4 evidence consumed by the lifecycle controller."""
 
@@ -72,6 +97,10 @@ class BcFlightEvidence:
     failsafe: bool = False
     altitude_m: float = 0.0
     terminal_reason: str = ""
+    startup_stale: StartupStale | None = None
+    recovery_vehicle_state_fresh: bool = False
+    stream_reset_complete: bool = False
+    output_reset_complete: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +124,29 @@ class BcFlightController:
         self.failure_reason = ""
         self._state_started_s = 0.0
         self._last_step_s: float | None = None
+        self.startup_deadline_s: float | None = None
+        self.first_stale: StartupStale | None = None
+        self.recovery_history: list[dict] = []
+        self._flight_authority_seen = False
+        self._preserve_startup_latches = False
+
+    @property
+    def recovery_diagnostics(self) -> dict:
+        """Return diagnostics retained across retries and terminal failure."""
+        return {
+            "first_stale": None if self.first_stale is None else asdict(self.first_stale),
+            "recovery_history": self.recovery_history,
+            "startup_deadline_s": self.startup_deadline_s,
+        }
+
+    @property
+    def state_started_s(self) -> float:
+        """Expose the current phase boundary for asynchronous reset evidence."""
+        return self._state_started_s
+
+    def observe_flight_authority(self, armed: bool, offboard: bool) -> None:
+        """Close recovery even if a PX4 transition occurs between timer ticks."""
+        self._flight_authority_seen |= armed or offboard
 
     def _set_state(self, state: BcFlightState, now_s: float) -> None:
         self.state = state
@@ -109,7 +161,13 @@ class BcFlightController:
         )
 
     def _abort(self, now_s: float, reason: str) -> BcFlightDecision:
+        if (
+            self.first_stale is not None or self._flight_authority_seen
+        ) and self.state in STARTUP_STATES | RECOVERY_STATES:
+            self._preserve_startup_latches = True
         if not self.failure_reason:
+            if self.first_stale is not None:
+                reason += "; startup_recovery=" + json.dumps(self.recovery_diagnostics)
             self.failure_reason = reason
         self.terminal_reason = self.terminal_reason or "runtime_failure"
         self._set_state(BcFlightState.HOLDING, now_s)
@@ -130,9 +188,11 @@ class BcFlightController:
             return None
         if evidence.lifecycle_selected and evidence.source_valid:
             return None
+        if self._flight_authority_seen or evidence.offboard_active or not evidence.landed:
+            return self._abort(now, "lifecycle authority lost after startup recovery boundary")
         self._set_state(BcFlightState.SELECTING_LIFECYCLE, now)
         return self._decision(
-            "SELECT_HOLD", "DISABLE_STREAM", "DISABLE_OUTPUT", "SELECT_LIFECYCLE"
+            "SELECT_HOLD", "SELECT_LIFECYCLE"
         )
 
     def step(
@@ -144,9 +204,16 @@ class BcFlightController:
             raise ValueError("flight clock must be finite and nonnegative")
         if self._last_step_s is None:
             self._state_started_s = now
+            # One budget for readiness plus the five pre-arm service stages.
+            # State changes and recovery attempts never extend this deadline.
+            self.startup_deadline_s = (
+                now + self.config.readiness_timeout_s
+                + 5 * self.config.service_timeout_s
+            )
         elif now < self._last_step_s:
             return self._abort(now, "flight clock moved backward")
         self._last_step_s = now
+        self.observe_flight_authority(evidence.vehicle_armed, evidence.offboard_active)
         if self.state in {BcFlightState.COMPLETE, BcFlightState.FAILED}:
             return self._decision()
         if evidence.failsafe and self.state not in {
@@ -154,6 +221,49 @@ class BcFlightController:
             BcFlightState.LANDING,
         }:
             return self._abort(now, "PX4 failsafe became active")
+        if self.state in STARTUP_STATES | RECOVERY_STATES:
+            if evidence.startup_stale is not None and self.first_stale is None:
+                self.first_stale = evidence.startup_stale
+            if now > self.startup_deadline_s:
+                return self._abort(now, "overall startup deadline exceeded")
+        if self.state in RECOVERY_STATES:
+            if self._flight_authority_seen or not evidence.landed:
+                return self._abort(now, "startup stale recovery no longer permitted")
+            # Unknown or stale vehicle state is not permission to reset.
+            if not evidence.recovery_vehicle_state_fresh:
+                return self._decision()
+            if self.state == BcFlightState.RECOVERING_STREAM:
+                if not evidence.stream_reset_complete:
+                    return self._decision("DISABLE_STREAM")
+                self._set_state(BcFlightState.RECOVERING_OUTPUT, now)
+                return self._decision("DISABLE_OUTPUT")
+            if self.state == BcFlightState.RECOVERING_OUTPUT:
+                if not evidence.output_reset_complete:
+                    return self._decision("DISABLE_OUTPUT")
+                self._set_state(BcFlightState.RECOVERING_READINESS, now)
+                return self._decision("SELECT_LIFECYCLE")
+            if (
+                evidence.runtime_ready and evidence.observations_ready
+                and evidence.telemetry_fresh and evidence.lifecycle_selected
+                and evidence.source_valid and evidence.output_ready
+                and evidence.startup_stale is None
+            ):
+                self.recovery_history[-1]["ready_time_s"] = now
+                self._set_state(BcFlightState.ENABLING_OUTPUT, now)
+                return self._decision("ENABLE_OUTPUT")
+            return self._decision("SELECT_LIFECYCLE")
+        if self.state in STARTUP_STATES and evidence.startup_stale is not None:
+            if self._flight_authority_seen or not evidence.landed:
+                return self._abort(now, "startup stale recovery prohibited after flight authority")
+            if len(self.recovery_history) >= 2:
+                return self._abort(now, "startup stale recovery limit exceeded (2)")
+            self.recovery_history.append({
+                "attempt": len(self.recovery_history) + 1,
+                "time_s": now, "stale": asdict(evidence.startup_stale),
+            })
+            self._set_state(BcFlightState.RECOVERING_STREAM, now)
+            actions = ("DISABLE_STREAM",) if evidence.recovery_vehicle_state_fresh else ()
+            return self._decision(*actions)
         if self.state == BcFlightState.WAITING_INPUTS:
             if (
                 evidence.runtime_ready
@@ -199,6 +309,9 @@ class BcFlightController:
             if guard is not None:
                 return guard
             if evidence.stream_stable:
+                # A mode request may still be in flight while status is inactive.
+                # Never reset after committing to OFFBOARD, even before its ACK.
+                self._flight_authority_seen = True
                 self._set_state(BcFlightState.REQUESTING_OFFBOARD, now)
                 return self._decision("SEND_OFFBOARD")
             return self._timed_out(
@@ -299,6 +412,9 @@ class BcFlightController:
         if self.state == BcFlightState.HOLDING:
             if not evidence.bc_selected:
                 self._set_state(BcFlightState.LANDING, now)
+                if self._preserve_startup_latches:
+                    # Cleanup must not bypass the recovery boundary or limit.
+                    return self._decision("DISABLE_BC", "SEND_LAND")
                 return self._decision(
                     "DISABLE_BC",
                     "DISABLE_STREAM",

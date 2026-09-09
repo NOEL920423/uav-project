@@ -108,11 +108,11 @@ def test_source_loss_during_prestream_returns_to_lifecycle_selection() -> None:
     assert decision.state == BcFlightState.SELECTING_LIFECYCLE
     assert "SEND_OFFBOARD" not in decision.actions
     assert "SEND_ARM" not in decision.actions
-    assert "DISABLE_OUTPUT" in decision.actions
+    assert "DISABLE_OUTPUT" not in decision.actions
 
 
 def test_source_loss_while_requesting_arm_cannot_enter_takeoff() -> None:
-    """A HOLD transition before arming requires lifecycle reselection."""
+    """Source loss after OFFBOARD must not reset safety latches."""
     controller = BcFlightController()
     controller.state = BcFlightState.REQUESTING_ARM
     lost = BcFlightEvidence(
@@ -121,9 +121,9 @@ def test_source_loss_while_requesting_arm_cannot_enter_takeoff() -> None:
         vehicle_armed=False,
     )
     decision = controller.step(1.0, lost)
-    assert decision.state == BcFlightState.SELECTING_LIFECYCLE
+    assert decision.state == BcFlightState.HOLDING
     assert "SEND_ARM" not in decision.actions
-    assert "SELECT_LIFECYCLE" in decision.actions
+    assert "DISABLE_OUTPUT" not in decision.actions
 
 
 def test_bc_handoff_requires_all_settled_output_evidence() -> None:

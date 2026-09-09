@@ -102,8 +102,14 @@ class BcFlightPlottingTests(unittest.TestCase):
                 for path in plots["episodes"]["episode_000001"]
             }
             self.assertEqual(episode_names, {
-                PLOT_FILENAMES["trajectory"],
+                "trajectory_xy_1.png",
             })
+            self.assertEqual(
+                {path.name for path in (run_dir / "trajectory_plots").iterdir()},
+                {"trajectory_xy_1.png", "trajectory_xy_2.png"},
+            )
+            for episode in (1, 2):
+                self.assertFalse((run_dir / f"episode_{episode:06d}" / "plots").exists())
             self.assertEqual({Path(path).name for path in plots["summary"]}, {
                 PLOT_FILENAMES["outcomes"], PLOT_FILENAMES["status"],
             })

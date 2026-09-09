@@ -16,6 +16,7 @@ from uav_ml.inference.bc_flight import (
     canonical_image_source,
     freshness_error,
     load_checkpoint_payload,
+    resolve_checkpoint,
     validate_live_image,
 )
 
@@ -40,6 +41,15 @@ class BcFlightContractTests(unittest.TestCase):
             load_checkpoint_payload(
                 self._top_checkpoint(), "fpv_rgb", torch.device("cpu")
             )
+
+    def test_checkpoint_accepts_path_relative_to_bc_experiments(self) -> None:
+        checkpoint = self._top_checkpoint().resolve()
+        short_path = checkpoint.relative_to(
+            REPOSITORY_ROOT / "artifacts/experiments/bc"
+        )
+        self.assertEqual(
+            resolve_checkpoint(REPOSITORY_ROOT, short_path), checkpoint
+        )
 
     def test_state8_matches_body_contract(self) -> None:
         state = build_state8(

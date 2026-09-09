@@ -41,7 +41,10 @@ class Px4StreamConfig:
     maximum_publish_gap_s: float = 0.20
     candidate_timeout_s: float = 0.25
     gate_status_timeout_s: float = 0.50
-    telemetry_timeout_s: float = 0.50
+    vehicle_status_timeout_s: float = 1.25
+    vehicle_control_mode_timeout_s: float = 1.25
+    vehicle_odometry_timeout_s: float = 0.25
+    failsafe_flags_timeout_s: float = 1.35
     minimum_candidate_updates: int = 3
     require_safe_to_forward: bool = True
     require_gate_status_agreement: bool = True
@@ -60,7 +63,10 @@ class Px4StreamConfig:
             "maximum_publish_gap_s",
             "candidate_timeout_s",
             "gate_status_timeout_s",
-            "telemetry_timeout_s",
+            "vehicle_status_timeout_s",
+            "vehicle_control_mode_timeout_s",
+            "vehicle_odometry_timeout_s",
+            "failsafe_flags_timeout_s",
         )
         for name in positive:
             value = float(getattr(self, name))
@@ -121,12 +127,24 @@ class StreamGateEvidence:
 class StreamTelemetry:
     """Aggregated read-only evidence from the four required PX4 topics."""
 
-    oldest_receipt_time_s: float
+    vehicle_status_receipt_time_s: float
+    vehicle_control_mode_receipt_time_s: float
+    vehicle_odometry_receipt_time_s: float
+    failsafe_flags_receipt_time_s: float
     newest_timestamp_us: int
     vehicle_armed: bool
     offboard_active: bool
     failsafe: bool
     odometry_valid: bool
+
+    def receipt_times(self) -> tuple[tuple[str, float], ...]:
+        """Return the explicit receipt clock for every required topic."""
+        return (
+            ("vehicle_status", self.vehicle_status_receipt_time_s),
+            ("vehicle_control_mode", self.vehicle_control_mode_receipt_time_s),
+            ("vehicle_odometry", self.vehicle_odometry_receipt_time_s),
+            ("failsafe_flags", self.failsafe_flags_receipt_time_s),
+        )
 
 
 @dataclass(frozen=True, slots=True)

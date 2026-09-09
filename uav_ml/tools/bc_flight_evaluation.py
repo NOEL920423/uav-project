@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import signal
 import subprocess
 import sys
@@ -168,6 +169,14 @@ class ManagedFlightRuntime:
         runtime_dir.mkdir(parents=True, exist_ok=True)
         self._episode_start_time_s = time.time()
         environment = os.environ.copy()
+        # PX4 rcS sources px4-rc.params from PATH before starting its logger.
+        px4_params = runtime_dir / "px4-rc.params"
+        original_params = Path.home() / "PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/px4-rc.params"
+        px4_params.write_text(
+            f". {shlex.quote(str(original_params))}\nparam set SDLOG_MODE -1\n",
+            encoding="utf-8",
+        )
+        environment["PATH"] = f"{runtime_dir.resolve()}{os.pathsep}{environment.get('PATH', '')}"
         environment["UAV_EXPERT_SENSORS"] = "1"
         environment["UAV_OBSERVER_VIEWPORT"] = "1" if self.visible else "0"
         environment.pop("DISPLAY", None)
@@ -428,13 +437,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
         finally:
             print(MSG_CLEANUP, flush=True)
-            runtime.save_ulog(
-                episode_root,
-                result_path.is_file()
-                and json.loads(result_path.read_text(encoding="utf-8")).get(
-                    "terminal_reason"
-                ) != "success",
-            )
             runtime.cleanup()
     plots = {}
     plot_error = ""

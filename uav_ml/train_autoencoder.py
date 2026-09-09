@@ -10,6 +10,7 @@ import random
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import matplotlib
 import numpy as np
@@ -627,7 +628,7 @@ def main() -> int:
     except (OSError, ValueError) as error:
         print(f"ERROR: Autoencoder training stopped: {error}")
         return 1
-    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    timestamp = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y%m%dT%H%M")
     output = (
         Path(args.output_dir)
         if args.output_dir

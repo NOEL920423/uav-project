@@ -17,7 +17,10 @@ bc_flight_supervisor:
     takeoff_timeout_s: 25.0
     landing_timeout_s: 75.0
     command_retry_s: 0.50
-    telemetry_timeout_s: 0.75
+    vehicle_status_timeout_s: 1.25
+    vehicle_control_mode_timeout_s: 1.25
+    vehicle_odometry_timeout_s: 0.25
+    failsafe_flags_timeout_s: 1.35
 
 px4_mapping_gate:
   ros__parameters:
@@ -27,7 +30,10 @@ px4_mapping_gate:
 
 px4_setpoint_streamer:
   ros__parameters:
-    telemetry_timeout_s: 0.75
+    vehicle_status_timeout_s: 1.25
+    vehicle_control_mode_timeout_s: 1.25
+    vehicle_odometry_timeout_s: 0.25
+    failsafe_flags_timeout_s: 1.35
     require_disarmed: false
     require_offboard_inactive: false
 

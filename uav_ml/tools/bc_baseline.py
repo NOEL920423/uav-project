@@ -6,12 +6,14 @@ import argparse
 from collections import Counter
 import csv
 from dataclasses import asdict, dataclass
+from datetime import datetime
 import hashlib
 import json
 import math
 from pathlib import Path
 import random
 import time
+from zoneinfo import ZoneInfo
 
 import numpy as np
 from PIL import Image
@@ -83,7 +85,7 @@ def _utc_now() -> str:
 
 
 def _stamp() -> str:
-    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    return datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y%m%dT%H%M")
 
 
 def _read_json(path: Path) -> dict:
