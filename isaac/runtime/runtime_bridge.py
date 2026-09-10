@@ -77,6 +77,7 @@ DEPTH_TOPIC = "/uav/isaac/fpv/depth/compressed"
 EPISODE_COMMAND_TOPIC = "/uav/isaac/episode_command"
 BOOTSTRAP_SCENE_ROOT = "/World/BootstrapScene"
 SCENE_ROOT = "/World/GeneratedEpisode"
+REPLAY_ROOT = "/World/TrajectoryReplay"
 CAMERA_WIDTH = FPV_RGB_WIDTH
 CAMERA_HEIGHT = FPV_RGB_HEIGHT
 MSG_WEBRTC_VIEWPORT = (
@@ -205,6 +206,8 @@ class IsaacRuntimeBridge:
         self._scene_configuration = None
         self._scene_camera_boundary = None
         self._episode_command_error = ""
+        self._replay = None
+        self._replay_error = ""
         self._camera_publisher = None
         self._observer_camera_publisher = None
         self._depth_publisher = None
@@ -359,6 +362,9 @@ class IsaacRuntimeBridge:
         """Apply one seeded scene only while the vehicle is safely landed."""
         try:
             command = json.loads(message.data)
+            if command.get("command") == "replay_trace":
+                self._start_trace_replay(command)
+                return
             if command.get("command") != "prepare_episode":
                 raise ValueError("unsupported episode command")
             episode_id = str(command["episode_id"])
@@ -405,6 +411,90 @@ class IsaacRuntimeBridge:
         except Exception as error:
             self._episode_command_error = f"{type(error).__name__}: {error}"
             print(f"[IsaacRuntimeBridge][ERROR] {self._episode_command_error}")
+
+    def _start_trace_replay(self, command):
+        """Animate an artifact trace as a visual-only ghost vehicle."""
+        trace_path = Path(str(command["trace_path"])).expanduser().resolve()
+        speed = float(command.get("playback_speed", 1.0))
+        if not math.isfinite(speed) or speed <= 0.0:
+            raise ValueError("playback_speed must be finite and positive")
+        payload = json.loads(trace_path.read_text(encoding="utf-8"))
+        if payload.get("schema") != "uav_bc_flight_trace/v1":
+            raise ValueError("trace schema must be uav_bc_flight_trace/v1")
+        samples = payload.get("samples")
+        if not isinstance(samples, list) or len(samples) < 2:
+            raise ValueError("trace must contain at least two samples")
+        previous_time = -1.0
+        normalized = []
+        for source in samples:
+            values = tuple(float(source[key]) for key in (
+                "time_s", "north_m", "east_m", "down_m", "yaw_rad"
+            ))
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError("trace samples must be finite")
+            if values[0] < previous_time:
+                raise ValueError("trace sample times must be nondecreasing")
+            previous_time = values[0]
+            normalized.append(values)
+        self._create_replay_prims(normalized)
+        self._replay = {
+            "trace_path": str(trace_path), "speed": speed,
+            "samples": normalized, "started_monotonic": time.monotonic(),
+            "state": "running", "duration_s": normalized[-1][0],
+        }
+        self._replay_error = ""
+        self._episode_command_error = ""
+        print(f"[IsaacRuntimeBridge] Replaying {trace_path} at {speed}x")
+
+    def _create_replay_prims(self, samples):
+        if self._stage.GetPrimAtPath(REPLAY_ROOT).IsValid():
+            self._stage.RemovePrim(REPLAY_ROOT)
+        UsdGeom.Xform.Define(self._stage, REPLAY_ROOT)
+        ghost = UsdGeom.Capsule.Define(self._stage, f"{REPLAY_ROOT}/GhostUav")
+        ghost.CreateRadiusAttr(0.18)
+        ghost.CreateHeightAttr(0.20)
+        ghost.CreateAxisAttr(UsdGeom.Tokens.z)
+        self._set_display_color(ghost.GetPrim(), (1.0, 0.20, 0.05))
+        self._replay_ghost_transform = UsdGeom.Xformable(
+            ghost.GetPrim()
+        ).AddTransformOp()
+        line = UsdGeom.BasisCurves.Define(self._stage, f"{REPLAY_ROOT}/Path")
+        line.CreateTypeAttr(UsdGeom.Tokens.linear)
+        line.CreateCurveVertexCountsAttr([len(samples)])
+        line.CreatePointsAttr([
+            Gf.Vec3f(east, north, -down + 0.03)
+            for _, north, east, down, _ in samples
+        ])
+        line.CreateWidthsAttr([0.035] * len(samples))
+        self._set_display_color(line.GetPrim(), (1.0, 0.65, 0.05))
+
+    def _update_replay(self, now_monotonic):
+        if self._replay is None or self._replay["state"] != "running":
+            return
+        elapsed = now_monotonic - self._replay["started_monotonic"]
+        replay_time = elapsed * self._replay["speed"]
+        samples = self._replay["samples"]
+        if replay_time >= samples[-1][0]:
+            time_s, north, east, down, yaw = samples[-1]
+            self._replay["state"] = "completed"
+        else:
+            right_index = next(index for index, sample in enumerate(samples)
+                               if sample[0] >= replay_time)
+            left = samples[max(0, right_index - 1)]
+            right = samples[right_index]
+            fraction = 0.0 if right[0] == left[0] else (
+                (replay_time - left[0]) / (right[0] - left[0])
+            )
+            time_s = replay_time
+            north, east, down, yaw = tuple(
+                left[index] + fraction * (right[index] - left[index])
+                for index in range(1, 5)
+            )
+        rotation = Gf.Rotation(Gf.Vec3d(0.0, 0.0, 1.0), math.degrees(yaw))
+        transform = Gf.Matrix4d(1.0)
+        transform.SetRotate(rotation)
+        transform.SetTranslateOnly(Gf.Vec3d(east, north, -down))
+        self._replay_ghost_transform.Set(transform)
 
     def _apply_scene(self, scene):
         if self._stage.GetPrimAtPath(BOOTSTRAP_SCENE_ROOT).IsValid():
@@ -737,6 +827,7 @@ class IsaacRuntimeBridge:
             self._select_observer_viewport()
         rclpy.spin_once(self._node, timeout_sec=0.0)
         now_monotonic = time.monotonic()
+        self._update_replay(now_monotonic)
         if now_monotonic - self._last_publish_monotonic < PUBLISH_PERIOD_S:
             return
         self._last_publish_monotonic = now_monotonic
@@ -782,6 +873,13 @@ class IsaacRuntimeBridge:
                 builtins, "_isaac_uav_runtime_generation", 0
             )),
             "episode_command_error": self._episode_command_error,
+            "replay": None if self._replay is None else {
+                "trace_path": self._replay["trace_path"],
+                "speed": self._replay["speed"],
+                "state": self._replay["state"],
+                "duration_s": self._replay["duration_s"],
+                "error": self._replay_error,
+            },
             "fpv_rgb_enabled": self._camera_enabled,
             "fpv_rgb_ready": self._camera_frame_count > 0,
             "fpv_rgb_frame_count": self._camera_frame_count,

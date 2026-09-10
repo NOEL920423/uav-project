@@ -861,6 +861,56 @@ internal_bc_flight_run() {
         device:="$device"
 }
 
+internal_isaac_trace_replay() {
+    local trace_path="$1"
+    local playback_speed="$2"
+    clean_bootstrap required
+    [[ -f "$trace_path" ]] || die "trace file is missing: $trace_path"
+    local payload timeout_seconds deadline status
+    payload="$(/usr/bin/python3 - "$trace_path" "$playback_speed" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1]).resolve()
+speed = float(sys.argv[2])
+if speed <= 0.0:
+    raise ValueError("playback speed must be positive")
+print(json.dumps({"data": json.dumps({
+    "command": "replay_trace",
+    "trace_path": str(path),
+    "playback_speed": speed,
+})}))
+PY
+)" || return 1
+    ros2 topic pub --once /uav/isaac/episode_command std_msgs/msg/String \
+        "$payload"
+    timeout_seconds="$(/usr/bin/python3 - "$trace_path" "$playback_speed" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    samples = json.load(source)["samples"]
+duration = float(samples[-1]["time_s"]) / float(sys.argv[2])
+print(max(10, int(duration) + 10))
+PY
+)" || return 1
+    deadline=$((SECONDS + timeout_seconds))
+    while ((SECONDS < deadline)); do
+        status="$(timeout 2s ros2 topic echo /uav/isaac/runtime_status \
+            std_msgs/msg/String --once --field data 2>/dev/null || true)"
+        if [[ "$status" == *'"state":"completed"'* ]]; then
+            return 0
+        fi
+        if [[ "$status" == *'"episode_command_error"'* ]] \
+            && [[ "$status" != *'"episode_command_error":""'* ]]; then
+            die "Isaac trace replay failed: $status"
+            return 1
+        fi
+    done
+    die "Isaac trace replay timed out after ${timeout_seconds}s"
+    return 1
+}
+
 process_group_has_live_members() {
     local process_group_id="$1"
     [[ "$process_group_id" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -1116,6 +1166,9 @@ internal_dispatch() {
             ;;
         bc-flight-run)
             internal_bc_flight_run "$@"
+            ;;
+        isaac-trace-replay)
+            internal_isaac_trace_replay "$@"
             ;;
         topics)
             clean_bootstrap required
@@ -1410,7 +1463,7 @@ main() {
             shift
             python3 -m uav_ml.tools.validate_expert_collection "$@"
             ;;
-        expert-runtime-wait|expert-scene-prepare|expert-run-episode|bc-flight-run)
+        expert-runtime-wait|expert-scene-prepare|expert-run-episode|bc-flight-run|isaac-trace-replay)
             require_repository
             require_ros_base
             require_workspace_overlay

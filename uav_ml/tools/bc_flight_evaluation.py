@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -268,6 +269,25 @@ class ManagedFlightRuntime:
             )
         return json.loads(result_path.read_text(encoding="utf-8"))
 
+    def replay_trace(
+        self, trace_path: Path, playback_speed: float, runtime_dir: Path,
+    ) -> None:
+        trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        if trace.get("schema") != "uav_bc_flight_trace/v1":
+            raise ValueError("replay trace has an unsupported schema")
+        seed = int(trace["seed"])
+        episode_id = f"episode_{int(trace.get('episode', 0)):06d}"
+        if self._uav(
+            ["expert-scene-prepare", episode_id, str(seed)],
+            runtime_dir / "scene.log",
+        ) != 0:
+            raise RuntimeError("trace replay scene preparation failed")
+        if self._uav(
+            ["isaac-trace-replay", str(trace_path), str(playback_speed)],
+            runtime_dir / "replay.log",
+        ) != 0:
+            raise RuntimeError("Isaac trace replay failed")
+
     def save_ulog(self, runtime_dir: Path, abnormal: bool) -> None:
         """Snapshot PX4 ULog files before stopping managed processes."""
         if not abnormal:
@@ -348,6 +368,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--image-source", default="top_rgb")
     parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument(
+        "--replay-trace", type=Path,
+        help="Visually replay a recorded trajectory trace; does not run BC.",
+    )
+    parser.add_argument("--playback-speed", type=float, default=1.0)
     parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--seed", type=int, default=900000)
     parser.add_argument("--device", default="cpu")
@@ -372,7 +397,11 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--seed must be nonnegative")
     if args.timeout <= 0.0:
         raise ValueError("--timeout must be positive")
+    if args.playback_speed <= 0.0:
+        raise ValueError("--playback-speed must be positive")
     repository_root = Path(__file__).resolve().parents[2]
+    if args.replay_trace:
+        return _replay_trace(args, repository_root)
     image_source = canonical_image_source(args.image_source)
     checkpoint = resolve_checkpoint(repository_root, args.checkpoint)
     print(MSG_PREFLIGHT, flush=True)
@@ -466,6 +495,63 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
     print(MSG_FINISHED.format(path=summary_path), flush=True)
+    return 0
+
+
+def _replay_trace(args: argparse.Namespace, repository_root: Path) -> int:
+    """Run a visual-only trajectory replay in the managed Isaac runtime."""
+    trace_path = args.replay_trace.expanduser().resolve()
+    if not trace_path.is_file():
+        raise FileNotFoundError(f"replay trace is missing: {trace_path}")
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    if trace.get("schema") != "uav_bc_flight_trace/v1":
+        raise ValueError("--replay-trace must be uav_bc_flight_trace/v1")
+    samples = trace.get("samples")
+    if not isinstance(samples, list) or len(samples) < 2:
+        raise ValueError("--replay-trace must contain at least two samples")
+    output_root = (
+        args.output.expanduser().resolve()
+        if args.output
+        else repository_root / "artifacts/evaluations/bc_flight" / f"replay_{_stamp()}"
+    )
+    output_root.mkdir(parents=True, exist_ok=False)
+    global _LAST_ARTIFACT_PATH
+    _LAST_ARTIFACT_PATH = output_root
+    isaac_release = Path(os.environ.get(
+        "UAV_ISAAC_SIM_RELEASE",
+        str(Path.home() / "isaacsim/_build/linux-x86_64/release"),
+    )).expanduser().resolve()
+    runtime = ManagedFlightRuntime(
+        repository_root, isaac_release, bool(args.visible), args.device,
+        trace_path, str(trace.get("image_source", "top_rgb")), args.timeout,
+        args.verbose,
+    )
+    print(MSG_PREFLIGHT, flush=True)
+    runtime.preflight()
+    print(MSG_STARTING, flush=True)
+    if args.visible:
+        print(MSG_WEBRTC, flush=True)
+    try:
+        runtime.start(output_root)
+        if runtime._uav(["expert-runtime-wait"], output_root / "ready.log") != 0:
+            raise RuntimeError("Isaac/PX4 runtime did not become ready")
+        runtime.replay_trace(trace_path, args.playback_speed, output_root)
+    finally:
+        print(MSG_CLEANUP, flush=True)
+        runtime.cleanup()
+    digest = hashlib.sha256(trace_path.read_bytes()).hexdigest()
+    result = {
+        "schema": "uav_bc_flight_trace_replay/v1",
+        "trace_path": str(trace_path), "trace_sha256": digest,
+        "episode": trace.get("episode"), "seed": trace.get("seed"),
+        "sample_count": len(samples), "duration_s": samples[-1]["time_s"],
+        "playback_speed": args.playback_speed, "completed": True,
+        "visual_only": True,
+    }
+    (output_root / "replay_result.json").write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(MSG_FINISHED.format(path=output_root / "replay_result.json"), flush=True)
     return 0
 
 
