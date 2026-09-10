@@ -2,13 +2,13 @@
 
 import pytest
 
-from uav_navigation.models import Point3D
-from uav_navigation.offline_kinematic_plant import (
+from uav_navigation.planner.models import Point3D
+from uav_navigation.diagnostics.offline_kinematic_plant import (
     KinematicPlantConfig,
     OfflineKinematicPlant,
 )
-from uav_navigation.tracking_metrics import TrackingMetricsAccumulator
-from uav_navigation.tracking_models import (
+from uav_navigation.diagnostics.tracking_metrics import TrackingMetricsAccumulator
+from uav_navigation.tracking.tracking_models import (
     SaturationFlags,
     TrackingErrors,
     TrackingState,

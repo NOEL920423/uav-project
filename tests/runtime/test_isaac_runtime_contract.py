@@ -20,10 +20,6 @@ BRIDGE = ROOT / "isaac" / "runtime" / "runtime_bridge.py"
 SENSOR_CONTRACT = (
     ROOT / "isaac" / "runtime" / "formal_expert_sensor_contract.py"
 )
-VISUAL_QA_CAPTURE = (
-    ROOT / "ros2_ws" / "src" / "uav_data_recorder" /
-    "uav_data_recorder" / "visual_qa_capture.py"
-)
 EPISODE_SCENE_CLIENT = (
     ROOT / "ros2_ws" / "src" / "uav_data_recorder" /
     "uav_data_recorder" / "episode_scene_client.py"
@@ -91,11 +87,11 @@ def test_bootstrap_uses_runtime_bridge_without_episode_manager():
     assert "MonocularCamera" not in source
 
 
-def test_fpv_camera_is_explicitly_opt_in_with_legacy_alias():
+def test_fpv_camera_is_explicitly_opt_in():
     """The bootstrap runtime must not pay camera cost unless requested."""
     source = BRIDGE.read_text(encoding="utf-8")
     assert 'os.environ.get("UAV_FPV_CAMERA", "0") == "1"' in source
-    assert 'os.environ.get("UAV_PHASE10A_CAMERA", "0") == "1"' in source
+    assert "UAV_" + "PHASE" not in source
     assert "/uav/isaac/fpv/image/compressed" in source
     assert "JPEG_QUALITY = 85" in source
 
@@ -123,7 +119,7 @@ def test_expert_sensor_contract_is_opt_in_and_storage_free():
     """The bridge publishes expert sensors but never writes data."""
     source = BRIDGE.read_text(encoding="utf-8")
     assert 'os.environ.get("UAV_EXPERT_SENSORS", "0") == "1"' in source
-    assert 'os.environ.get("UAV_PHASE10B_SENSORS", "0") == "1"' in source
+    assert "UAV_" + "PHASE" not in source
     assert "/uav/isaac/observer/image/compressed" in source
     assert "/uav/isaac/fpv/depth/compressed" in source
     assert "unit=millimeter" in source
@@ -187,15 +183,15 @@ def test_formal_observer_is_fixed_orthographic_without_changing_fpv():
     assert "self._fpv_camera_position = fpv_eye" in fpv_pose
 
 
-def test_semantic_runtime_status_preserves_dataset_compatibility_aliases():
-    """New runtime keys map to the unchanged dataset evidence contract."""
+def test_semantic_runtime_status_is_recorded_directly():
+    """The recorder stores semantic runtime status keys unchanged."""
     bridge = BRIDGE.read_text(encoding="utf-8")
     recorder = EXPERT_DATASET_RECORDER.read_text(encoding="utf-8")
     for key in ("fpv_rgb_ready", "observer_rgb_ready", "fpv_depth_ready"):
         assert f'"{key}"' in bridge
-    assert '"fpv_rgb_ready": "phase10a_camera_ready"' in recorder
-    assert '"observer_rgb_ready": "phase10c_observer_rgb_ready"' in recorder
-    assert '"fpv_depth_ready": "phase10b_fpv_depth_ready"' in recorder
+    assert '"fpv_rgb_ready": "fpv_rgb_ready"' in recorder
+    assert '"observer_rgb_ready": "observer_rgb_ready"' in recorder
+    assert '"fpv_depth_ready": "fpv_depth_ready"' in recorder
 
 
 def test_formal_dataset_uses_explicit_storage_directories():
@@ -275,16 +271,3 @@ def test_runtime_creates_canonical_cylinders_and_lights():
     assert "UsdPhysics.CollisionAPI.Apply(prim)" in cylinder_helper
     assert "UsdLux.DomeLight.Define" in apply_scene
     assert "UsdLux.DistantLight.Define" not in apply_scene
-
-
-def test_visual_qa_capture_is_read_only_and_collects_three_flight_phases():
-    """Visual QA must observe path/images/status without commanding flight."""
-    source = VISUAL_QA_CAPTURE.read_text(encoding="utf-8")
-    ast.parse(source)
-    assert 'CAPTURE_PHASES = ("start", "mid_flight", "near_goal")' in source
-    assert 'PATH_TOPIC = "/uav/planner/path"' in source
-    assert '"look_down_m": -0.8' in source
-    assert '"mode": "TOP"' in source
-    assert '"position_smoothing": "disabled_rigid_body_mount"' in source
-    assert "create_publisher" not in source
-    assert "/fmu/in/" not in source

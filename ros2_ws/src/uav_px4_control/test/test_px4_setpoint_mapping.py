@@ -5,14 +5,14 @@ from dataclasses import replace
 
 import pytest
 
-from uav_px4_control.control_source_models import (
+from uav_px4_control.control.control_source_models import (
     ASTAR_EXPERT,
     ControlCommand,
     Vector3,
 )
-from uav_px4_control.px4_boundary_models import Px4MappingConfig
-from uav_px4_control.px4_candidate_validator import validate_px4_candidate
-from uav_px4_control.px4_setpoint_mapper import map_selected_command
+from uav_px4_control.px4.px4_boundary_models import Px4MappingConfig
+from uav_px4_control.px4.px4_candidate_validator import validate_px4_candidate
+from uav_px4_control.px4.px4_setpoint_mapper import map_selected_command
 
 
 def command(

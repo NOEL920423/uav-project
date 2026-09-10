@@ -105,7 +105,7 @@ def test_three_qa_seeds_are_distinct_and_obey_canonical_constraints():
 
 
 def test_blocked_goal_preserves_normal_obstacles_plus_fixture():
-    """The Phase 10B safe-failure mode remains available and explicit."""
+    """The blocked-goal safe-failure mode remains available and explicit."""
     scene = MODULE.generate_episode_scene(
         "episode_000005", 101005, 0.0, 0.0, "blocked_goal"
     )

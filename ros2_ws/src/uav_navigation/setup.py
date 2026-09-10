@@ -45,32 +45,32 @@ setup(
     entry_points={
         "console_scripts": [
             "navigation_node = uav_navigation.navigation_node:main",
-            "astar_planner_node = uav_navigation.astar_planner_node:main",
+            "astar_planner_node = uav_navigation.planner.astar_planner_node:main",
             "astar_offline_harness = "
-            "uav_navigation.astar_planner_node:offline_harness_main",
+            "uav_navigation.planner.astar_planner_node:offline_harness_main",
             "geometric_path_comparison = "
-            "uav_navigation.geometric_comparison:main",
+            "uav_navigation.diagnostics.geometric_comparison:main",
             "trajectory_parameterizer_node = "
-            "uav_navigation.trajectory_parameterizer_node:main",
+            "uav_navigation.trajectory.trajectory_parameterizer_node:main",
             "trajectory_follower_node = "
-            "uav_navigation.trajectory_follower_node:main",
+            "uav_navigation.tracking.trajectory_follower_node:main",
             "trajectory_offline_harness = "
-            "uav_navigation.trajectory_parameterizer_node:"
+            "uav_navigation.trajectory.trajectory_parameterizer_node:"
             "offline_harness_main",
             "trajectory_pipeline_harness = "
-            "uav_navigation.trajectory_parameterizer_node:"
+            "uav_navigation.trajectory.trajectory_parameterizer_node:"
             "pipeline_harness_main",
             "tracking_trajectory_publisher = "
-            "uav_navigation.offline_tracking_harness:"
+            "uav_navigation.diagnostics.offline_tracking_harness:"
             "trajectory_publisher_main",
             "tracking_scene_publisher = "
-            "uav_navigation.offline_tracking_harness:scene_publisher_main",
+            "uav_navigation.diagnostics.offline_tracking_harness:scene_publisher_main",
             "offline_kinematic_plant = "
-            "uav_navigation.offline_tracking_harness:plant_main",
+            "uav_navigation.diagnostics.offline_tracking_harness:plant_main",
             "tracking_result_monitor = "
-            "uav_navigation.offline_tracking_harness:monitor_main",
+            "uav_navigation.diagnostics.offline_tracking_harness:monitor_main",
             "tracking_comparison = "
-            "uav_navigation.tracking_comparison:main",
+            "uav_navigation.diagnostics.tracking_comparison:main",
         ],
     },
 )

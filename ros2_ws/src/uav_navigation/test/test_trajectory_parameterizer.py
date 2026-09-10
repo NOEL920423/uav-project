@@ -4,10 +4,10 @@ import math
 
 import pytest
 
-from uav_navigation.models import Point3D
-from uav_navigation.trajectory_metrics import vector_norm
-from uav_navigation.trajectory_models import TrajectoryConfig
-from uav_navigation.trajectory_parameterizer import parameterize_trajectory
+from uav_navigation.planner.models import Point3D
+from uav_navigation.trajectory.trajectory_metrics import vector_norm
+from uav_navigation.trajectory.trajectory_models import TrajectoryConfig
+from uav_navigation.trajectory.trajectory_parameterizer import parameterize_trajectory
 
 
 def path(*coordinates):

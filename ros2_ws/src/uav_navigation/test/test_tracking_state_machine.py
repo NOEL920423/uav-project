@@ -2,14 +2,14 @@
 
 import math
 
-from uav_navigation.models import Point3D
-from uav_navigation.tracking_models import (
+from uav_navigation.planner.models import Point3D
+from uav_navigation.tracking.tracking_models import (
     TrackingConfig,
     TrackingState,
     VehicleState,
 )
-from uav_navigation.trajectory_models import TrajectoryPoint
-from uav_navigation.trajectory_tracker import OfflineTrackingController
+from uav_navigation.trajectory.trajectory_models import TrajectoryPoint
+from uav_navigation.tracking.trajectory_tracker import OfflineTrackingController
 
 
 def _point(time_s, north, speed=0.0, yaw=0.0):

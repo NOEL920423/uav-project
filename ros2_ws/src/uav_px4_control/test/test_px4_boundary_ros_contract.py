@@ -102,7 +102,7 @@ def test_only_mux_creates_selected_command_publisher_after_phase7() -> None:
 
 def test_mapping_node_consumes_mux_and_only_publishes_diagnostics() -> None:
     """Lock mapping input and all three non-live output topic names."""
-    node = text(PACKAGE / "uav_px4_control/px4_mapping_gate_node.py")
+    node = text(PACKAGE / "uav_px4_control/px4/px4_mapping_gate_node.py")
     assert "SELECTED_COMMAND_TOPIC" in node
     assert 'CANDIDATE_TOPIC = "/uav/px4/setpoint_candidate"' in node
     assert 'GATE_STATUS_TOPIC = "/uav/px4/output_gate_status"' in node
@@ -131,8 +131,8 @@ def test_no_phase7_publisher_targets_a_live_px4_input() -> None:
 def test_no_phase7_adapter_constructs_px4_flight_messages() -> None:
     """Keep real setpoint, mode, and vehicle-command messages absent."""
     paths = [
-        PACKAGE / "uav_px4_control/px4_mapping_gate_node.py",
-        PACKAGE / "uav_px4_control/offline_px4_boundary_harness.py",
+        PACKAGE / "uav_px4_control/px4/px4_mapping_gate_node.py",
+        PACKAGE / "uav_px4_control/diagnostics/offline_px4_boundary_harness.py",
     ]
     content = "\n".join(text(path) for path in paths)
     forbidden = (

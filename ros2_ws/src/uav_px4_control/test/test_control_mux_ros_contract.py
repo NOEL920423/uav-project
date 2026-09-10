@@ -3,7 +3,7 @@
 import ast
 from pathlib import Path
 
-from uav_px4_control.offline_control_mux_harness import (
+from uav_px4_control.diagnostics.offline_control_mux_harness import (
     CandidateTrafficEvidence,
 )
 
@@ -103,13 +103,13 @@ def test_candidate_and_selected_layers_remain_separate() -> None:
     """Keep follower output, mux ownership, and plant remap explicit."""
     follower = text(
         SOURCE_ROOT
-        / "uav_navigation/uav_navigation/trajectory_follower_node.py"
+        / "uav_navigation/uav_navigation/tracking/trajectory_follower_node.py"
     )
     assert 'COMMAND_TOPIC = "/uav/control/astar_command"' in follower
     assert '"/uav/control/selected_command"' not in follower
     plant = text(
         SOURCE_ROOT
-        / "uav_navigation/uav_navigation/offline_tracking_harness.py"
+        / "uav_navigation/uav_navigation/diagnostics/offline_tracking_harness.py"
     )
     assert 'declare_parameter("command_topic", COMMAND_TOPIC)' in plant
     stack = text(PACKAGE / "launch/control_stack_offline.launch.py")
@@ -119,7 +119,7 @@ def test_candidate_and_selected_layers_remain_separate() -> None:
 def test_synthetic_sources_have_no_hardware_or_model_runtime() -> None:
     """Keep joystick and NavRL fixtures synthetic and topic-scoped."""
     harness = text(
-        PACKAGE / "uav_px4_control/offline_control_mux_harness.py"
+        PACKAGE / "uav_px4_control/diagnostics/offline_control_mux_harness.py"
     )
     forbidden = ("pygame", "inputs", "torch", "tensorflow", "onnxruntime")
     assert not any(name in harness for name in forbidden)
@@ -131,8 +131,8 @@ def test_synthetic_sources_have_no_hardware_or_model_runtime() -> None:
 def test_phase6_graphs_and_modules_have_no_flight_output() -> None:
     """Reject PX4 inputs, OFFBOARD, arming, and simulator runtime paths."""
     paths = [
-        PACKAGE / "uav_px4_control/control_mux_node.py",
-        PACKAGE / "uav_px4_control/offline_control_mux_harness.py",
+        PACKAGE / "uav_px4_control/control/control_mux_node.py",
+        PACKAGE / "uav_px4_control/diagnostics/offline_control_mux_harness.py",
         PACKAGE / "launch/control_mux_offline.launch.py",
         PACKAGE / "launch/control_stack_offline.launch.py",
     ]
@@ -154,7 +154,7 @@ def test_wrapper_exposes_all_three_finite_phase6_checks() -> None:
 def test_live_mux_monitor_has_deterministic_dwell_margin() -> None:
     """Keep the harness request later than the configured mux dwell gate."""
     harness = text(
-        PACKAGE / "uav_px4_control/offline_control_mux_harness.py"
+        PACKAGE / "uav_px4_control/diagnostics/offline_control_mux_harness.py"
     )
     assert "SOURCE_DWELL_SETTLE_S = 0.35" in harness
     assert harness.count("SOURCE_DWELL_SETTLE_S") == 3
@@ -183,5 +183,5 @@ def test_live_mux_monitor_rejects_replayed_candidate_stamp_readiness() -> None:
 
 def test_mux_status_topic_is_canonical() -> None:
     """Lock the typed mux status topic required by the Phase 6 contract."""
-    node = text(PACKAGE / "uav_px4_control/control_mux_node.py")
+    node = text(PACKAGE / "uav_px4_control/control/control_mux_node.py")
     assert 'MUX_STATUS_TOPIC = "/uav/control/mux_status"' in node

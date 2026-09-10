@@ -14,7 +14,7 @@ from std_msgs.msg import Bool, String
 
 from uav_interfaces.msg import TimedTrajectory
 
-from uav_navigation.trajectory_parameterizer_node import (
+from uav_navigation.trajectory.trajectory_parameterizer_node import (
     CANDIDATE_TOPIC,
     STATUS_TOPIC,
     TrajectoryParameterizerNode,

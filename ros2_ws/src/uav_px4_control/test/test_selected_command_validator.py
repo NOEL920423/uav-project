@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from uav_px4_control.control_source_models import (
+from uav_px4_control.control.control_source_models import (
     ASTAR_EXPERT,
     ControlCommand,
     ControlMuxConfig,
@@ -13,7 +13,7 @@ from uav_px4_control.control_source_models import (
     Vector3,
     zero_hold,
 )
-from uav_px4_control.selected_command_validator import (
+from uav_px4_control.control.selected_command_validator import (
     validate_selected_command,
 )
 

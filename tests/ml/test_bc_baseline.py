@@ -30,11 +30,6 @@ from uav_ml.tools.bc_baseline import (
     create_episode_split,
     train_baseline,
 )
-from uav_ml.tools.bc_evaluation import (
-    BcPolicyRuntime,
-    run_closed_loop_evaluation,
-    unseen_evaluation_seeds,
-)
 from uav_ml.train_autoencoder import train as train_autoencoder
 
 
@@ -102,7 +97,7 @@ def _make_fixture(
             "success": True,
             "available_sensor_streams": {
                 "runtime_status": {
-                    "phase10c_observer_mode": "fixed_global_top"
+                    "observer_mode": "fixed_global_top"
                 }
             },
         })
@@ -338,16 +333,6 @@ class BcBaselineTests(unittest.TestCase):
                 "bc/test_right_rmse",
                 "bc/test_yaw_rate_rmse",
             }.issubset(scalar_tags))
-            runtime = BcPolicyRuntime(output / "best.pt", torch.device("cpu"))
-            self.assertFalse(any(
-                parameter.requires_grad for parameter in runtime.encoder.parameters()
-            ))
-            action = runtime.act({
-                "rgb": np.zeros((72, 128, 3), dtype=np.uint8),
-                "state": np.zeros(8, dtype=np.float32),
-            })
-            self.assertEqual(action.shape, (3,))
-            self.assertTrue(np.isfinite(action).all())
 
     def test_tiny_top_autoencoder_uses_reconstruction_loss_and_tensorboard(self) -> None:
         with tempfile.TemporaryDirectory(prefix="ae-top-train-") as temporary:
@@ -469,42 +454,6 @@ class BcBaselineTests(unittest.TestCase):
             self.assertEqual(summary["actual_epochs_trained"], 2)
             self.assertEqual(summary["best_epoch"], 1)
             self.assertTrue(summary["early_stopping_triggered"])
-
-    def test_closed_loop_records_measured_metrics_and_policy_ownership(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="bc-baseline-eval-") as temporary:
-            root = Path(temporary)
-            dataset, _ = _make_fixture(root)
-            seeds = unseen_evaluation_seeds(dataset, 3, seed_base=2000)
-            self.assertEqual(seeds, [2000, 2001, 2002])
-            checkpoint = root / "best.pt"
-            encoder = root / "encoder-proof.pt"
-            checkpoint.write_bytes(b"checkpoint")
-            encoder.write_bytes(b"encoder")
-            environment = MockClosedLoopEnvironment()
-            output = root / "evaluation"
-            result = run_closed_loop_evaluation(
-                environment=environment,
-                policy=lambda observation: np.zeros(3, dtype=np.float32),
-                seeds=seeds,
-                output_dir=output,
-                checkpoint=checkpoint,
-                checkpoint_sha256=_sha256(checkpoint),
-                encoder_checkpoint=encoder,
-                encoder_sha256=_sha256(encoder),
-                dataset_root=dataset,
-                progress_interval_s=999.0,
-            )
-            self.assertTrue(environment.closed)
-            self.assertEqual(result["control_source"], "BC_POLICY")
-            self.assertEqual(result["expert_action_calls"], 0)
-            self.assertFalse(result["action_blending"])
-            self.assertEqual(result["aggregate"]["attempted_episodes"], 3)
-            self.assertEqual(result["aggregate"]["successful_episodes"], 1)
-            self.assertEqual(result["aggregate"]["collision_count"], 1)
-            self.assertEqual(result["aggregate"]["timeout_count"], 1)
-            self.assertGreater(result["records"][0]["path_length_m"], 0.0)
-            self.assertTrue((output / "metrics.json").is_file())
-            self.assertTrue(all(Path(path).is_file() for path in result["plots"]))
 
     def test_cli_help_is_available_without_training_or_isaac_startup(self) -> None:
         for command in (("bc-train", "--help"), ("bc-eval", "--help")):

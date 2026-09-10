@@ -5,7 +5,7 @@ import random
 
 import pytest
 
-from uav_navigation.coordinate_frames import (
+from uav_navigation.planner.coordinate_frames import (
     QUATERNION_CONVERSION_SUPPORTED,
     UnsupportedOrientationError,
     isaac_quaternion_to_ned,
@@ -18,7 +18,7 @@ from uav_navigation.coordinate_frames import (
     ned_to_isaac_position,
     ned_yaw_to_isaac,
 )
-from uav_navigation.models import Point3D
+from uav_navigation.planner.models import Point3D
 
 
 def test_origin_and_basis_vectors() -> None:

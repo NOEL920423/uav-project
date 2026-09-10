@@ -11,8 +11,8 @@ from uav_ml.navigation_imports import add_navigation_source_path
 
 add_navigation_source_path()
 
-from uav_navigation.astar_planner import plan_path  # noqa: E402
-from uav_navigation.models import (  # noqa: E402
+from uav_navigation.planner.astar_planner import plan_path  # noqa: E402
+from uav_navigation.planner.models import (  # noqa: E402
     BSplineConfig,
     CircularObstacle,
     PlannerConfig,

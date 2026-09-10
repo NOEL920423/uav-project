@@ -4,9 +4,9 @@ import math
 
 import pytest
 
-from uav_navigation.models import Point3D
-from uav_navigation.trajectory_parameterizer import parameterize_trajectory
-from uav_navigation.yaw_profile import ned_yaw_profile, unwrap_angles
+from uav_navigation.planner.models import Point3D
+from uav_navigation.trajectory.trajectory_parameterizer import parameterize_trajectory
+from uav_navigation.trajectory.yaw_profile import ned_yaw_profile, unwrap_angles
 
 
 def test_cardinal_ned_headings():

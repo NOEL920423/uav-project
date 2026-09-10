@@ -1029,7 +1029,7 @@ class ExpertCollector:
                 False, 0, 0, reason, 0, "blocked_scene",
                 {"valid": False, "error": str(error)},
             )
-        from uav_ml.tools.validate_expert_dataset import (
+        from uav_ml.tools.validate_expert_episode import (
             CSV_FIELDS,
             DATASET_VERSION,
             contract_manifest,

@@ -1,4 +1,4 @@
-"""Regression tests for the Phase 10A dataset geometry and join contract."""
+"""Regression tests for the dataset geometry and join contract."""
 
 import math
 

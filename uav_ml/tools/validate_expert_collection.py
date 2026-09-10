@@ -31,11 +31,11 @@ from isaac.runtime.formal_expert_sensor_contract import (
     FORMAL_RGB_EXPECTED_RATE_RANGE_HZ,
     LEGACY_OBSERVER_RGB_EXPECTED_RATE_RANGE_HZ,
 )
-from uav_ml.tools.validate_expert_batch import (
+from uav_ml.tools.validate_expert_dataset import (
     _uses_formal_top_rgb,
     _validate_auxiliary,
 )
-from uav_ml.tools.validate_expert_dataset import (
+from uav_ml.tools.validate_expert_episode import (
     _directory_size,
     validate_episode,
 )

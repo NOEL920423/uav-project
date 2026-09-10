@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from uav_px4_control.px4_stream_models import (
+from uav_px4_control.px4.px4_stream_models import (
     Px4StreamConfig,
     Px4StreamState,
     StreamCandidate,
@@ -12,7 +12,7 @@ from uav_px4_control.px4_stream_models import (
     StreamReadiness,
     StreamTelemetry,
 )
-from uav_px4_control.px4_stream_state_machine import Px4StreamStateMachine
+from uav_px4_control.px4.px4_stream_state_machine import Px4StreamStateMachine
 
 
 def config(**overrides):

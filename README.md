@@ -18,6 +18,26 @@
 - `docs/`：系統設計、問題紀錄、研究里程碑與開發文件。
 - `artifacts/`：實驗、測試與診斷產生的輸出結果。
 
+## Current workflows
+
+Daily work should enter through `./uav`. The supported workflows are expert
+collection (`expert-collect`), autoencoder training (`ae-train`), BC training
+(`bc-train`), BC flight evaluation (`bc-eval`), and guarded PX4 SITL flight
+(`px4-sitl-flight-check`). Offline checks, doctors, comparisons, and fixtures
+are regression or diagnostic tools, not normal flight entry points.
+
+Use a profile for repeatable daily arguments without changing module defaults:
+
+```bash
+./uav profile current expert-collect
+./uav profile current ae-train
+./uav profile current bc-train
+./uav profile current bc-eval --episodes 20
+```
+
+Profiles live in `config/profiles/`. They only supply workflow CLI arguments;
+PX4 safety limits remain in the package ROS parameter YAML files.
+
 未來會考慮簡化資料結構
 
 ```bash

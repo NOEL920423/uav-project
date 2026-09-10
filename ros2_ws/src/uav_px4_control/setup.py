@@ -47,55 +47,55 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "control_mux_node = uav_px4_control.control_mux_node:main",
-            "bc_policy_node = uav_px4_control.bc_policy_node:main",
+            "control_mux_node = uav_px4_control.control.control_mux_node:main",
+            "bc_policy_node = uav_px4_control.flight.bc_policy_node:main",
             "bc_flight_supervisor_node = "
-            "uav_px4_control.bc_flight_supervisor_node:main",
+            "uav_px4_control.flight.bc_flight_supervisor_node:main",
             "bc_episode_monitor_node = "
-            "uav_px4_control.bc_episode_monitor_node:main",
+            "uav_px4_control.flight.bc_episode_monitor_node:main",
             "px4_mapping_gate_node = "
-            "uav_px4_control.px4_mapping_gate_node:main",
+            "uav_px4_control.px4.px4_mapping_gate_node:main",
             "px4_setpoint_streamer_node = "
-            "uav_px4_control.px4_setpoint_streamer_node:main",
+            "uav_px4_control.px4.px4_setpoint_streamer_node:main",
             "px4_live_telemetry_adapter = "
-            "uav_px4_control.px4_live_telemetry_adapter:main",
+            "uav_px4_control.px4.px4_live_telemetry_adapter:main",
             "px4_sitl_doctor = "
-            "uav_px4_control.px4_sitl_doctor:main",
+            "uav_px4_control.diagnostics.px4_sitl_doctor:main",
             "px4_sitl_stream_monitor = "
-            "uav_px4_control.px4_sitl_stream_monitor:main",
+            "uav_px4_control.diagnostics.px4_sitl_stream_monitor:main",
             "px4_stream_offline_comparison = "
-            "uav_px4_control.px4_stream_fixtures:main",
+            "uav_px4_control.diagnostics.px4_stream_fixtures:main",
             "px4_odometry_bridge_node = "
-            "uav_px4_control.px4_odometry_bridge_node:main",
+            "uav_px4_control.px4.px4_odometry_bridge_node:main",
             "px4_vehicle_command_owner_node = "
-            "uav_px4_control.px4_vehicle_command_owner_node:main",
+            "uav_px4_control.flight.px4_vehicle_command_owner_node:main",
             "px4_sitl_flight_supervisor_node = "
-            "uav_px4_control.px4_sitl_flight_supervisor_node:main",
+            "uav_px4_control.flight.px4_sitl_flight_supervisor_node:main",
             "px4_sitl_flight_monitor = "
-            "uav_px4_control.px4_sitl_flight_monitor:main",
+            "uav_px4_control.diagnostics.px4_sitl_flight_monitor:main",
             "px4_generation_probe = "
-            "uav_px4_control.px4_generation_probe:main",
+            "uav_px4_control.diagnostics.px4_generation_probe:main",
             "runtime_smoke_lifecycle_client = "
-            "uav_px4_control.runtime_smoke_lifecycle_client:main",
+            "uav_px4_control.diagnostics.runtime_smoke_lifecycle_client:main",
             "px4_boundary_result_monitor = "
-            "uav_px4_control.offline_px4_boundary_harness:monitor_main",
+            "uav_px4_control.diagnostics.offline_px4_boundary_harness:monitor_main",
             "synthetic_px4_telemetry = "
-            "uav_px4_control.offline_px4_boundary_harness:telemetry_main",
+            "uav_px4_control.diagnostics.offline_px4_boundary_harness:telemetry_main",
             "control_mux_comparison = "
-            "uav_px4_control.control_mux_comparison:main",
+            "uav_px4_control.diagnostics.control_mux_comparison:main",
             "control_mux_result_monitor = "
-            "uav_px4_control.offline_control_mux_harness:monitor_main",
+            "uav_px4_control.diagnostics.offline_control_mux_harness:monitor_main",
             "px4_control_node = uav_px4_control.px4_control_node:main",
             "synthetic_astar_candidate = "
-            "uav_px4_control.offline_control_mux_harness:"
+            "uav_px4_control.diagnostics.offline_control_mux_harness:"
             "astar_publisher_main",
             "synthetic_hold_candidate = "
-            "uav_px4_control.offline_control_mux_harness:hold_publisher_main",
+            "uav_px4_control.diagnostics.offline_control_mux_harness:hold_publisher_main",
             "synthetic_joystick_candidate = "
-            "uav_px4_control.offline_control_mux_harness:"
+            "uav_px4_control.diagnostics.offline_control_mux_harness:"
             "joystick_publisher_main",
             "synthetic_navrl_candidate = "
-            "uav_px4_control.offline_control_mux_harness:"
+            "uav_px4_control.diagnostics.offline_control_mux_harness:"
             "navrl_publisher_main",
         ],
     },

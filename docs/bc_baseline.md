@@ -108,8 +108,8 @@ Retained events can later be reopened with
 
 For a remote server, use an SSH tunnel such as
 `ssh -L 6006:localhost:6006 user@server`, then open
-`http://localhost:6006` locally. TOP/depth checkpoints are offline baselines;
-the current closed-loop runtime is fail-closed because it supplies FPV RGB.
+`http://localhost:6006` locally. The formal closed-loop runtime accepts the
+TOP RGB checkpoint contract.
 
 ## Closed-loop evaluation
 
@@ -122,10 +122,8 @@ After training has produced `best.pt`, run:
 
 An explicit checkpoint can be selected with `--checkpoint PATH`. The tool
 loads the exact encoder recorded in the checkpoint, verifies its SHA-256,
-reuses the training preprocessing and normalization, and launches the existing
-headless Isaac fixed-height city environment with cameras enabled. Evaluation
-seeds are deterministic and checked against every seed in the expert dataset;
-they cannot overlap train, validation, or test expert episodes.
+reuses the training preprocessing and normalization, and launches the managed
+Isaac Sim, Pegasus, PX4 SITL, and ROS 2 flight stack.
 
 During every rollout, `CONTROL SOURCE = BC_POLICY`. The evaluator calls only
 the BC policy for actions; it never calls the environment's A* expert, blends
@@ -137,11 +135,10 @@ as collision failures.
 Evaluation output is written below:
 
 ```text
-artifacts/experiments/bc_evaluation/run_<UTC timestamp>/
+artifacts/evaluations/bc_flight/run_<timestamp>/
   metrics.json
-  episodes/episode_<index>.json
-  plots/closed_loop_outcomes.png
-  plots/goal_distance_by_episode.png
+  episode_<index>/result.json
+  plots/
 ```
 
 Each episode records seed, success, collision, timeout, terminal reason,

@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 
-from uav_px4_control.px4_flight_models import (
+from uav_px4_control.flight.px4_flight_models import (
     FlightEvidence,
     Px4FlightConfig,
     Px4FlightState,
@@ -10,7 +10,7 @@ from uav_px4_control.px4_flight_models import (
     planner_status_allows_final_path,
     vehicle_command_was_accepted,
 )
-from uav_px4_control.px4_flight_state_machine import Px4FlightStateMachine
+from uav_px4_control.flight.px4_flight_state_machine import Px4FlightStateMachine
 
 
 READY = FlightEvidence(

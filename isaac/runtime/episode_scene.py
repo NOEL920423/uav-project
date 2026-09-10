@@ -330,8 +330,8 @@ def _blocked_goal_fixture() -> dict:
         "roof_height": SCENE_DECORATION_ROOF_HEIGHT_MIN,
         "antenna_height": SCENE_DECORATION_ANTENNA_HEIGHT_MIN,
         "collision": True,
-        "placement_mode": "phase10b_safe_failure",
-        "fixture": "phase10b_safe_failure",
+        "placement_mode": "blocked_goal_safe_failure",
+        "fixture": "blocked_goal_safe_failure",
         "hierarchy": ["Body", "Windows", "Roof/Crown"],
     }
     spec["windows"] = _window_contract(spec, random.Random(0))

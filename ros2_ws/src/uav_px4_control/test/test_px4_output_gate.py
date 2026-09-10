@@ -4,12 +4,12 @@ from dataclasses import replace
 
 import pytest
 
-from uav_px4_control.bc_flight_models import (
+from uav_px4_control.flight.bc_flight_models import (
     BcFlightController,
     BcFlightEvidence,
     BcFlightState,
 )
-from uav_px4_control.px4_boundary_models import (
+from uav_px4_control.px4.px4_boundary_models import (
     CandidateValidation,
     MuxHealthEvidence,
     Px4MappingConfig,
@@ -17,8 +17,8 @@ from uav_px4_control.px4_boundary_models import (
     Px4TelemetryState,
     Px4VelocitySetpointCandidate,
 )
-from uav_px4_control.px4_output_gate import Px4OutputSafetyGate
-from uav_px4_control.px4_synthetic_telemetry import (
+from uav_px4_control.px4.px4_output_gate import Px4OutputSafetyGate
+from uav_px4_control.diagnostics.px4_synthetic_telemetry import (
     SYNTHETIC_TELEMETRY_FIXTURES,
     synthetic_telemetry_fixture,
 )

@@ -1,4 +1,4 @@
-"""Pure Phase 10A BC expert dataset V1 contract and geometry helpers."""
+"""Pure BC expert dataset V1 contract and geometry helpers."""
 
 from __future__ import annotations
 

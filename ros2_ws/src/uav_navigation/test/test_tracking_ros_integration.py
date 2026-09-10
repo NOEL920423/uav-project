@@ -18,9 +18,9 @@ from uav_interfaces.msg import (
     TrajectoryTrackingStatus,
 )
 
-from uav_navigation.tracking_fixtures import TRACKING_FIXTURES
-from uav_navigation.tracking_models import TrackingState
-from uav_navigation.trajectory_follower_node import (
+from uav_navigation.diagnostics.tracking_fixtures import TRACKING_FIXTURES
+from uav_navigation.tracking.tracking_models import TrackingState
+from uav_navigation.tracking.trajectory_follower_node import (
     COMMAND_TOPIC,
     REFERENCE_POSE_TOPIC,
     REFERENCE_TWIST_TOPIC,

@@ -5,10 +5,10 @@ from pathlib import Path
 
 
 PACKAGE = Path(__file__).parents[1] / "uav_px4_control"
-STREAMER = PACKAGE / "px4_setpoint_streamer_node.py"
-FLIGHT_SUPERVISOR = PACKAGE / "px4_sitl_flight_supervisor_node.py"
-BC_FLIGHT_SUPERVISOR = PACKAGE / "bc_flight_supervisor_node.py"
-VEHICLE_COMMAND_OWNER = PACKAGE / "px4_vehicle_command_owner_node.py"
+STREAMER = PACKAGE / "px4" / "px4_setpoint_streamer_node.py"
+FLIGHT_SUPERVISOR = PACKAGE / "flight" / "px4_sitl_flight_supervisor_node.py"
+BC_FLIGHT_SUPERVISOR = PACKAGE / "flight" / "bc_flight_supervisor_node.py"
+VEHICLE_COMMAND_OWNER = PACKAGE / "flight" / "px4_vehicle_command_owner_node.py"
 ALLOWED = {
     "/fmu/in/trajectory_setpoint",
     "/fmu/in/offboard_control_mode",

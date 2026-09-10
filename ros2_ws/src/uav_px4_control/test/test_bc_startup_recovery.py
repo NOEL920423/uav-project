@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from uav_px4_control.bc_flight_models import (
+from uav_px4_control.flight.bc_flight_models import (
     BcFlightController, BcFlightEvidence, BcFlightState, StartupStale,
 )
 
@@ -189,7 +189,10 @@ def test_recovered_flight_uses_normal_handoff_and_cleanup():
 
 def supervisor_adapter():
     """Load actual adapter methods without requiring ROS in pure tests."""
-    path = Path(__file__).parents[1] / "uav_px4_control/bc_flight_supervisor_node.py"
+    path = (
+        Path(__file__).parents[1]
+        / "uav_px4_control/flight/bc_flight_supervisor_node.py"
+    )
     tree = ast.parse(path.read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
     cls.bases = []

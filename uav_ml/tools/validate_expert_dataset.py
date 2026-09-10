@@ -1,310 +1,379 @@
-"""Validate and rebuild the Phase 10A BC expert dataset V1."""
+"""Validate a multi-episode BC expert dataset."""
 
 from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
+from collections import Counter
 import json
 import math
 from pathlib import Path
-import sys
 
 import numpy as np
 from PIL import Image
 
-from uav_ml.inference.rgb_encoder import RgbEncoderInference
-
-
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-RECORDER_SOURCE = REPOSITORY_ROOT / "ros2_ws" / "src" / "uav_data_recorder"
-sys.path.insert(0, str(RECORDER_SOURCE))
-
-from uav_data_recorder.expert_dataset_contract import (  # noqa: E402
-    CSV_FIELDS,
-    DATASET_VERSION,
-    IMAGE_HEIGHT,
-    IMAGE_WIDTH,
-    SYNCHRONIZATION_TOLERANCE_S,
-    contract_manifest,
+from isaac.runtime.formal_expert_sensor_contract import (
+    FPV_RGB_HEIGHT,
+    FPV_RGB_WIDTH,
+    LEGACY_OBSERVER_RGB_HEIGHT,
+    LEGACY_OBSERVER_RGB_WIDTH,
+    TOP_RGB_ALIGNMENT_TOLERANCE_S,
+    TOP_RGB_HEIGHT,
+    TOP_RGB_MODE,
+    TOP_RGB_WIDTH,
+)
+from uav_ml.tools.validate_expert_episode import (
+    _directory_size,
+    validate_episode,
 )
 
 
-def _float(row: dict[str, str], name: str) -> float:
-    value = float(row[name])
-    if not math.isfinite(value):
-        raise ValueError(f"{name} must be finite")
-    return value
+def _load(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _uses_formal_top_rgb(episode: dict) -> bool:
+    """Return whether one episode declares the fixed formal TOP stream."""
+    streams = episode.get("available_sensor_streams") or {}
+    runtime_status = streams.get("runtime_status") or {}
+    return runtime_status.get("observer_mode") == TOP_RGB_MODE
 
 
-def _directory_size(path: Path) -> int:
-    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+def _validate_auxiliary(dataset_root: Path, episode_id: str) -> dict:
+    episode_dir = dataset_root / episode_id
+    episode = _load(episode_dir / "episode.json")
+    formal_top_rgb = _uses_formal_top_rgb(episode)
+    observer_size = (
+        (TOP_RGB_WIDTH, TOP_RGB_HEIGHT)
+        if formal_top_rgb
+        else (LEGACY_OBSERVER_RGB_WIDTH, LEGACY_OBSERVER_RGB_HEIGHT)
+    )
+    with (episode_dir / "samples.csv").open(
+        newline="", encoding="utf-8"
+    ) as stream:
+        sample_rows = list(csv.DictReader(stream))
+    with (episode_dir / "auxiliary.csv").open(
+        newline="", encoding="utf-8"
+    ) as stream:
+        reader = csv.DictReader(stream)
+        auxiliary_fields = set(reader.fieldnames or ())
+        rows = list(reader)
+    if len(rows) != len(sample_rows):
+        raise ValueError(f"{episode_id}: auxiliary row count mismatch")
+    counts = Counter()
+    observer_timestamps: set[float] = set()
+    for index, row in enumerate(rows, start=1):
+        if row["episode_id"] != episode_id or int(row["sample_id"]) != index:
+            raise ValueError(f"{episode_id}: auxiliary identity mismatch")
+        if formal_top_rgb and abs(
+            float(row["primary_image_timestamp_s"])
+            - float(sample_rows[index - 1]["image_timestamp_s"])
+        ) > TOP_RGB_ALIGNMENT_TOLERANCE_S:
+            raise ValueError(
+                f"{episode_id}: auxiliary primary timestamp mismatch"
+            )
+        observer_name = (
+            "observer_rgb"
+            if "observer_rgb_available" in auxiliary_fields
+            else "top_rgb"
+        )
+        for name, tolerance, expected_format in (
+            (observer_name, 0.35, "JPEG"),
+            ("fpv_depth", 0.10, "PNG"),
+        ):
+            available = row[f"{name}_available"].lower() == "true"
+            counts[f"{name}_{'available' if available else 'missing'}"] += 1
+            if not available:
+                if formal_top_rgb and name == observer_name:
+                    raise ValueError(
+                        f"{episode_id}: formal TOP RGB is missing for "
+                        f"sample {index}"
+                    )
+                if row[f"{name}_path"]:
+                    raise ValueError(
+                        f"{episode_id}: unavailable {name} has a path"
+                    )
+                continue
+            error = float(row[f"{name}_error_s"])
+            effective_tolerance = (
+                TOP_RGB_ALIGNMENT_TOLERANCE_S
+                if formal_top_rgb and name == observer_name
+                else tolerance
+            )
+            if not math.isfinite(error) or error > effective_tolerance + 1e-9:
+                raise ValueError(f"{episode_id}: {name} join over tolerance")
+            if formal_top_rgb and name == observer_name:
+                observer_timestamp = float(row[f"{name}_timestamp_s"])
+                primary_timestamp = float(row["primary_image_timestamp_s"])
+                observed_error = abs(observer_timestamp - primary_timestamp)
+                if (
+                    not math.isfinite(observer_timestamp)
+                    or observed_error > TOP_RGB_ALIGNMENT_TOLERANCE_S + 1e-9
+                ):
+                    raise ValueError(
+                        f"{episode_id}: formal TOP RGB timestamp mismatch"
+                    )
+                if abs(error - observed_error) > 1e-9:
+                    raise ValueError(
+                        f"{episode_id}: formal TOP RGB error metadata mismatch"
+                    )
+                if row[f"{name}_status"] != "matched":
+                    raise ValueError(
+                        f"{episode_id}: formal TOP RGB status is not matched"
+                    )
+                if observer_timestamp in observer_timestamps:
+                    raise ValueError(
+                        f"{episode_id}: formal TOP RGB timestamp was reused"
+                    )
+                observer_timestamps.add(observer_timestamp)
+            path = (dataset_root / row[f"{name}_path"]).resolve()
+            if not path.is_file() or not path.is_relative_to(dataset_root):
+                raise ValueError(f"{episode_id}: invalid {name} path")
+            with Image.open(path) as image:
+                expected_size = (
+                    observer_size
+                    if name == observer_name
+                    else (FPV_RGB_WIDTH, FPV_RGB_HEIGHT)
+                )
+                if (
+                    image.format != expected_format
+                    or image.size != expected_size
+                ):
+                    raise ValueError(f"{episode_id}: invalid {name} image")
+                if name == "fpv_depth" and image.mode not in {"I;16", "I"}:
+                    raise ValueError(f"{episode_id}: depth is not uint16 PNG")
+                if name == "fpv_depth":
+                    depth = np.asarray(image)
+                    if depth.min() < 0 or depth.max() > 30000:
+                        raise ValueError(
+                            f"{episode_id}: depth is outside 0..30000 mm"
+                        )
+    return dict(counts)
 
 
-def validate_episode(
+def _validate_episode_metadata(episode: dict, validation: dict) -> None:
+    episode_id = validation["episode_id"]
+    scene = episode["scene_configuration"]
+    if len(scene.get("goal", [])) != 3 or not scene.get("obstacles"):
+        raise ValueError(f"{episode_id}: goal/obstacle metadata missing")
+    rejection_count = int(episode.get("rejected_sample_count", -1))
+    rejection_reasons = episode.get("rejections_by_reason")
+    if not isinstance(rejection_reasons, dict) or rejection_count != sum(
+        int(value) for value in rejection_reasons.values()
+    ):
+        raise ValueError(f"{episode_id}: rejection metadata mismatch")
+    if int(episode.get("sample_count", -1)) != validation["sample_count"]:
+        raise ValueError(f"{episode_id}: sample metadata mismatch")
+    path_length = float(episode.get("path_length_m", -1.0))
+    if not math.isfinite(path_length) or path_length < 0.0:
+        raise ValueError(f"{episode_id}: invalid path length")
+    final_distance = episode.get("final_tracking_goal_distance_m")
+    if validation["sample_count"]:
+        if final_distance is None or not math.isfinite(float(final_distance)):
+            raise ValueError(f"{episode_id}: final goal distance missing")
+    elif final_distance is not None:
+        raise ValueError(f"{episode_id}: empty episode has a final goal distance")
+    synchronization = episode.get("synchronization_statistics_s")
+    if not isinstance(synchronization, dict):
+        raise ValueError(f"{episode_id}: synchronization statistics missing")
+    streams = episode.get("available_sensor_streams")
+    if (
+        not isinstance(streams, dict)
+        or streams.get("fpv_rgb", {}).get("accepted")
+        != validation["sample_count"]
+    ):
+        raise ValueError(f"{episode_id}: sensor stream metadata mismatch")
+    if int(episode.get("episode_disk_usage_bytes", 0)) <= 0:
+        raise ValueError(f"{episode_id}: disk usage metadata missing")
+
+
+def validate_batch(
     dataset_root: Path,
     autoencoder_checkpoint: Path,
-    episode_id: str = "episode_000001",
+    expected_episodes: int = 10,
     device: str = "auto",
     write_result: bool = True,
-    require_success: bool | None = True,
-    require_single_manifest: bool = True,
-    update_manifest: bool = True,
 ) -> dict:
-    """Validate one V1 episode and rebuild every accepted observation/target."""
+    """Validate every pilot episode, scene, sensor join, and aggregate stat."""
     dataset_root = dataset_root.resolve()
     manifest_path = dataset_root / "dataset_manifest.json"
-    episode_dir = dataset_root / episode_id
-    episode_path = episode_dir / "episode.json"
-    samples_path = episode_dir / "samples.csv"
-    with manifest_path.open(encoding="utf-8") as stream:
-        manifest = json.load(stream)
-    with episode_path.open(encoding="utf-8") as stream:
-        episode = json.load(stream)
-    if manifest.get("dataset_version") != DATASET_VERSION:
-        raise ValueError("dataset manifest version mismatch")
-    if require_single_manifest and manifest.get("episodes") != [episode_id]:
-        raise ValueError("Phase 10A must contain exactly episode_000001")
-    success = bool(episode.get("success"))
-    expected_status = "complete" if success else "failed"
-    if episode.get("status") != expected_status:
-        raise ValueError("episode status/success fields disagree")
-    if require_success is not None and success != require_success:
-        raise ValueError(f"episode did not complete successfully: {episode.get('failure')}")
-    with samples_path.open(newline="", encoding="utf-8") as stream:
-        reader = csv.DictReader(stream)
-        if tuple(reader.fieldnames or ()) != CSV_FIELDS:
-            raise ValueError("samples.csv fields do not match the V1 contract")
-        rows = list(reader)
-    if not rows and success:
-        raise ValueError("episode contains no accepted samples")
-    if len(rows) != int(episode.get("sample_count", -1)):
-        raise ValueError("episode sample count does not match samples.csv")
+    manifest = _load(manifest_path)
+    episodes = list(manifest.get("episodes", []))
+    expected_ids = [
+        f"episode_{index:06d}" for index in range(1, expected_episodes + 1)
+    ]
+    if episodes != expected_ids:
+        raise ValueError(
+            f"expected ordered episodes {expected_ids}, received {episodes}"
+        )
 
-    encoder = RgbEncoderInference(autoencoder_checkpoint, device=device)
-    image_times: list[float] = []
-    state_times: list[float] = []
-    action_times: list[float] = []
-    state_errors: list[float] = []
-    action_errors: list[float] = []
-    latent_norms: list[float] = []
-    image_luminance_means: list[float] = []
-    image_dynamic_ranges: list[int] = []
-    observations: list[np.ndarray] = []
-    targets: list[np.ndarray] = []
-    for index, row in enumerate(rows, start=1):
-        if row["episode_id"] != episode_id:
-            raise ValueError(f"sample {index} episode ID mismatch")
-        if int(row["sample_id"]) != index:
-            raise ValueError("sample IDs must be contiguous from one")
-        row_success = row["success"].lower() == "true"
-        if row_success != success or (success and row["failure"]) or (
-            not success and not row["failure"]
-        ):
-            raise ValueError(f"sample {index} final outcome fields are invalid")
-        image_path = dataset_root / row["image_path"]
-        if not image_path.is_file() or not image_path.resolve().is_relative_to(dataset_root):
-            raise ValueError(f"sample {index} image path is invalid")
-        with Image.open(image_path) as image:
-            if image.format != "JPEG":
-                raise ValueError(f"sample {index} image is not JPEG")
-            if image.size != (IMAGE_WIDTH, IMAGE_HEIGHT):
-                raise ValueError(f"sample {index} image resolution mismatch")
-            rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
-        luminance_mean = float(rgb.astype(np.float32).mean())
-        dynamic_range = int(rgb.max()) - int(rgb.min())
-        if luminance_mean < 5.0 or dynamic_range < 32:
-            raise ValueError(
-                f"sample {index} is blank/dark: mean={luminance_mean:.3f}, "
-                f"range={dynamic_range}"
-            )
-        latent = encoder.encode(rgb).astype(np.float32)
-        if latent.shape != (64,) or not np.isfinite(latent).all():
-            raise ValueError(f"sample {index} did not produce a finite 64D latent")
-        state = np.asarray([
-            _float(row, "body_velocity_forward_mps"),
-            _float(row, "body_velocity_right_mps"),
-            _float(row, "goal_direction_forward"),
-            _float(row, "goal_direction_right"),
-            _float(row, "normalized_goal_distance"),
-            _float(row, "previous_action_forward"),
-            _float(row, "previous_action_right"),
-            _float(row, "previous_action_yaw_rate"),
-        ], dtype=np.float32)
-        observation = np.concatenate((latent, state)).astype(np.float32)
-        target = np.asarray([
-            _float(row, "expert_action_forward"),
-            _float(row, "expert_action_right"),
-            _float(row, "expert_action_yaw_rate"),
-        ], dtype=np.float32)
-        if observation.shape != (72,) or not np.isfinite(observation).all():
-            raise ValueError(f"sample {index} 72D observation rebuild failed")
-        if target.shape != (3,) or not np.isfinite(target).all():
-            raise ValueError(f"sample {index} 3D target rebuild failed")
-        if np.max(np.abs(target)) > 1.0 + 1e-6:
-            raise ValueError(f"sample {index} normalized target exceeds [-1,1]")
+    validations = []
+    metadata = []
+    scene_keys = set()
+    seeds = set()
+    rejections = Counter()
+    auxiliary = Counter()
+    state_errors = []
+    action_errors = []
+    sample_counts = []
+    rates = []
+    for episode_id in episodes:
+        episode = _load(dataset_root / episode_id / "episode.json")
+        validation = validate_episode(
+            dataset_root,
+            autoencoder_checkpoint,
+            episode_id=episode_id,
+            device=device,
+            write_result=write_result,
+            require_success=None,
+            require_single_manifest=False,
+            update_manifest=False,
+        )
+        scene = episode.get("scene_configuration")
+        if not isinstance(scene, dict):
+            raise ValueError(f"{episode_id}: scene configuration missing")
+        if scene.get("episode_id") != episode_id:
+            raise ValueError(f"{episode_id}: scene identity mismatch")
+        seed = int(episode.get("random_seed"))
+        if scene.get("random_seed") != seed:
+            raise ValueError(f"{episode_id}: scene seed mismatch")
+        scene_key = json.dumps(scene, sort_keys=True, separators=(",", ":"))
+        if scene_key in scene_keys or seed in seeds:
+            raise ValueError("pilot scenes and seeds must be unique")
+        scene_keys.add(scene_key)
+        seeds.add(seed)
+        _validate_episode_metadata(episode, validation)
+        rejections.update(episode.get("rejections_by_reason", {}))
+        auxiliary.update(_validate_auxiliary(dataset_root, episode_id))
+        with (dataset_root / episode_id / "samples.csv").open(
+            newline="", encoding="utf-8"
+        ) as stream:
+            for row in csv.DictReader(stream):
+                state_errors.append(float(row["state_image_error_s"]))
+                action_errors.append(float(row["expert_action_image_error_s"]))
+        sample_counts.append(validation["sample_count"])
+        if validation["sample_count"] > 1:
+            rates.append(validation["observed_sampling_rate_hz"])
+        validations.append(validation)
+        metadata.append(episode)
 
-        image_time = _float(row, "image_timestamp_s")
-        state_time = _float(row, "state_timestamp_s")
-        action_time = _float(row, "expert_action_timestamp_s")
-        state_error = abs(state_time - image_time)
-        action_error = abs(action_time - image_time)
-        if max(state_error, action_error) > SYNCHRONIZATION_TOLERANCE_S + 1e-9:
-            raise ValueError(f"sample {index} exceeds synchronization tolerance")
-        if abs(state_error - _float(row, "state_image_error_s")) > 1e-6:
-            raise ValueError(f"sample {index} state error metadata mismatch")
-        if abs(action_error - _float(row, "expert_action_image_error_s")) > 1e-6:
-            raise ValueError(f"sample {index} action error metadata mismatch")
-        image_times.append(image_time)
-        state_times.append(state_time)
-        action_times.append(action_time)
-        state_errors.append(state_error)
-        action_errors.append(action_error)
-        latent_norms.append(float(np.linalg.norm(latent)))
-        image_luminance_means.append(luminance_mean)
-        image_dynamic_ranges.append(dynamic_range)
-        observations.append(observation)
-        targets.append(target)
+    success_count = sum(item["episode_success"] for item in validations)
+    failure_count = len(validations) - success_count
+    if success_count == 0 or failure_count == 0:
+        raise ValueError(
+            "pilot must prove both successful collection and safe failure handling"
+        )
 
-    for name, values in (
-        ("image", image_times), ("state", state_times), ("expert action", action_times)
-    ):
-        if any(current <= previous for previous, current in zip(values, values[1:])):
-            raise ValueError(f"{name} timestamps are not strictly monotonic")
-    observed_rate = 0.0
-    if len(image_times) > 1:
-        observed_rate = (len(image_times) - 1) / (image_times[-1] - image_times[0])
-    if len(image_times) > 1 and not 3.0 <= observed_rate <= 7.0:
-        raise ValueError(f"observed dataset rate is unreasonable: {observed_rate:.3f} Hz")
-    terminal = episode.get("terminal_flight_status") or {}
-    accumulated = episode.get("accumulated_flight_evidence") or {}
-    if success:
-        required_accumulated = {
-            "goal_reached": True,
-            "landing_commanded": True,
-            "landed_after_landing_command": True,
-            "terminal_complete": True,
+    def statistics(values: list[float]) -> dict:
+        if not values:
+            return {"mean": None, "p95": None, "max": None}
+        array = np.asarray(values, dtype=np.float64)
+        return {
+            "mean": float(array.mean()),
+            "p95": float(np.percentile(array, 95)),
+            "max": float(array.max()),
         }
-        if terminal.get("state") != "COMPLETE" or any(
-            accumulated.get(name) != value
-            for name, value in required_accumulated.items()
-        ):
-            raise ValueError(
-                "terminal flight status lacks goal/landing success evidence"
-            )
-    else:
-        safety = episode.get("safe_terminal_evidence") or {}
-        if not (
-            safety.get("landed") is True
-            and safety.get("disarmed") is True
-            and safety.get("failsafe") is False
-        ):
-            raise ValueError("failed episode lacks landed/disarmed evidence")
 
-    observation_array = (
-        np.stack(observations) if observations
-        else np.empty((0, 72), dtype=np.float32)
-    )
-    target_array = (
-        np.stack(targets) if targets
-        else np.empty((0, 3), dtype=np.float32)
-    )
+    total_bytes = _directory_size(dataset_root)
     result = {
         "valid": True,
-        "dataset_version": DATASET_VERSION,
-        "episode_id": episode_id,
-        "episode_success": success,
-        "sample_count": len(rows),
-        "observed_sampling_rate_hz": observed_rate,
-        "timestamps_strictly_monotonic": True,
-        "maximum_state_image_error_s": max(state_errors, default=None),
-        "maximum_action_image_error_s": max(action_errors, default=None),
-        "synchronization_tolerance_s": SYNCHRONIZATION_TOLERANCE_S,
-        "images_opened": len(rows),
-        "image_resolution": [IMAGE_WIDTH, IMAGE_HEIGHT],
-        "image_format": "JPEG",
-        "image_luminance_mean_min_max": [
-            min(image_luminance_means, default=None),
-            max(image_luminance_means, default=None),
+        "dataset_version": manifest.get("dataset_version"),
+        "episode_count": len(episodes),
+        "successful_episodes": success_count,
+        "failed_episodes": failure_count,
+        "failure_episode_ids": [
+            item["episode_id"] for item in validations
+            if not item["episode_success"]
         ],
-        "image_dynamic_range_min_max": [
-            min(image_dynamic_ranges, default=None),
-            max(image_dynamic_ranges, default=None),
-        ],
-        "latent_dimension": 64,
-        "observation_dimension": int(observation_array.shape[1]),
-        "target_dimension": int(target_array.shape[1]),
-        "latent_norm_min_max": [
-            min(latent_norms, default=None), max(latent_norms, default=None)
-        ],
-        "target_min": (
-            target_array.min(axis=0).tolist() if len(target_array) else None
+        "scenes_unique": len(scene_keys),
+        "random_seeds_unique": len(seeds),
+        "accepted_samples_per_episode": dict(zip(episodes, sample_counts)),
+        "accepted_samples_total": sum(sample_counts),
+        "rejection_breakdown": dict(sorted(rejections.items())),
+        "effective_sampling_rate_hz": statistics(rates),
+        "state_image_synchronization_error_s": statistics(state_errors),
+        "action_image_synchronization_error_s": statistics(action_errors),
+        "auxiliary_availability": dict(sorted(auxiliary.items())),
+        "total_dataset_size_bytes": total_bytes,
+        "average_mb_per_episode": total_bytes / len(episodes) / 1_000_000,
+        "estimated_gb_per_1000_episodes": (
+            total_bytes / len(episodes) * 1000 / 1_000_000_000
         ),
-        "target_max": (
-            target_array.max(axis=0).tolist() if len(target_array) else None
+        "bc_contract_rebuilt": {
+            "latent_dimension": 64,
+            "observation_dimension": 72,
+            "target_dimension": 3,
+            "accepted_samples": sum(sample_counts),
+        },
+        "all_failure_episodes_safe": all(
+            item.get("safe_terminal_evidence", {}).get("landed") is True
+            and item.get("safe_terminal_evidence", {}).get("disarmed") is True
+            and item.get("safe_terminal_evidence", {}).get("failsafe") is False
+            for item in metadata if not item.get("success")
         ),
-        "dataset_disk_usage_bytes": _directory_size(dataset_root),
-        "autoencoder_checkpoint": str(autoencoder_checkpoint.resolve()),
-        "autoencoder_checkpoint_sha256": _sha256(autoencoder_checkpoint),
-        "preprocessing_rebuild": "RGB JPEG -> bilinear 128x72 -> [0,1] -> frozen 64D encoder",
     }
     if write_result:
-        validation_path = episode_dir / "validation.json"
-        validation_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-        result["dataset_disk_usage_bytes"] = _directory_size(dataset_root)
-        validation_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-        if update_manifest:
-            manifest["validation"] = {
+        output = dataset_root / "batch_validation.json"
+        output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        result["total_dataset_size_bytes"] = _directory_size(dataset_root)
+        result["average_mb_per_episode"] = (
+            result["total_dataset_size_bytes"] / len(episodes) / 1_000_000
+        )
+        result["estimated_gb_per_1000_episodes"] = (
+            result["total_dataset_size_bytes"]
+            / len(episodes) * 1000 / 1_000_000_000
+        )
+        output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        manifest.update({
+            "status": "complete",
+            "episode_count": len(episodes),
+            "sample_count": sum(sample_counts),
+            "successful_episodes": success_count,
+            "failed_episodes": failure_count,
+            "validation": {
                 "valid": True,
-                "path": f"{episode_id}/validation.json",
-                "sample_count": len(rows),
-                "dataset_disk_usage_bytes": result[
-                    "dataset_disk_usage_bytes"
-                ],
-            }
-            manifest_path.write_text(
-                json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-            )
+                "path": "batch_validation.json",
+            },
+        })
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
     return result
-
-
-def validate(
-    dataset_root: Path,
-    autoencoder_checkpoint: Path,
-    device: str = "auto",
-    write_result: bool = True,
-) -> dict:
-    """Preserve the strict Phase 10A single-success validation entry point."""
-    return validate_episode(
-        dataset_root,
-        autoencoder_checkpoint,
-        device=device,
-        write_result=write_result,
-    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--dataset", default="artifacts/datasets/bc_expert_v1"
+        "--dataset", default="artifacts/datasets/bc_expert_cylinder_v1"
     )
     parser.add_argument(
         "--autoencoder",
         default="autoencoder_runs/rgb_ae_v0_baseline_20260811/best.pt",
     )
+    parser.add_argument("--episodes", type=int, default=10)
+    parser.add_argument("--episode")
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
-    result = validate(
-        Path(args.dataset), Path(args.autoencoder), device=args.device
-    )
+    if args.episode:
+        result = validate_episode(
+            Path(args.dataset),
+            Path(args.autoencoder),
+            episode_id=args.episode,
+            device=args.device,
+            require_success=None,
+            require_single_manifest=False,
+            update_manifest=False,
+        )
+        result["auxiliary_availability"] = _validate_auxiliary(
+            Path(args.dataset).resolve(), args.episode
+        )
+    else:
+        result = validate_batch(
+            Path(args.dataset),
+            Path(args.autoencoder),
+            expected_episodes=args.episodes,
+            device=args.device,
+        )
     print(json.dumps(result, indent=2))
 
 

@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from uav_navigation.geometry import (
+from uav_navigation.planner.geometry import (
     absolute_heading_changes,
     clamp,
     cumulative_polyline_lengths_2d,
@@ -13,8 +13,8 @@ from uav_navigation.geometry import (
     points_are_finite,
     polyline_length_2d,
 )
-from uav_navigation.models import CircularObstacle, Point3D
-from uav_navigation.path_metrics import calculate_path_metrics
+from uav_navigation.planner.models import CircularObstacle, Point3D
+from uav_navigation.planner.path_metrics import calculate_path_metrics
 
 
 def point(x: float, y: float, z: float = -2.0) -> Point3D:

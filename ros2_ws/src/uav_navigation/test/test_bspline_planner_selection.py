@@ -1,13 +1,13 @@
 """Planner-level B-spline selection and validated A* fallback regressions."""
 
-from uav_navigation.astar_planner import plan_path
-from uav_navigation.models import (
+from uav_navigation.planner.astar_planner import plan_path
+from uav_navigation.planner.models import (
     BSplineConfig,
     CircularObstacle,
     PlannerConfig,
     Point3D,
 )
-from uav_navigation.path_validator import validate_path
+from uav_navigation.planner.path_validator import validate_path
 
 ALTITUDE = -2.0
 

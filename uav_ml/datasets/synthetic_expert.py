@@ -67,21 +67,21 @@ def _analytic_depth(
 
 def _episode(seed: int, maximum_steps: int) -> dict[str, np.ndarray]:
     add_navigation_source_path()
-    from uav_navigation.astar_planner import plan_path
-    from uav_navigation.models import (
+    from uav_navigation.planner.astar_planner import plan_path
+    from uav_navigation.planner.models import (
         BSplineConfig,
         CircularObstacle,
         PlannerConfig,
         Point3D,
     )
-    from uav_navigation.offline_kinematic_plant import (
+    from uav_navigation.diagnostics.offline_kinematic_plant import (
         KinematicPlantConfig,
         OfflineKinematicPlant,
     )
-    from uav_navigation.tracking_models import TrackingConfig
-    from uav_navigation.trajectory_parameterizer import parameterize_trajectory
-    from uav_navigation.trajectory_sampler import sample_trajectory
-    from uav_navigation.trajectory_tracker import compute_tracking_command
+    from uav_navigation.tracking.tracking_models import TrackingConfig
+    from uav_navigation.trajectory.trajectory_parameterizer import parameterize_trajectory
+    from uav_navigation.trajectory.trajectory_sampler import sample_trajectory
+    from uav_navigation.tracking.trajectory_tracker import compute_tracking_command
 
     generator = np.random.default_rng(seed)
     start = np.asarray([0.0, 0.0, -2.0], dtype=np.float32)

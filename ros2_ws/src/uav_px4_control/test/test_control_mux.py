@@ -4,8 +4,8 @@ import math
 
 import pytest
 
-from uav_px4_control.control_mux import ControlSourceMux, fixed_candidate
-from uav_px4_control.control_source_models import (
+from uav_px4_control.control.control_mux import ControlSourceMux, fixed_candidate
+from uav_px4_control.control.control_source_models import (
     ASTAR_EXPERT,
     ControlCommand,
     ControlMuxConfig,

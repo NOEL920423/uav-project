@@ -1,4 +1,4 @@
-"""Record one synchronized Phase 9 ASTAR_EXPERT episode as BC dataset V1."""
+"""Record one synchronized ASTAR_EXPERT episode as BC dataset V1."""
 
 from __future__ import annotations
 
@@ -66,16 +66,16 @@ AUXILIARY_FIELDS = (
 )
 OBSERVER_SYNCHRONIZATION_TOLERANCE_S = 0.35
 RUNTIME_TO_DATASET_STATUS_FIELDS = {
-    "fpv_rgb_enabled": "phase10a_camera_enabled",
-    "fpv_rgb_ready": "phase10a_camera_ready",
-    "fpv_rgb_error": "phase10a_camera_error",
-    "observer_rgb_enabled": "phase10c_observer_rgb_enabled",
-    "observer_rgb_ready": "phase10c_observer_rgb_ready",
-    "observer_rgb_error": "phase10c_observer_rgb_error",
-    "observer_mode": "phase10c_observer_mode",
-    "fpv_depth_enabled": "phase10b_fpv_depth_enabled",
-    "fpv_depth_ready": "phase10b_fpv_depth_ready",
-    "fpv_depth_error": "phase10b_fpv_depth_error",
+    "fpv_rgb_enabled": "fpv_rgb_enabled",
+    "fpv_rgb_ready": "fpv_rgb_ready",
+    "fpv_rgb_error": "fpv_rgb_error",
+    "observer_rgb_enabled": "observer_rgb_enabled",
+    "observer_rgb_ready": "observer_rgb_ready",
+    "observer_rgb_error": "observer_rgb_error",
+    "observer_mode": "observer_mode",
+    "fpv_depth_enabled": "fpv_depth_enabled",
+    "fpv_depth_ready": "fpv_depth_ready",
+    "fpv_depth_error": "fpv_depth_error",
 }
 
 
@@ -142,12 +142,12 @@ class ExpertDatasetRecorderNode(Node):
         if self.collection_mode not in {"single", "batch"}:
             raise ValueError("collection_mode must be single or batch")
         if self.collection_mode == "single" and self.episode_id != EPISODE_ID:
-            raise ValueError("Phase 10A single mode records episode_000001")
+            raise ValueError("single mode records episode_000001")
         if not math.isfinite(self.tolerance_s) or self.tolerance_s <= 0.0:
             raise ValueError("synchronization tolerance must be positive")
         if abs(self.tolerance_s - SYNCHRONIZATION_TOLERANCE_S) > 1e-9:
             raise ValueError(
-                "Phase 10A synchronization tolerance is fixed at 0.100 s"
+                "single-episode synchronization tolerance is fixed at 0.100 s"
             )
 
         self.episode_dir = self.dataset_root / self.episode_id

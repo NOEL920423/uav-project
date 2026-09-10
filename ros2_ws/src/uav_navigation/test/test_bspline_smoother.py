@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from uav_navigation.bspline_smoother import (
+from uav_navigation.planner.bspline_smoother import (
     basis_values,
     de_boor_evaluate,
     generate_bspline_candidate,
@@ -13,12 +13,12 @@ from uav_navigation.bspline_smoother import (
     uniform_arc_length_resample,
     validate_bspline_candidate,
 )
-from uav_navigation.geometry import (
+from uav_navigation.planner.geometry import (
     discrete_curvatures_2d,
     distance_2d,
     polyline_self_intersection_2d,
 )
-from uav_navigation.models import (
+from uav_navigation.planner.models import (
     BSplineConfig,
     CircularObstacle,
     PlannerConfig,

@@ -38,7 +38,7 @@ from uav_ml.tools.expert_collect import (
 )
 from uav_ml.tools.expert_visual_qa import create_contact_sheet
 from uav_ml.tools.persistent_runtime import RecoverableAttemptError
-from uav_ml.tools.validate_expert_batch import _validate_auxiliary
+from uav_ml.tools.validate_expert_dataset import _validate_auxiliary
 from uav_ml.tools.validate_expert_collection import (
     validate_episode_metadata,
     validate_cylinder_scene,
@@ -679,7 +679,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         ] = FORMAL_RGB_NOMINAL_RATE_HZ
         formal["available_sensor_streams"]["observer_rgb"]["matched"] = 42
         formal["available_sensor_streams"]["runtime_status"] = {
-            "phase10c_observer_mode": TOP_RGB_MODE,
+            "observer_mode": TOP_RGB_MODE,
         }
         validation["sample_count"] = 42
         result = validate_episode_metadata(formal, validation)
@@ -818,7 +818,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         (episode / "episode.json").write_text(json.dumps({
             "available_sensor_streams": {
                 "runtime_status": {
-                    "phase10c_observer_mode": TOP_RGB_MODE,
+                    "observer_mode": TOP_RGB_MODE,
                 },
             },
         }), encoding="utf-8")
@@ -913,7 +913,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         (episode / "top_rgb").mkdir(parents=True)
         (episode / "episode.json").write_text(json.dumps({
             "available_sensor_streams": {
-                "runtime_status": {"phase10c_observer_mode": "top"},
+                "runtime_status": {"observer_mode": "top"},
             },
         }), encoding="utf-8")
         samples = [

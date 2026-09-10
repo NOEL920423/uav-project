@@ -1,4 +1,4 @@
-"""Harmless Phase 1 data recorder placeholder."""
+"""Harmless data recorder placeholder."""
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -13,7 +13,7 @@ class DataRecorderNode(Node):
         super().__init__("data_recorder")
         self.declare_parameter("enable_recording", False)
         self.get_logger().info(
-            "Phase 1 scaffold active; recording is disabled."
+            "Data recorder scaffold active; recording is disabled."
         )
 
 

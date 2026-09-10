@@ -1,9 +1,9 @@
 """Regression coverage for all 24 deterministic mux fixtures."""
 
-from uav_px4_control.control_mux_comparison import (
+from uav_px4_control.diagnostics.control_mux_comparison import (
     render_control_mux_comparison,
 )
-from uav_px4_control.control_mux_fixtures import run_control_mux_fixtures
+from uav_px4_control.diagnostics.control_mux_fixtures import run_control_mux_fixtures
 
 
 def test_all_twenty_four_fixtures_match_expected_terminal() -> None:

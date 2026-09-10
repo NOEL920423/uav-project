@@ -173,18 +173,11 @@ class IsaacRuntimeBridge:
         )
         self._camera_enabled = (
             os.environ.get("UAV_FPV_CAMERA", "0") == "1"
-            or os.environ.get("UAV_PHASE10A_CAMERA", "0") == "1"
         )
         self._formal_expert_sensors_enabled = (
             os.environ.get("UAV_EXPERT_SENSORS", "0") == "1"
         )
-        self._legacy_expert_sensors_enabled = (
-            os.environ.get("UAV_PHASE10B_SENSORS", "0") == "1"
-        )
-        self._expert_sensors_enabled = (
-            self._formal_expert_sensors_enabled
-            or self._legacy_expert_sensors_enabled
-        )
+        self._expert_sensors_enabled = self._formal_expert_sensors_enabled
         self._observer_resolution = (
             (TOP_RGB_WIDTH, TOP_RGB_HEIGHT)
             if self._formal_expert_sensors_enabled
@@ -802,20 +795,6 @@ class IsaacRuntimeBridge:
             "fpv_depth_ready": self._depth_frame_count > 0,
             "fpv_depth_frame_count": self._depth_frame_count,
             "fpv_depth_error": self._depth_error,
-            # Compatibility aliases for historical CLI and dataset evidence.
-            "phase10a_camera_enabled": self._camera_enabled,
-            "phase10a_camera_ready": self._camera_frame_count > 0,
-            "phase10a_camera_frame_count": self._camera_frame_count,
-            "phase10a_camera_error": self._camera_error,
-            "phase10c_observer_rgb_enabled": self._expert_sensors_enabled,
-            "phase10c_observer_rgb_ready": self._observer_frame_count > 0,
-            "phase10c_observer_rgb_frame_count": self._observer_frame_count,
-            "phase10c_observer_rgb_error": self._observer_camera_error,
-            "phase10c_observer_mode": self._observer_mode,
-            "phase10b_fpv_depth_enabled": self._expert_sensors_enabled,
-            "phase10b_fpv_depth_ready": self._depth_frame_count > 0,
-            "phase10b_fpv_depth_frame_count": self._depth_frame_count,
-            "phase10b_fpv_depth_error": self._depth_error,
         }, sort_keys=True, separators=(",", ":"))
         self._status_publisher.publish(status)
 

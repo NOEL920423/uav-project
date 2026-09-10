@@ -2,7 +2,7 @@
 
 import math
 
-from uav_px4_control.px4_odometry_bridge_node import px4_odometry_is_valid
+from uav_px4_control.px4.px4_odometry_bridge_node import px4_odometry_is_valid
 
 
 class FakeOdometry:

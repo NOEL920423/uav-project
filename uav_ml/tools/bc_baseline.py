@@ -193,7 +193,7 @@ def audit_dataset(
                 "runtime_status", {}
             )
         )
-        if runtime.get("phase10c_observer_mode") == "fixed_global_top":
+        if runtime.get("observer_mode") == "fixed_global_top":
             formal_top_episodes.add(episode_id)
     comparison_cohort_enabled = bool(formal_top_episodes)
     usable: list[dict] = []

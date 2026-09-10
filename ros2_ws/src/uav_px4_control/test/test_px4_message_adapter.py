@@ -4,12 +4,12 @@ import math
 
 import pytest
 
-from uav_px4_control.px4_message_adapter import (
+from uav_px4_control.px4.px4_message_adapter import (
     offboard_control_mode_fields,
     trajectory_setpoint_fields,
     validate_stream_candidate,
 )
-from uav_px4_control.px4_stream_models import StreamCandidate
+from uav_px4_control.px4.px4_stream_models import StreamCandidate
 
 
 def candidate(velocity=(0.0, 0.0, 0.0), yaw_rate=0.0):

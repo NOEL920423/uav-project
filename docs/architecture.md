@@ -52,7 +52,7 @@ bc_flight_supervisor + bc_episode_monitor
   -> lifecycle, termination, result JSON, traces, plots
 ```
 
-`bc-eval` is the formal Isaac/Pegasus/PX4 path. `bc-eval-surrogate` is a separate software-surrogate evaluator; deprecated `bc-closed-loop` routes to that surrogate path.
+`bc-eval` is the formal Isaac/Pegasus/PX4 path.
 
 ## Main ROS 2 nodes
 
@@ -103,14 +103,6 @@ bc_flight_supervisor + bc_episode_monitor
 - `scripts/diagnostics/summarize_bc_startup.py`
 - Offline harnesses, comparison tools, smoke checks, and PX4 diagnostic launch paths
 
-### LEGACY
-
-- `legacy/**`
-- `bc-closed-loop` command path
-- `scripts/ml/evaluate_isaac_bc_closed_loop.py`
-
-### UNKNOWN / outside the formal flow
+### Outside the formal flow
 
 - `uav_camera_bridge` and `uav_bringup/uav_system_scaffold.launch.py`: scaffold nodes, not launched by the formal graphs.
-- `uav_ml/train_latent_bc.py`, `uav_ml/envs/**`, `scripts/ml/collect_isaac_bc_demonstrations.py`, `scripts/ml/train_isaac_bc_initialized_ppo.py`, and `scripts/ml/isaac_city_smoke.py`: alternate IsaacLab/latent/PPO workflow.
-

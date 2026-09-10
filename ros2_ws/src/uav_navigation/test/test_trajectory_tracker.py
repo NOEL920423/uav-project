@@ -4,17 +4,17 @@ import math
 
 import pytest
 
-from uav_navigation.models import Point3D
-from uav_navigation.tracking_models import (
+from uav_navigation.planner.models import Point3D
+from uav_navigation.tracking.tracking_models import (
     ReferenceSample,
     TrackingConfig,
     TrackingState,
     VehicleState,
     VelocityCommand,
 )
-from uav_navigation.tracking_validator import validate_tracking_command
-from uav_navigation.trajectory_models import TrajectoryPoint
-from uav_navigation.trajectory_tracker import (
+from uav_navigation.tracking.tracking_validator import validate_tracking_command
+from uav_navigation.trajectory.trajectory_models import TrajectoryPoint
+from uav_navigation.tracking.trajectory_tracker import (
     compute_tracking_command,
     hold_command,
     tracking_errors,

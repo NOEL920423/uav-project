@@ -1,6 +1,6 @@
 """Pure tests for the strict Pegasus PX4 process identity guard."""
 
-from uav_px4_control.px4_setpoint_streamer_node import (
+from uav_px4_control.px4.px4_setpoint_streamer_node import (
     pegasus_sitl_identity_matches,
 )
 

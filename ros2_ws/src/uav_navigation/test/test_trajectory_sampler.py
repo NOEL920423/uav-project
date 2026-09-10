@@ -5,9 +5,9 @@ from dataclasses import replace
 
 import pytest
 
-from uav_navigation.models import Point3D
-from uav_navigation.trajectory_models import TrajectoryPoint
-from uav_navigation.trajectory_sampler import sample_trajectory
+from uav_navigation.planner.models import Point3D
+from uav_navigation.trajectory.trajectory_models import TrajectoryPoint
+from uav_navigation.trajectory.trajectory_sampler import sample_trajectory
 
 
 def _point(time_s, value, yaw):

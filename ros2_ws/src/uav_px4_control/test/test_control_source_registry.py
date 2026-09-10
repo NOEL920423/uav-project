@@ -4,8 +4,8 @@ import math
 
 import pytest
 
-from uav_px4_control.control_mux import fixed_candidate
-from uav_px4_control.control_source_models import (
+from uav_px4_control.control.control_mux import fixed_candidate
+from uav_px4_control.control.control_source_models import (
     ASTAR_EXPERT,
     BC_POLICY,
     CONTROL_SOURCES,
@@ -18,7 +18,7 @@ from uav_px4_control.control_source_models import (
     SOURCE_TOPICS,
     Vector3,
 )
-from uav_px4_control.control_source_registry import ControlSourceRegistry
+from uav_px4_control.control.control_source_registry import ControlSourceRegistry
 
 
 def test_exact_source_registry_and_topic_contract() -> None:

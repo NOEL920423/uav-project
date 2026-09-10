@@ -1,6 +1,6 @@
 """Regression contract for the reproducible geometric comparison tool."""
 
-from uav_navigation.geometric_comparison import (
+from uav_navigation.diagnostics.geometric_comparison import (
     comparison_scenes,
     render_markdown,
     run_comparisons,

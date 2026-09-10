@@ -1,6 +1,6 @@
 """Regression test for all named Phase 8 offline stream fixtures."""
 
-from uav_px4_control.px4_stream_fixtures import run_stream_offline_fixtures
+from uav_px4_control.diagnostics.px4_stream_fixtures import run_stream_offline_fixtures
 
 
 def test_all_twenty_stream_fixtures_pass():

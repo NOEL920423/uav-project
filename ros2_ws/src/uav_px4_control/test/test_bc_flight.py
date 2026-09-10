@@ -2,17 +2,17 @@
 
 from dataclasses import replace
 
-from uav_px4_control.bc_episode_monitor import (
+from uav_px4_control.flight.bc_episode_monitor import (
     TerminationConfig,
     select_terminal_reason,
 )
-from uav_px4_control.bc_flight_models import (
+from uav_px4_control.flight.bc_flight_models import (
     BcFlightController,
     BcFlightEvidence,
     BcFlightState,
 )
-from uav_px4_control.control_mux import ControlSourceMux, fixed_candidate
-from uav_px4_control.control_source_models import BC_POLICY, ControlMuxConfig
+from uav_px4_control.control.control_mux import ControlSourceMux, fixed_candidate
+from uav_px4_control.control.control_source_models import BC_POLICY, ControlMuxConfig
 
 
 def test_mux_selects_independent_bc_policy() -> None:

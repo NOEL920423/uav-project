@@ -2,8 +2,8 @@
 
 import pytest
 
-from uav_px4_control.px4_boundary_models import UINT64_MAX
-from uav_px4_control.px4_timestamp import (
+from uav_px4_control.px4.px4_boundary_models import UINT64_MAX
+from uav_px4_control.px4.px4_timestamp import (
     MonotonicTimestampTracker,
     ros_stamp_to_microseconds,
 )

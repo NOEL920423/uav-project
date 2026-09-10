@@ -2,13 +2,13 @@
 
 import math
 
-from uav_navigation.astar_planner import plan_path
-from uav_navigation.models import CircularObstacle, PlannerConfig, Point3D
-from uav_navigation.path_simplifier import (
+from uav_navigation.planner.astar_planner import plan_path
+from uav_navigation.planner.models import CircularObstacle, PlannerConfig, Point3D
+from uav_navigation.planner.path_simplifier import (
     select_validated_path,
     simplify_with_fallback,
 )
-from uav_navigation.path_validator import validate_path
+from uav_navigation.planner.path_validator import validate_path
 
 ALTITUDE = -2.0
 

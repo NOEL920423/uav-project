@@ -4,8 +4,8 @@ import math
 
 import pytest
 
-from uav_navigation.models import CircularObstacle, PlannerConfig, Point3D
-from uav_navigation.path_validator import (
+from uav_navigation.planner.models import CircularObstacle, PlannerConfig, Point3D
+from uav_navigation.planner.path_validator import (
     filter_overflyable_obstacles,
     minimum_segment_clearance,
     nearest_obstacle_clearance,

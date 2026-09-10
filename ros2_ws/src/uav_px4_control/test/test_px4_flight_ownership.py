@@ -5,8 +5,8 @@ from pathlib import Path
 
 
 PACKAGE = Path(__file__).parents[1] / "uav_px4_control"
-SUPERVISOR = PACKAGE / "px4_sitl_flight_supervisor_node.py"
-COMMAND_OWNER = PACKAGE / "px4_vehicle_command_owner_node.py"
+SUPERVISOR = PACKAGE / "flight" / "px4_sitl_flight_supervisor_node.py"
+COMMAND_OWNER = PACKAGE / "flight" / "px4_vehicle_command_owner_node.py"
 FLIGHT_CONFIG = PACKAGE.parent / "config" / "px4_sitl_flight.yaml"
 
 
@@ -60,6 +60,7 @@ def test_supervisor_accepts_existing_phase4_trajectory_provenance():
         PACKAGE.parents[1]
         / "uav_navigation"
         / "uav_navigation"
+        / "trajectory"
         / "trajectory_parameterizer_node.py"
     )
     marker = '"PHASE4_TIME_PARAMETERIZED"'
