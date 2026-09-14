@@ -12,7 +12,7 @@ import sys
 import numpy as np
 import torch
 
-from uav_ml.inference.bc_flight import TopRgbBcPolicy, resolve_checkpoint
+from uav_ml.inference.bc_flight import BcFlightPolicy, resolve_checkpoint
 
 
 def _write(payload: dict) -> None:
@@ -35,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint = resolve_checkpoint(
             args.repository_root, args.checkpoint
         )
-        policy = TopRgbBcPolicy(
+        policy = BcFlightPolicy(
             checkpoint, args.image_source, torch.device(args.device)
         )
         _write({"ready": True, "identity": asdict(policy.identity)})
@@ -45,7 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     for line in sys.stdin:
         try:
             request = json.loads(line)
-            image = base64.b64decode(request["jpeg_base64"], validate=True)
+            encoded_image = request.get("image_base64", request.get("jpeg_base64"))
+            image = base64.b64decode(encoded_image, validate=True)
             state = np.asarray(request["state8"], dtype=np.float32)
             action = policy.act(image, state)
             _write({"action": [float(value) for value in action]})

@@ -29,6 +29,80 @@ contract and create an incompatible parallel representation.
 
 ## Training
 
+### Optional frozen ResNet18
+
+AE remains the default; existing `ae-train`, `bc-train --encoder <path>`, and
+AE checkpoints are preserved. Select ResNet18 with `--encoder-type resnet18`.
+This uses ImageNet `IMAGENET1K_V1` weights, freezes all encoder parameters and
+BatchNorm statistics, and trains only the existing BC MLP. No AE pretraining
+or reconstruction loss is needed.
+
+The encoder accepts RGB `[B,3,72,128]` in `[0,1]`, applies ImageNet mean/std
+internally, and returns `[B,512]`. Concatenating the original state8 gives
+`[B,520]`; BC still returns the same three normalized actions. The full
+128x72 image is retained without center cropping. This is a deliberate
+navigation-specific resolution choice, different from torchvision's default
+224x224 classification crop. See the
+[official ResNet18 weights documentation](https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.resnet18.html).
+
+Install torchvision in the Python environment used by `./uav`. For the current
+project environment (`torch==2.12.0`), the matching version is:
+
+```bash
+python3 -m pip install --no-deps torchvision==0.27.0
+```
+
+Use a different compatible torchvision version if your PyTorch version differs.
+AE does not require torchvision. The first ResNet run downloads the pretrained
+weights into the normal Torch cache; inference loads the saved experiment weights
+and does not download them again.
+
+Train and then run one closed-loop test (replace the dataset name as needed):
+
+```bash
+./uav bc-train --dataset bc_expert_cube --image-source top \
+  --encoder-type resnet18 --epochs 100 --batch-size 64 --learning-rate 0.001 --no-tensorboard \
+  --output artifacts/experiments/bc/bc_expert_cube/top/resnet18/run_01
+
+./uav bc-eval --image-source top_rgb --episodes 1 --visible \
+  --checkpoint artifacts/experiments/bc/bc_expert_cube/top/resnet18/run_01/best.pt
+```
+
+Basic BC parameters are `--epochs`, `--batch-size`, and `--learning-rate`.
+`--no-tensorboard` exits after training while still saving metrics and plots;
+omit it to keep the managed TensorBoard server open until Ctrl+C.
+`--encode-batch-size` controls encoder memory use separately (default 128).
+Use a new output directory for another run; existing experiments are never
+overwritten. Without `--output`, ResNet runs are automatically placed in
+`artifacts/experiments/bc/<dataset>/<image_source>/resnet18/run_<timestamp>`;
+the default AE latest pointer is unchanged. Pass the ResNet `best.pt` explicitly
+to `bc-eval`; it reads the encoder choice from the checkpoint automatically.
+Keep `resnet18_encoder.pt` in the original run location: the BC checkpoint
+records its absolute path and SHA-256, as with existing AE checkpoints.
+
+The live evaluator supports `top_rgb`, `fpv_rgb`, and `fpv_depth` checkpoints;
+each subscribes only to its matching Isaac stream and applies the preprocessing
+recorded in the checkpoint. ResNet training accepts `fpv_rgb` for offline
+experiments, but not `fpv_depth`. Do not pass `--encoder` together with
+`--encoder-type resnet18`.
+
+ResNet runs produce the existing BC loss curves and action-error plots;
+closed-loop evaluation produces the existing flight plots and result artifacts.
+There are no reconstruction plots because the encoder is frozen.
+
+### Existing AE training
+
+If collection was interrupted after reaching its accepted-episode target, finish
+validation and metadata offline before training (stop any collector first):
+
+```bash
+./uav expert-validate --dataset artifacts/datasets/bc_expert_cylinder_v2 --finalize
+```
+
+This revalidates every accepted episode and only then marks the collection
+complete. It does not start Isaac Sim or collect additional episodes. Missing
+episodes or invalid data still fail with the original validation error.
+
 Run training explicitly after the dataset collection has completed and passed
 its validator:
 
@@ -159,3 +233,32 @@ shift between the formal Pegasus dataset and this evaluation renderer remains
 an explicit risk.
 
 Generated datasets, checkpoints, metrics, and plots are ignored by Git.
+
+## 閉循環時間紀錄與閱讀方式
+
+`./uav bc-eval` 會在每回合的資料夾自動保存以下診斷資料，沿用既有
+node 與 evaluator，不需另外啟動 Python 診斷程式：
+
+- `timing_summary.md`：中文報告，先看回合結果與首次故障，再看各段
+  平均、P95、最大耗時及事件順序。原始錯誤文字保留英文以方便搜尋。
+- `timing_summary.json`：相同觀測數據的結構化版本。
+- `timing/*.jsonl`：各 node 的原始時間事件，可依報告提供的檔名與行號回查。
+- `px4_ulog/`：ULog、保存清單及 logger 原始輸出。evaluator 會在
+  Pegasus 清除 temporary rootfs 前持有檔案並保存；若保存失敗會明確報錯。
+
+時間事件包含主機 monotonic、ROS 與 wall clock、來源訊息標記、發布與
+callback 時間、timer 間隔、判斷時快取年齡、影像讀取與編碼、BC 推論耗時，
+以及 gate／streamer 狀態與當時有效門檻。診斷不修改控制、安全門檻或
+PX4 參數；ULog 使用 logger 指令啟停。
+
+**發布到 callback 的耗時包含傳輸與排程，不能直接稱為 DDS 延遲。**
+快取年齡也不代表傳輸耗時，且快照可能包含未選用的控制來源。
+目前尚未量到影像真正擷取時間、DDS 內部排隊、PX4 收到命令後的執行耗時，
+也未將 PX4 boot clock 與主機時間校準。紀錄本身會增加少量負載，
+尚未透過對照實驗量化；因此單回合數值不能當成固定門檻的充分依據。
+
+只重新整理已保存的資料、不啟動模擬：
+
+```bash
+python scripts/diagnostics/summarize_bc_startup.py artifacts/evaluations/bc_flight/<run_directory>
+```

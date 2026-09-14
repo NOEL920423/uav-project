@@ -1,9 +1,10 @@
-"""Publish live TOP RGB behavior-cloning commands as an independent source."""
+"""Publish live source-matched behavior-cloning commands independently."""
 
 from __future__ import annotations
 
 import base64
 import json
+import time
 import math
 import select
 import subprocess
@@ -48,8 +49,14 @@ from uav_px4_control.control.control_source_models import (
 )
 
 
-TOP_RGB_TOPIC = "/uav/isaac/observer/image/compressed"
-IMAGE_TOPICS = {"top_rgb": TOP_RGB_TOPIC}
+from uav_px4_control.diagnostics import TimingRecorder
+
+
+IMAGE_TOPICS = {
+    "top_rgb": "/uav/isaac/observer/image/compressed",
+    "fpv_rgb": "/uav/isaac/fpv/image/compressed",
+    "fpv_depth": "/uav/isaac/fpv/depth/compressed",
+}
 ODOMETRY_TOPIC = "/uav/vehicle/odometry"
 SCENE_GOAL_TOPIC = "/uav/scene/goal"
 POLICY_STATUS_TOPIC = "/uav/bc/policy_status"
@@ -57,13 +64,13 @@ SET_POLICY_ENABLE_SERVICE = "/uav/bc/set_enabled"
 POLICY_STATUS_SCHEMA = "uav_bc_policy_status/v1"
 
 MSG_LOADING_POLICY = "[BC Flight] Loading BC policy..."
-MSG_WAITING_FOR_IMAGE = "[BC Flight] Waiting for TOP RGB..."
+MSG_WAITING_FOR_IMAGE = "[BC Flight] Waiting for {source}..."
 MSG_POLICY_READY = "[BC Flight] BC policy is ready."
 MSG_POLICY_ENABLED = "[BC Flight] BC control enabled."
 MSG_POLICY_DISABLED = "[BC Flight] BC control disabled."
 MSG_INFERENCE_FAILED = "[BC Flight] Inference failed: {error}"
 MSG_WORKER_FAILED = "[BC Flight] Inference worker failed: {error}"
-MSG_IMAGE_CONTRACT_FAILED = "[BC Flight] TOP RGB contract failed: {error}"
+MSG_IMAGE_CONTRACT_FAILED = "[BC Flight] {source} contract failed: {error}"
 
 
 def scene_qos() -> QoSProfile:
@@ -77,11 +84,12 @@ def scene_qos() -> QoSProfile:
 
 
 class BcPolicyNode(Node):
-    """Own TOP preprocessing, state8 construction, inference, and BC output."""
+    """Own source-matched preprocessing, state8 construction, and BC output."""
 
     def __init__(self) -> None:
         """Start the ML worker and create live observation boundaries."""
         super().__init__("bc_policy")
+        self._timing = TimingRecorder(self)
         self.declare_parameter("repository_root", ".")
         self.declare_parameter("checkpoint_path", "")
         self.declare_parameter("ml_python", "python3")
@@ -214,19 +222,21 @@ class BcPolicyNode(Node):
         return self.get_clock().now().nanoseconds / 1e9
 
     def _image_callback(self, message: CompressedImage) -> None:
-        if message.format and "jpeg" not in message.format.lower():
-            self._last_error = "top_rgb_format_is_not_jpeg"
-            return
+        self._timing.receive(IMAGE_TOPICS[self._requested_source], message)
         image = bytes(message.data)
         try:
             validate_live_image(image, self._requested_source)
         except ValueError as error:
             self._image = None
             self._image_receipt_s = None
-            self._image_contract_error = f"top_rgb_contract_error:{error}"
+            self._image_contract_error = (
+                f"{self._requested_source}_contract_error:{error}"
+            )
             if self._last_error != self._image_contract_error:
                 self.get_logger().error(
-                    MSG_IMAGE_CONTRACT_FAILED.format(error=error)
+                    MSG_IMAGE_CONTRACT_FAILED.format(
+                        source=self._requested_source, error=error
+                    )
                 )
             self._last_error = self._image_contract_error
             return
@@ -270,9 +280,13 @@ class BcPolicyNode(Node):
             self._goal is not None,
             self._image_timeout_s,
             self._odometry_timeout_s,
+            self._requested_source,
         )
 
     def _infer(self) -> None:
+        started_ns = time.monotonic_ns()
+        self._timing.consume(image_sequence=self._image_sequence)
+        self._timing.record("inference_start", image_sequence=self._image_sequence)
         assert self._image is not None
         assert self._odometry is not None
         assert self._goal is not None
@@ -295,7 +309,7 @@ class BcPolicyNode(Node):
             self._previous_action,
         )
         request = {
-            "jpeg_base64": base64.b64encode(self._image).decode("ascii"),
+            "image_base64": base64.b64encode(self._image).decode("ascii"),
             "state8": [float(value) for value in state],
         }
         assert self._worker.stdin is not None
@@ -313,6 +327,11 @@ class BcPolicyNode(Node):
         self._previous_action = tuple(float(value) for value in action)
         self._inference_count += 1
         self._inferred_image_sequence = self._image_sequence
+        self._timing.record(
+            "inference_end", image_sequence=self._image_sequence,
+            inference_ms=(time.monotonic_ns() - started_ns) / 1e6,
+            inference_count=self._inference_count,
+        )
 
     def _publish_command(self) -> None:
         assert self._last_command is not None
@@ -324,6 +343,11 @@ class BcPolicyNode(Node):
         message.twist.linear.y = east
         message.twist.linear.z = down
         message.twist.angular.z = yaw_rate
+        self._timing.publish(
+            SOURCE_TOPICS[BC_POLICY], message,
+            image_sequence=self._inferred_image_sequence,
+            inference_count=self._inference_count,
+        )
         self._command_publisher.publish(message)
 
     def _publish_status(self, ready: bool, reason: str) -> None:
@@ -347,6 +371,7 @@ class BcPolicyNode(Node):
         self._status_publisher.publish(message)
 
     def _tick(self) -> None:
+        self._timing.tick()
         now = self._now_seconds()
         reason = self._observation_error(now)
         if not self._enabled:
@@ -355,8 +380,10 @@ class BcPolicyNode(Node):
         if reason is not None:
             self._last_command = None
             self._last_error = reason
-            if reason == "waiting_for_top_rgb" and not self._waiting_logged:
-                self.get_logger().info(MSG_WAITING_FOR_IMAGE)
+            if reason == f"waiting_for_{self._requested_source}" and not self._waiting_logged:
+                self.get_logger().info(
+                    MSG_WAITING_FOR_IMAGE.format(source=self._requested_source)
+                )
                 self._waiting_logged = True
             self._publish_status(False, reason)
             return
@@ -408,7 +435,7 @@ class BcPolicyNode(Node):
 
 
 def main(args=None) -> int:
-    """Run the ROS-facing TOP RGB BC policy adapter."""
+    """Run the ROS-facing source-matched BC policy adapter."""
     rclpy.init(args=args)
     node = BcPolicyNode()
     try:

@@ -34,8 +34,10 @@ from uav_ml.datasets.expert_image_dataset import (
 from uav_ml.models import (
     LatentBcPolicy,
     LatentBcPolicyConfig,
-    RgbAutoencoderConfig,
     RgbAutoencoderV0,
+)
+from uav_ml.inference.rgb_encoder import (
+    RESNET_PREPROCESSING, ResNet18Encoder, load_frozen_encoder,
 )
 from uav_ml.tools.validate_expert_collection import (
     DEFAULT_DATASET,
@@ -330,24 +332,14 @@ def create_episode_split(audit: dict, seed: int) -> dict:
 
 def _load_frozen_encoder(
     path: Path, device: torch.device
-) -> tuple[RgbAutoencoderV0, dict]:
-    payload = torch.load(path, map_location=device, weights_only=False)
-    if payload.get("model_class") != "RgbAutoencoderV0":
-        raise ValueError("encoder checkpoint is not RgbAutoencoderV0")
-    model = RgbAutoencoderV0(
-        RgbAutoencoderConfig(**payload["model_config"])
-    ).to(device)
-    model.load_state_dict(payload["model_state"])
-    model.eval()
-    for parameter in model.parameters():
-        parameter.requires_grad_(False)
-    return model, payload
+) -> tuple[RgbAutoencoderV0 | ResNet18Encoder, dict]:
+    return load_frozen_encoder(path, device)
 
 
 def _episode_arrays(
     dataset_root: Path,
     episode_id: str,
-    encoder: RgbAutoencoderV0,
+    encoder: RgbAutoencoderV0 | ResNet18Encoder,
     device: torch.device,
     encode_batch_size: int,
     image_source: str = "fpv_rgb",
@@ -383,15 +375,15 @@ def _episode_arrays(
             latents.append(encoder.encode(batch).cpu().numpy())
     latent = np.concatenate(latents).astype(np.float32)
     observation = np.concatenate((latent, states), axis=1).astype(np.float32)
-    if observation.shape[1] != 72 or targets.shape[1] != 3:
-        raise ValueError("rebuilt BC tensors violate the 72D/3D contract")
+    if observation.shape[1] != encoder.config.latent_dimension + 8 or targets.shape[1] != 3:
+        raise ValueError("rebuilt BC tensors violate the latent+state8/3D contract")
     return observation, targets
 
 
 def encode_splits(
     dataset_root: Path,
     split_manifest: dict,
-    encoder: RgbAutoencoderV0,
+    encoder: RgbAutoencoderV0 | ResNet18Encoder,
     device: torch.device,
     encode_batch_size: int,
     image_source: str = "fpv_rgb",
@@ -478,7 +470,7 @@ def _checkpoint(
     audit: dict,
     split_manifest: dict,
     image_source: str,
-    encoder: RgbAutoencoderV0,
+    encoder: RgbAutoencoderV0 | ResNet18Encoder,
 ) -> dict:
     return {
         "format_version": FORMAT_VERSION,
@@ -499,13 +491,16 @@ def _checkpoint(
         "split_manifest": split_manifest,
         "autoencoder_checkpoint": audit["encoder_checkpoint"],
         "autoencoder_checkpoint_sha256": audit["encoder_sha256"],
-        "encoder_architecture": "RgbAutoencoderV0",
+        "encoder_architecture": type(encoder).__name__,
         "encoder_frozen": True,
         "image_source": image_source,
         "image_preprocessing": IMAGE_PREPROCESSING[image_source],
-        "encoder_preprocessing": IMAGE_PREPROCESSING[image_source],
+        "encoder_preprocessing": (
+            RESNET_PREPROCESSING if isinstance(encoder, ResNet18Encoder)
+            else IMAGE_PREPROCESSING[image_source]
+        ),
         "latent_dimension": encoder.config.latent_dimension,
-        "observation_contract": "latent64_plus_body_state8_v1.0",
+        "observation_contract": f"latent{encoder.config.latent_dimension}_plus_body_state8_v1.0",
         "action_contract": "normalized_body_forward_right_yaw_v1.0",
         "physical_action_limits": PHYSICAL_ACTION_LIMITS,
         "loss": "equal_component_normalized_action_mse",
@@ -624,7 +619,7 @@ def create_training_plots(
 
 def train_baseline(
     dataset_root: Path,
-    encoder_checkpoint: Path,
+    encoder_checkpoint: Path | None,
     output_dir: Path,
     config: TrainingConfig,
     device_name: str,
@@ -634,6 +629,7 @@ def train_baseline(
     tensorboard_enabled: bool = False,
     tensorboard_port: int = 6006,
     encoder_selection: str = "explicit",
+    encoder_type: str = "autoencoder",
 ) -> dict:
     """Run reproducible BC training and held-out offline evaluation."""
     if SummaryWriter is None:
@@ -648,6 +644,12 @@ def train_baseline(
         encode_batch_size,
     ) <= 0 or config.learning_rate <= 0:
         raise ValueError("training counts and learning rate must be positive")
+    if encoder_type not in ("autoencoder", "resnet18"):
+        raise ValueError("encoder_type must be autoencoder or resnet18")
+    if encoder_type == "resnet18" and (encoder_checkpoint is not None or image_source == "fpv_depth"):
+        raise ValueError("ResNet18 requires RGB (top or fpv_rgb) and no --encoder override")
+    if encoder_type == "autoencoder" and encoder_checkpoint is None:
+        raise ValueError("autoencoder requires an encoder checkpoint")
     audit = audit_dataset(dataset_root, encoder_checkpoint, image_source)
     resolved_dataset_name = dataset_name or Path(audit["dataset_root"]).name
     audit["dataset_name"] = resolved_dataset_name
@@ -662,6 +664,19 @@ def train_baseline(
             raise FileExistsError(f"refusing to overwrite experiment: {output_dir}")
     else:
         output_dir.mkdir(parents=True)
+    if encoder_type == "resnet18":
+        pretrained = ResNet18Encoder(pretrained=True)
+        encoder_checkpoint = output_dir / "resnet18_encoder.pt"
+        torch.save({
+            "model_class": "ResNet18Encoder",
+            "model_config": pretrained.config.to_dict(),
+            "model_state": pretrained.state_dict(),
+            "preprocessing": RESNET_PREPROCESSING,
+            "metadata": {"image_source": image_source, "weights": "IMAGENET1K_V1"},
+        }, encoder_checkpoint)
+        del pretrained
+        audit["encoder_checkpoint"] = str(encoder_checkpoint.resolve())
+        audit["encoder_sha256"] = _sha256(encoder_checkpoint)
     _write_json(output_dir / "dataset_audit.json", audit)
     _write_json(output_dir / "split_manifest.json", split_manifest)
     training_config = {
@@ -675,6 +690,7 @@ def train_baseline(
         "tensorboard_port": tensorboard_port,
         "encoder_checkpoint": str(encoder_checkpoint.resolve()),
         "encoder_selection": encoder_selection,
+        "encoder_type": encoder_type,
     }
     _write_json(output_dir / "training_config.json", training_config)
     print(
@@ -703,8 +719,8 @@ def train_baseline(
             f"encoder image_source={checkpoint_source!r} does not match "
             f"requested {image_source!r}"
         )
-    if encoder.config.latent_dimension != 64:
-        raise ValueError("formal BC baseline requires a 64D encoder latent")
+    if encoder.config.latent_dimension != (512 if encoder_type == "resnet18" else 64):
+        raise ValueError("encoder latent dimension does not match selected encoder type")
     print(
         "========== BC Training ==========\n\n"
         f"Dataset:\n{resolved_dataset_name}\n\n"
@@ -761,7 +777,9 @@ def train_baseline(
         )
         for split, values in normalized.items()
     }
-    model = LatentBcPolicy().to(device)
+    model = LatentBcPolicy(LatentBcPolicyConfig(
+        observation_dimension=encoder.config.latent_dimension + 8
+    )).to(device)
     optimizer = torch.optim.Adam(
         model.parameters(), lr=config.learning_rate
     )
@@ -895,7 +913,7 @@ def train_baseline(
         "best_checkpoint": str((output_dir / "best.pt").resolve()),
         "last_checkpoint": str((output_dir / "last.pt").resolve()),
         "encoder": {
-            "architecture": "RgbAutoencoderV0",
+            "architecture": type(encoder).__name__,
             "image_source": image_source,
             "image_preprocessing": IMAGE_PREPROCESSING[image_source],
             "latent_dimension": encoder.config.latent_dimension,
@@ -934,7 +952,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="./uav bc-train",
         description=(
-            "Train the formal 72D frozen-RGB-encoder BC baseline and run "
+            "Train a frozen AE or ResNet18 BC baseline and run "
             "held-out offline evaluation."
         ),
     )
@@ -943,7 +961,9 @@ def _parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_DATASET),
         help="dataset name under artifacts/datasets, or explicit path",
     )
-    parser.add_argument("--encoder")
+    parser.add_argument("--encoder", help="AE checkpoint override (autoencoder only)")
+    parser.add_argument("--encoder-type", choices=("autoencoder", "resnet18"),
+                        default="autoencoder", help="frozen visual encoder (default: autoencoder)")
     parser.add_argument("--output")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -972,22 +992,25 @@ def main() -> int:
         print(f"ERROR: BC baseline training stopped: {error}")
         return 1
     try:
+        if args.encoder_type == "resnet18" and (args.encoder or args.image_source == "fpv_depth"):
+            raise ValueError("ResNet18 requires RGB (top or fpv_rgb) and no --encoder override")
         encoder = select_autoencoder_checkpoint(
             dataset_location,
             args.image_source,
             IMAGE_PREPROCESSING[args.image_source],
             explicit=Path(args.encoder) if args.encoder else None,
             project_root=repository_root,
-        )
+        ) if args.encoder_type == "autoencoder" else None
     except Exception as error:  # noqa: BLE001 - CLI boundary
         print(f"ERROR: BC baseline training stopped: {error}")
         return 1
     print(
-        f"{'Auto-selected' if encoder.automatic else 'Explicit'} encoder:\n"
-        f"{encoder.checkpoint}\n\n"
+        f"Encoder type: {args.encoder_type}\n"
+        f"Encoder: {encoder.checkpoint if encoder else 'ImageNet IMAGENET1K_V1 (frozen)'}\n\n"
         f"Dataset:\n{dataset_location.name}\n\n"
         f"Image source:\n{args.image_source}\n\n"
-        "Encoder provenance:\nmatched",
+        + ("Encoder provenance:\nmatched" if encoder else
+         "Encoder weights:\nImageNet pretrained; saved with this BC run"),
         flush=True,
     )
     if args.output:
@@ -1000,6 +1023,8 @@ def main() -> int:
             _stamp(),
             project_root=repository_root,
         )
+        if args.encoder_type == "resnet18":
+            output = output.parent / "resnet18" / output.name
     try:
         with TensorBoardServer(
             output / "tensorboard",
@@ -1008,7 +1033,7 @@ def main() -> int:
         ) as tensorboard_server:
             summary = train_baseline(
                 dataset_location.path,
-                encoder.checkpoint,
+                encoder.checkpoint if encoder else None,
                 output,
                 TrainingConfig(
                     epochs=args.epochs,
@@ -1024,8 +1049,10 @@ def main() -> int:
                 tensorboard_enabled=args.tensorboard,
                 tensorboard_port=args.tensorboard_port,
                 encoder_selection=(
-                    "automatic" if encoder.automatic else "explicit"
+                    ("automatic" if encoder.automatic else "explicit")
+                    if encoder else "imagenet_pretrained"
                 ),
+                encoder_type=args.encoder_type,
             )
             test = summary["test"]["per_action"]
             print(

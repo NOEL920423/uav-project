@@ -58,6 +58,7 @@ def validate_episode(
     require_success: bool | None = True,
     require_single_manifest: bool = True,
     update_manifest: bool = True,
+    dataset_disk_usage_bytes: int | None = None,
 ) -> dict:
     """Validate one V1 episode and rebuild every accepted observation/target."""
     dataset_root = dataset_root.resolve()
@@ -251,7 +252,10 @@ def validate_episode(
         "target_max": (
             target_array.max(axis=0).tolist() if len(target_array) else None
         ),
-        "dataset_disk_usage_bytes": _directory_size(dataset_root),
+        "dataset_disk_usage_bytes": (
+            _directory_size(dataset_root) if dataset_disk_usage_bytes is None
+            else dataset_disk_usage_bytes
+        ),
         "autoencoder_checkpoint": str(autoencoder_checkpoint.resolve()),
         "autoencoder_checkpoint_sha256": _sha256(autoencoder_checkpoint),
         "preprocessing_rebuild": "RGB JPEG -> bilinear 128x72 -> [0,1] -> frozen 64D encoder",
@@ -259,7 +263,8 @@ def validate_episode(
     if write_result:
         validation_path = episode_dir / "validation.json"
         validation_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-        result["dataset_disk_usage_bytes"] = _directory_size(dataset_root)
+        if dataset_disk_usage_bytes is None:
+            result["dataset_disk_usage_bytes"] = _directory_size(dataset_root)
         validation_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         if update_manifest:
             manifest["validation"] = {

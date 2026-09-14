@@ -1,4 +1,4 @@
-"""Launch one formal TOP RGB BC flight without planner or follower nodes."""
+"""Launch one source-matched BC flight without planner or follower nodes."""
 
 from launch import LaunchDescription
 from launch.actions import (

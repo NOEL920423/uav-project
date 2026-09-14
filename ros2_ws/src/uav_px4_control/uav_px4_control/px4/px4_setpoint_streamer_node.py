@@ -26,6 +26,7 @@ from uav_interfaces.msg import (
 from uav_interfaces.srv import SetPx4StreamEnable
 
 from uav_px4_control.control.control_mux_node import control_qos
+from uav_px4_control.diagnostics import TimingRecorder
 from uav_px4_control.px4.px4_mapping_gate_node import (
     CANDIDATE_TOPIC,
     GATE_STATUS_TOPIC,
@@ -197,6 +198,7 @@ class Px4SetpointStreamerNode(Node):
     def __init__(self) -> None:
         """Create the single live owner; fail if px4_msgs is unavailable."""
         super().__init__("px4_setpoint_streamer")
+        self._timing = TimingRecorder(self)
         message_module = importlib.import_module("px4_msgs.msg")
         self._TrajectorySetpoint = message_module.TrajectorySetpoint
         self._OffboardControlMode = message_module.OffboardControlMode
@@ -311,6 +313,7 @@ class Px4SetpointStreamerNode(Node):
         return self.get_clock().now().nanoseconds / 1e9
 
     def _candidate_callback(self, message: Px4SetpointCandidate) -> None:
+        self._timing.receive(CANDIDATE_TOPIC, message)
         now = self._now_seconds()
         self._candidate = StreamCandidate(
             receipt_time_s=now,
@@ -331,22 +334,27 @@ class Px4SetpointStreamerNode(Node):
         self._safe_receipt_time_s = self._now_seconds()
 
     def _gate_callback(self, message: Px4OutputGateStatus) -> None:
+        self._timing.receive(GATE_STATUS_TOPIC, message)
         self._gate_status = message
         self._gate_receipt_time_s = self._now_seconds()
 
     def _vehicle_status_callback(self, message) -> None:
+        self._timing.receive(VEHICLE_STATUS_TOPIC, message)
         self._vehicle_status = message
         self._vehicle_status_receipt = self._now_seconds()
 
     def _vehicle_control_mode_callback(self, message) -> None:
+        self._timing.receive(VEHICLE_CONTROL_MODE_TOPIC, message)
         self._vehicle_control_mode = message
         self._vehicle_control_mode_receipt = self._now_seconds()
 
     def _vehicle_odometry_callback(self, message) -> None:
+        self._timing.receive(VEHICLE_ODOMETRY_TOPIC, message)
         self._vehicle_odometry = message
         self._vehicle_odometry_receipt = self._now_seconds()
 
     def _failsafe_flags_callback(self, message) -> None:
+        self._timing.receive(FAILSAFE_FLAGS_TOPIC, message)
         self._failsafe_flags = message
         self._failsafe_flags_receipt = self._now_seconds()
 
@@ -460,11 +468,13 @@ class Px4SetpointStreamerNode(Node):
         return response
 
     def _tick(self) -> None:
+        self._timing.tick()
         now_clock = self.get_clock().now()
         now = now_clock.nanoseconds / 1e9
         timestamp_us = now_clock.nanoseconds // 1000
         readiness = self._readiness()
         result = self.machine.step(now, readiness, timestamp_us)
+        self._timing.consume(state=result.state.value, reason=result.stop_reason)
         if result.should_publish:
             try:
                 trajectory = trajectory_setpoint_fields(
@@ -472,9 +482,9 @@ class Px4SetpointStreamerNode(Node):
                     timestamp_us,
                 )
                 mode = offboard_control_mode_fields(timestamp_us)
-                self._trajectory_publisher.publish(
-                    self._trajectory_message(trajectory)
-                )
+                message = self._trajectory_message(trajectory)
+                self._timing.publish("/fmu/in/trajectory_setpoint", message)
+                self._trajectory_publisher.publish(message)
                 self._mode_publisher.publish(self._mode_message(mode))
             except (TypeError, ValueError) as error:
                 result = self.machine.force_mapping_fault(
@@ -515,6 +525,11 @@ class Px4SetpointStreamerNode(Node):
                 },
             }
             self.get_logger().info("BC_STARTUP_DIAG " + json.dumps(payload))
+            self._timing.record(
+                "fault" if self.machine.fault_latched else "state",
+                state=result.state.value, reason=result.stop_reason,
+                thresholds_s=payload["telemetry_thresholds_s"],
+            )
         self._last_result = result
         self._status_publisher.publish(
             self._status_message(result, now_clock.to_msg())

@@ -19,7 +19,7 @@ from datetime import datetime
 import torch
 
 from uav_ml.inference.bc_flight import (
-    TopRgbBcPolicy,
+    BcFlightPolicy,
     canonical_image_source,
     resolve_checkpoint,
 )
@@ -28,7 +28,7 @@ from uav_ml.inference.bc_flight import (
 MSG_PREFLIGHT = "[BC Flight] Validating checkpoint and runtime..."
 MSG_STARTING = "[BC Flight] Starting Isaac Sim, Pegasus, and PX4."
 MSG_WEBRTC = (
-    "[BC Flight] Open the Isaac Sim WebRTC client; the fixed TOP camera "
+    "[BC Flight] Open the Isaac Sim WebRTC client; the observer camera "
     "is the active viewport."
 )
 MSG_PREPARING = "[BC Flight] Preparing episode {episode} with seed {seed}."
@@ -136,6 +136,11 @@ class ManagedFlightRuntime:
         self._streams = []
         self._pump_threads: list[threading.Thread] = []
         self._episode_start_time_s: float | None = None
+        self._runtime_dir: Path | None = None
+        self._capture_stop = threading.Event()
+        self._capture_thread = None
+        self._px4_process = None
+        self._ulog_handles = {}
 
     def preflight(self) -> None:
         launcher = self.isaac_release / (
@@ -169,7 +174,9 @@ class ManagedFlightRuntime:
     def start(self, runtime_dir: Path) -> None:
         runtime_dir.mkdir(parents=True, exist_ok=True)
         self._episode_start_time_s = time.time()
+        self._runtime_dir = runtime_dir
         environment = os.environ.copy()
+        environment["UAV_TIMING_DIR"] = str((runtime_dir / "timing").resolve())
         # PX4 rcS sources px4-rc.params from PATH before starting its logger.
         px4_params = runtime_dir / "px4-rc.params"
         original_params = Path.home() / "PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/px4-rc.params"
@@ -208,6 +215,89 @@ class ManagedFlightRuntime:
             start_new_session=True,
         )
         self._attach_streams(self._isaac, runtime_dir / "isaac.log", "Isaac Sim/Pegasus/PX4")
+        self._capture_thread = threading.Thread(target=self._capture_ulog, daemon=True)
+        self._capture_thread.start()
+
+    def _owns_px4_process(self, pid: int) -> bool:
+        """Restrict logger commands to descendants of this episode's Isaac."""
+        if self._isaac is None:
+            return False
+        visited = set()
+        while pid > 1 and pid not in visited:
+            if pid == self._isaac.pid:
+                return True
+            visited.add(pid)
+            try:
+                status = Path(f"/proc/{pid}/status").read_text()
+                pid = int(next(line.split()[1] for line in status.splitlines()
+                               if line.startswith("PPid:")))
+            except (OSError, ValueError, StopIteration):
+                return False
+        return False
+
+    def _capture_ulog(self) -> None:
+        """Hold open ULogs so temporary-rootfs deletion cannot lose evidence."""
+        destination = self._runtime_dir / "px4_ulog"
+        destination.mkdir(exist_ok=True)
+        logger_started = False
+        while not self._capture_stop.wait(0.25):
+            if self._px4_process is None:
+                for proc in Path("/proc").iterdir():
+                    if not proc.name.isdigit():
+                        continue
+                    try:
+                        executable = (proc / "exe").resolve(strict=True)
+                        if str(executable).endswith("/px4_sitl_default/bin/px4"):
+                            if not self._owns_px4_process(int(proc.name)):
+                                continue
+                            self._px4_process = (int(proc.name), executable, (proc / "cwd").resolve(strict=True))
+                            break
+                    except OSError:
+                        continue
+            if self._px4_process is None:
+                continue
+            pid, executable, cwd = self._px4_process
+            if not logger_started:
+                try:
+                    # Diagnostic recorder only; no PX4 parameter is changed.
+                    with (destination / "logger_command.log").open("a") as log:
+                        result = subprocess.run(
+                            [str(executable.with_name("px4-logger")), "start", "-e"],
+                            cwd=cwd, stdout=log, stderr=subprocess.STDOUT, timeout=2,
+                        )
+                    logger_started = result.returncode == 0
+                    if not logger_started:
+                        print(f"[BC Flight] logger start returned {result.returncode}: {destination / 'logger_command.log'}", file=sys.stderr)
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    print(f"[BC Flight] ULog recorder error: {error}", file=sys.stderr)
+            try:
+                for source in (cwd / "log").rglob("*.ulg"):
+                    if str(source) not in self._ulog_handles:
+                        self._ulog_handles[str(source)] = source.open("rb")
+            except OSError as error:
+                print(f"[BC Flight] ULog discovery error: {error}", file=sys.stderr)
+        self._write_ulog_snapshot(destination)
+
+    def _write_ulog_snapshot(self, destination: Path) -> None:
+        copied = []
+        for source, handle in self._ulog_handles.items():
+            try:
+                handle.seek(0)
+                target = destination / Path(source).name
+                with target.open("wb") as output:
+                    shutil.copyfileobj(handle, output)
+                copied.append({"path": target.name, "size": target.stat().st_size})
+            except OSError as error:
+                print(f"[BC Flight] ULog copy failed: {error}", file=sys.stderr)
+            finally:
+                handle.close()
+        (destination / "manifest.json").write_text(json.dumps({
+            "copied_files": copied, "pid": self._px4_process[0] if self._px4_process else None,
+            "failure_reason": "" if copied else "No ULog captured; see logger_command.log",
+            "snapshot": "logger stopped before runtime cleanup",
+        }, indent=2), encoding="utf-8")
+        if not copied:
+            print(f"[BC Flight] ULog missing: {destination / 'manifest.json'}", file=sys.stderr)
 
     def _attach_streams(self, process: subprocess.Popen, log_path: Path, name: str) -> None:
         output = self._log(log_path)
@@ -219,6 +309,7 @@ class ManagedFlightRuntime:
 
     def _uav(self, arguments: list[str], log_path: Path) -> int:
         environment = os.environ.copy()
+        environment["UAV_TIMING_DIR"] = str((log_path.parent / "timing").resolve())
         environment["UAV_OFFLINE_TIMEOUT_SECONDS"] = str(int(self.timeout_s))
         process = subprocess.Popen(
                 [str(self.repository_root / "uav"), *arguments],
@@ -347,6 +438,21 @@ class ManagedFlightRuntime:
         )
 
     def cleanup(self) -> None:
+        if self._capture_thread is not None:
+            if self._px4_process:
+                _, executable, cwd = self._px4_process
+                try:
+                    with (self._runtime_dir / "px4_ulog/logger_command.log").open("a") as log:
+                        stopped = subprocess.run(
+                            [str(executable.with_name("px4-logger")), "stop"],
+                            cwd=cwd, stdout=log, stderr=subprocess.STDOUT, timeout=3,
+                        )
+                    if stopped.returncode:
+                        print(f"[BC Flight] logger stop returned {stopped.returncode}", file=sys.stderr)
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    print(f"[BC Flight] logger stop failed: {error}", file=sys.stderr)
+            self._capture_stop.set()
+            self._capture_thread.join(timeout=5)
         _stop_process(self._isaac)
         _stop_process(self._agent)
         self._isaac = None
@@ -357,13 +463,21 @@ class ManagedFlightRuntime:
         for stream in self._streams:
             stream.close()
         self._streams.clear()
+        if self._runtime_dir is not None:
+            try:
+                from scripts.diagnostics.summarize_bc_startup import write_timing_report
+                write_timing_report(self._runtime_dir)
+                print(f"[BC Flight] Timing report: {self._runtime_dir / 'timing_summary.md'}", flush=True)
+            except Exception:
+                import traceback
+                traceback.print_exc()
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="./uav bc-eval",
         description=(
-            "Evaluate a TOP RGB BC checkpoint in Isaac Sim with Pegasus and PX4."
+            "Evaluate a source-matched BC checkpoint in Isaac Sim with Pegasus and PX4."
         ),
     )
     parser.add_argument("--image-source", default="top_rgb")
@@ -389,6 +503,67 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _saved_result_records(output_root: Path, results: list[dict]) -> list[dict]:
+    """Return valid completed results, including ones written before interruption."""
+    records = {}
+    for result in results:
+        try:
+            records[int(result["episode"])] = result
+        except (KeyError, TypeError, ValueError):
+            continue
+    for result_path in sorted(output_root.glob("episode_*/result.json")):
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            if result.get("schema") != "uav_bc_flight_result/v1":
+                raise ValueError("unsupported result schema")
+            records[int(result["episode"])] = result
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+            print(
+                f"[BC Flight] Ignoring unreadable result artifact {result_path}: "
+                f"{error}",
+                file=sys.stderr,
+                flush=True,
+            )
+    return [records[episode] for episode in sorted(records)]
+
+
+def _finalize_evaluation(
+    output_root: Path,
+    results: list[dict],
+    *,
+    image_source: str,
+    identity,
+) -> None:
+    """Persist available evidence even if a later runtime startup fails."""
+    records = _saved_result_records(output_root, results)
+    plots = {}
+    plot_error = ""
+    try:
+        from uav_ml.tools.bc_flight_plotting import generate_evaluation_plots
+
+        plots = generate_evaluation_plots(output_root, records)
+        print(MSG_PLOTS.format(path=output_root), flush=True)
+    except Exception as error:  # Plotting must not invalidate flight evidence.
+        plot_error = str(error)
+        print(MSG_PLOT_WARNING.format(error=error), file=sys.stderr, flush=True)
+    summary = {
+        "schema": "uav_bc_flight_evaluation/v1",
+        "image_source": image_source,
+        "checkpoint": identity.checkpoint_path,
+        "checkpoint_sha256": identity.checkpoint_sha256,
+        "episodes": records,
+        "plots": plots,
+    }
+    if plot_error:
+        summary["plot_error"] = plot_error
+    summary_path = output_root / "summary.json"
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(MSG_FINISHED.format(path=summary_path), flush=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.episodes <= 0:
@@ -405,7 +580,7 @@ def main(argv: list[str] | None = None) -> int:
     image_source = canonical_image_source(args.image_source)
     checkpoint = resolve_checkpoint(repository_root, args.checkpoint)
     print(MSG_PREFLIGHT, flush=True)
-    policy = TopRgbBcPolicy(
+    policy = BcFlightPolicy(
         checkpoint, image_source, torch.device(args.device)
     )
     identity = policy.identity
@@ -423,78 +598,58 @@ def main(argv: list[str] | None = None) -> int:
         str(Path.home() / "isaacsim/_build/linux-x86_64/release"),
     )).expanduser().resolve()
     results = []
-    for index in range(args.episodes):
-        episode = index + 1
-        seed = args.seed + index
-        episode_root = output_root / f"episode_{episode:06d}"
-        result_path = episode_root / "result.json"
-        runtime = ManagedFlightRuntime(
-            repository_root,
-            isaac_release,
-            bool(args.visible),
-            args.device,
-            checkpoint,
-            image_source,
-            args.timeout,
-            args.verbose,
-        )
-        runtime.preflight()
-        print(MSG_STARTING, flush=True)
-        if args.visible:
-            print(MSG_WEBRTC, flush=True)
-        try:
-            runtime.start(episode_root)
-            print(
-                MSG_PREPARING.format(episode=episode, seed=seed), flush=True
-            )
-            print(MSG_RUNNING, flush=True)
-            result = runtime.run_episode(
-                episode, seed, result_path, episode_root
-            )
-            results.append(result)
-            print(MSG_RESULT.format(
-                episode=episode,
-                reason=result.get("terminal_reason", "unknown"),
-            ), flush=True)
-            if result.get("terminal_reason") == "runtime_failure":
-                print(
-                    f"[BC Flight] failure_reason: {result.get('failure_reason', 'unknown')}\n"
-                    f"[BC Flight] flight log: {episode_root / 'flight.log'}\n"
-                    f"{_tail(episode_root / 'flight.log')}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-        finally:
-            print(MSG_CLEANUP, flush=True)
-            runtime.cleanup()
-    plots = {}
-    plot_error = ""
     try:
-        from uav_ml.tools.bc_flight_plotting import (
-            generate_evaluation_plots,
+        for index in range(args.episodes):
+            episode = index + 1
+            seed = args.seed + index
+            episode_root = output_root / f"episode_{episode:06d}"
+            result_path = episode_root / "result.json"
+            runtime = ManagedFlightRuntime(
+                repository_root,
+                isaac_release,
+                bool(args.visible),
+                args.device,
+                checkpoint,
+                image_source,
+                args.timeout,
+                args.verbose,
+            )
+            runtime.preflight()
+            print(MSG_STARTING, flush=True)
+            if args.visible:
+                print(MSG_WEBRTC, flush=True)
+            try:
+                runtime.start(episode_root)
+                print(
+                    MSG_PREPARING.format(episode=episode, seed=seed), flush=True
+                )
+                print(MSG_RUNNING, flush=True)
+                result = runtime.run_episode(
+                    episode, seed, result_path, episode_root
+                )
+                results.append(result)
+                print(MSG_RESULT.format(
+                    episode=episode,
+                    reason=result.get("terminal_reason", "unknown"),
+                ), flush=True)
+                if result.get("terminal_reason") == "runtime_failure":
+                    print(
+                        f"[BC Flight] failure_reason: {result.get('failure_reason', 'unknown')}\n"
+                        f"[BC Flight] flight log: {episode_root / 'flight.log'}\n"
+                        f"{_tail(episode_root / 'flight.log')}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            finally:
+                print(MSG_CLEANUP, flush=True)
+                runtime.cleanup()
+    finally:
+        _finalize_evaluation(
+            output_root,
+            results,
+            image_source=image_source,
+            identity=identity,
         )
-
-        plots = generate_evaluation_plots(output_root, results)
-        print(MSG_PLOTS.format(path=output_root), flush=True)
-    except Exception as error:  # Plotting must not invalidate flight evidence.
-        plot_error = str(error)
-        print(MSG_PLOT_WARNING.format(error=error), file=sys.stderr)
-    summary_path = output_root / "summary.json"
-    summary = {
-        "schema": "uav_bc_flight_evaluation/v1",
-        "image_source": image_source,
-        "checkpoint": identity.checkpoint_path,
-        "checkpoint_sha256": identity.checkpoint_sha256,
-        "episodes": results,
-        "plots": plots,
-    }
-    if plot_error:
-        summary["plot_error"] = plot_error
-    summary_path.write_text(
-        json.dumps(summary, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    print(MSG_FINISHED.format(path=summary_path), flush=True)
     return 0
 
 

@@ -38,11 +38,46 @@ from uav_ml.tools.expert_collect import (
 )
 from uav_ml.tools.expert_visual_qa import create_contact_sheet
 from uav_ml.tools.persistent_runtime import RecoverableAttemptError
-from uav_ml.tools.validate_expert_dataset import _validate_auxiliary
+from uav_ml.tools.validate_expert_dataset import _validate_auxiliary, _uses_formal_top_rgb
 from uav_ml.tools.validate_expert_collection import (
+    finalize_collection,
     validate_episode_metadata,
     validate_cylinder_scene,
 )
+
+
+class OfflineFinalizationTests(unittest.TestCase):
+    def test_legacy_mode_key_preserves_formal_top_checks(self) -> None:
+        runtime = {"phase10c_observer_mode": "fixed_global_top"}
+        episode = {"available_sensor_streams": {"runtime_status": runtime}}
+        self.assertTrue(_uses_formal_top_rgb(episode))
+        runtime["observer_mode"] = "legacy"
+        self.assertFalse(_uses_formal_top_rgb(episode))
+
+    def test_only_successful_validation_completes_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "collection_manifest.json"
+            original = {"status": "interrupted", "episodes": [
+                {"episode_id": "episode_000001", "status": "complete",
+                 "success": True, "accepted_samples": 3}],
+                "active_run_number": 1,
+                "collection_runs": [{"run_number": 1, "status": "interrupted"}]}
+            path.write_text(json.dumps(original))
+            with mock.patch("uav_ml.tools.validate_expert_collection.validate_collection",
+                            side_effect=ValueError("invalid episode")):
+                with self.assertRaisesRegex(ValueError, "invalid episode"):
+                    finalize_collection(root, root / "ae.pt")
+            self.assertEqual(json.loads(path.read_text()), original)
+            self.assertFalse((root / "collection_summary.json").exists())
+            with mock.patch("uav_ml.tools.validate_expert_collection.validate_collection",
+                            return_value={"valid": True, "episode_count": 1, "attempted_episodes": 1}):
+                finalize_collection(root, root / "ae.pt")
+            completed = json.loads(path.read_text())
+            self.assertEqual(completed["status"], "complete")
+            self.assertEqual(completed["collection_runs"][0]["status"], "complete")
+            self.assertEqual(completed["episodes"], original["episodes"])
+            self.assertEqual(completed["summary"]["accepted_samples_total"], 3)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]

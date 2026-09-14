@@ -19,6 +19,7 @@ from uav_interfaces.msg import (
     Px4SyntheticTelemetry,
 )
 from uav_interfaces.srv import SetPx4OutputEnable
+from uav_px4_control.diagnostics import TimingRecorder
 
 from uav_px4_control.control.control_mux_node import (
     MUX_STATUS_TOPIC,
@@ -61,6 +62,7 @@ class Px4MappingGateNode(Node):
     def __init__(self) -> None:
         """Create subscriptions, diagnostic publishers, service, and timer."""
         super().__init__("px4_mapping_gate")
+        self._timing = TimingRecorder(self)
         defaults = Px4MappingConfig()
         for name in defaults.__dataclass_fields__:
             self.declare_parameter(name, getattr(defaults, name))
@@ -126,6 +128,7 @@ class Px4MappingGateNode(Node):
         return self.get_clock().now().nanoseconds / 1e9
 
     def _selected_callback(self, message: TwistStamped) -> None:
+        self._timing.receive(SELECTED_COMMAND_TOPIC, message)
         self._selected_message = message
         self._selected_receipt_time_s = self._now_seconds()
 
@@ -137,6 +140,7 @@ class Px4MappingGateNode(Node):
         self._mux_receipt_time_s = self._now_seconds()
 
     def _telemetry_callback(self, message: Px4SyntheticTelemetry) -> None:
+        self._timing.receive(SYNTHETIC_TELEMETRY_TOPIC, message)
         self._telemetry = Px4TelemetryState(
             receipt_time_s=self._now_seconds(),
             timestamp_us=message.timestamp_us,
@@ -236,6 +240,7 @@ class Px4MappingGateNode(Node):
         return response
 
     def _tick(self) -> None:
+        self._timing.tick()
         now = self._now_seconds()
         mux = self._mux_evidence()
         candidate, validation = self._candidate(now, mux)
@@ -259,12 +264,19 @@ class Px4MappingGateNode(Node):
                 "command_timeout_s": self.config.selected_command_timeout_s,
             }
             self.get_logger().info("BC_STARTUP_DIAG " + json.dumps(payload))
+            self._timing.record(
+                "fault" if result.fault_latched else "state",
+                state=result.state.value, reason=result.hold_reason,
+                thresholds_s={"command": self.config.selected_command_timeout_s,
+                              "telemetry": self.config.telemetry_timeout_s},
+            )
         self._last_result = result
+        self._timing.consume(state=result.state.value, reason=result.hold_reason)
         stamp = self.get_clock().now().to_msg()
         if candidate is not None and validation is not None:
-            self._candidate_publisher.publish(
-                self._candidate_message(candidate, validation, stamp)
-            )
+            message = self._candidate_message(candidate, validation, stamp)
+            self._timing.publish(CANDIDATE_TOPIC, message)
+            self._candidate_publisher.publish(message)
         self._status_publisher.publish(
             self._status_message(result, validation, candidate, stamp)
         )

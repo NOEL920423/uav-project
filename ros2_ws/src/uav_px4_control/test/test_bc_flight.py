@@ -159,3 +159,16 @@ def test_termination_precedence_is_safety_first() -> None:
     assert select_terminal_reason(**common) == "success"
     common["goal_distance_m"] = 2.0
     assert select_terminal_reason(**common) == "timeout"
+
+
+def test_default_termination_allows_non_contact_close_pass() -> None:
+    """A close pass with positive physical clearance is not a collision."""
+    config = TerminationConfig()
+    assert select_terminal_reason(
+        goal_distance_m=1.0,
+        minimum_clearance_m=0.030162698241804287,
+        bc_duration_s=1.0,
+        north_m=2.2,
+        east_m=0.37,
+        config=config,
+    ) is None

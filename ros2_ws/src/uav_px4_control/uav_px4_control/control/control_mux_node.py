@@ -16,6 +16,7 @@ from std_msgs.msg import String
 
 from uav_interfaces.msg import ControlMuxStatus
 from uav_interfaces.srv import SetControlSource
+from uav_px4_control.diagnostics import TimingRecorder
 
 from uav_px4_control.control.control_mux import ControlSourceMux
 from uav_px4_control.control.control_source_models import (
@@ -54,6 +55,7 @@ class ControlMuxNode(Node):
     def __init__(self) -> None:
         """Declare parameters, four candidates, service, and output timer."""
         super().__init__("control_mux")
+        self._timing = TimingRecorder(self)
         defaults = ControlMuxConfig()
         for name in defaults.__dataclass_fields__:
             self.declare_parameter(name, getattr(defaults, name))
@@ -94,6 +96,7 @@ class ControlMuxNode(Node):
 
     def _candidate_callback(self, source: str):
         def callback(message: TwistStamped) -> None:
+            self._timing.receive(SOURCE_TOPICS[source], message)
             command = ControlCommand(
                 source=source,
                 timestamp_s=_stamp_seconds(message.header.stamp),
@@ -140,6 +143,7 @@ class ControlMuxNode(Node):
         return response
 
     def _tick(self) -> None:
+        self._timing.tick()
         now = self._now_seconds()
         try:
             result = self.mux.step(now)
@@ -151,10 +155,11 @@ class ControlMuxNode(Node):
                 return
             result = self.mux.step(now)
         self.last_result = result
+        self._timing.consume(active_source=result.active_source)
         stamp = self.get_clock().now().to_msg()
-        self._selected_publisher.publish(
-            self._command_message(result, stamp)
-        )
+        message = self._command_message(result, stamp)
+        self._timing.publish(SELECTED_COMMAND_TOPIC, message)
+        self._selected_publisher.publish(message)
         self._source_publisher.publish(String(data=result.active_source))
         self._status_publisher.publish(self._status_message(result, stamp))
 

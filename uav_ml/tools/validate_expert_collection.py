@@ -7,6 +7,7 @@ from collections import Counter
 import csv
 import json
 import math
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -243,6 +244,7 @@ def validate_collection_episode(
     episode_id: str,
     device: str = "auto",
     write_result: bool = True,
+    dataset_disk_usage_bytes: int | None = None,
 ) -> dict:
     """Rebuild one episode's 72D observations and validate all streams."""
     dataset_root = dataset_root.resolve()
@@ -255,6 +257,7 @@ def validate_collection_episode(
         require_success=None,
         require_single_manifest=False,
         update_manifest=False,
+        dataset_disk_usage_bytes=dataset_disk_usage_bytes,
     )
     episode = _load(dataset_root / episode_id / "episode.json")
     validation["formal_metadata"] = validate_episode_metadata(
@@ -354,7 +357,9 @@ def validate_collection(
     action_errors: list[float] = []
     rates: list[float] = []
     scene_keys = set()
-    for entry in accepted_entries:
+    # Snapshot once; per-episode validation must not rescan the entire dataset.
+    dataset_disk_usage_bytes = _directory_size(dataset_root)
+    for index, entry in enumerate(accepted_entries, start=1):
         episode_id = str(entry["episode_id"])
         seed = int(entry["seed"])
         episode = _load(dataset_root / episode_id / "episode.json")
@@ -366,6 +371,7 @@ def validate_collection(
             episode_id,
             device=device,
             write_result=write_result,
+            dataset_disk_usage_bytes=dataset_disk_usage_bytes,
         )
         if bool(entry.get("success")) != bool(result["episode_success"]):
             raise ValueError(f"{episode_id}: collection outcome mismatch")
@@ -402,6 +408,8 @@ def validate_collection(
                 state_errors.append(float(row["state_image_error_s"]))
                 action_errors.append(float(row["expert_action_image_error_s"]))
         validations.append(result)
+        if index == 1 or index % 50 == 0 or index == target:
+            print(f"Validated {index}/{target} accepted episodes", file=sys.stderr, flush=True)
 
     success_count = sum(bool(item["episode_success"]) for item in validations)
     sample_count = sum(int(item["sample_count"]) for item in validations)
@@ -463,6 +471,37 @@ def validate_collection(
     return result
 
 
+def finalize_collection(dataset_root: Path, autoencoder_checkpoint: Path,
+                        expected_episodes: int | None = None,
+                        device: str = "auto") -> dict:
+    """Finish an existing collection offline, only after full validation passes."""
+    from uav_ml.tools.expert_collect import (
+        CollectionManifestStore, _atomic_json, _utc_now,
+    )
+
+    store = CollectionManifestStore(dataset_root.resolve())
+    original = store.path.read_text(encoding="utf-8")
+    result = validate_collection(dataset_root, autoencoder_checkpoint,
+                                 expected_episodes, device)
+    if store.path.read_text(encoding="utf-8") != original:
+        raise RuntimeError("collection manifest changed during validation; stop collection before finalizing")
+    store.data = json.loads(original)
+    accepted, rejected, samples = store.completed_counts()
+    summary = {
+        **store.data.get("summary", {}),
+        "status": "complete", "complete": True,
+        "requested_accepted_episodes": result["episode_count"],
+        "max_attempts": store.data.get("max_attempts"),
+        "attempted": result["attempted_episodes"],
+        "accepted": accepted, "rejected": rejected,
+        "accepted_samples_total": samples, "updated_utc": _utc_now(),
+    }
+    store.data.update(validation=result, completed_utc=_utc_now(), summary=summary)
+    _atomic_json(dataset_root / "collection_summary.json", summary)
+    store.set_collection_state("complete", "offline validation and finalization passed")
+    return result
+
+
 def main() -> None:
     """Validate one episode or the complete formal collection."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -471,7 +510,11 @@ def main() -> None:
     parser.add_argument("--episodes", type=int)
     parser.add_argument("--episode")
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--finalize", action="store_true",
+                        help="validate all existing episodes and complete collection metadata without simulation")
     args = parser.parse_args()
+    if args.finalize and args.episode:
+        parser.error("--finalize cannot be combined with --episode")
     if args.episode:
         result = validate_collection_episode(
             Path(args.dataset),
@@ -480,7 +523,8 @@ def main() -> None:
             device=args.device,
         )
     else:
-        result = validate_collection(
+        validator = finalize_collection if args.finalize else validate_collection
+        result = validator(
             Path(args.dataset),
             Path(args.autoencoder),
             expected_episodes=args.episodes,

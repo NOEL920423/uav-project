@@ -36,7 +36,9 @@ def _uses_formal_top_rgb(episode: dict) -> bool:
     """Return whether one episode declares the fixed formal TOP stream."""
     streams = episode.get("available_sensor_streams") or {}
     runtime_status = streams.get("runtime_status") or {}
-    return runtime_status.get("observer_mode") == TOP_RGB_MODE
+    return runtime_status.get(
+        "observer_mode", runtime_status.get("phase10c_observer_mode")
+    ) == TOP_RGB_MODE
 
 
 def _validate_auxiliary(dataset_root: Path, episode_id: str) -> dict:

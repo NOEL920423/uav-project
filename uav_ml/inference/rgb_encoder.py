@@ -13,21 +13,64 @@ from uav_ml.models import RgbAutoencoderConfig, RgbAutoencoderV0
 from uav_ml.train_bc import resolve_device
 
 
+RESNET_PREPROCESSING = (
+    "PIL RGB -> bilinear 128x72 -> CHW float32 [0,1] -> "
+    "ImageNet mean=[0.485,0.456,0.406] std=[0.229,0.224,0.225]"
+)
+
+
+class ResNet18Encoder(torch.nn.Module):
+    """Frozen ImageNet features; keep the entire 128x72 navigation image."""
+
+    def __init__(self, pretrained: bool = False) -> None:
+        super().__init__()
+        # AE users do not need torchvision installed.
+        from torchvision.models import ResNet18_Weights, resnet18
+
+        self.config = RgbAutoencoderConfig(latent_dimension=512)
+        self.backbone = resnet18(
+            weights=ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+        )
+        self.backbone.fc = torch.nn.Identity()
+        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+        self.requires_grad_(False)
+        self.eval()
+
+    def encode(self, image: torch.Tensor) -> torch.Tensor:
+        if image.ndim != 4 or tuple(image.shape[1:]) != (3, 72, 128):
+            raise ValueError("ResNet18 input must have shape [B,3,72,128]")
+        return self.backbone((image - self.mean) / self.std)
+
+
+def load_frozen_encoder(
+    path: Path, device: torch.device,
+) -> tuple[RgbAutoencoderV0 | ResNet18Encoder, dict]:
+    """Load recorded weights without downloading anything at inference time."""
+    payload = torch.load(path, map_location=device, weights_only=False)
+    architecture = payload.get("model_class")
+    if architecture == "RgbAutoencoderV0":
+        model = RgbAutoencoderV0(RgbAutoencoderConfig(**payload["model_config"]))
+    elif architecture == "ResNet18Encoder":
+        model = ResNet18Encoder()
+        if payload["model_config"] != model.config.to_dict():
+            raise ValueError("ResNet18 encoder configuration mismatch")
+        if payload.get("preprocessing") != RESNET_PREPROCESSING:
+            raise ValueError("ResNet18 encoder preprocessing mismatch")
+    else:
+        raise ValueError(f"unsupported encoder model class: {architecture!r}")
+    model.load_state_dict(payload["model_state"])
+    model.to(device).eval()
+    model.requires_grad_(False)
+    return model, payload
+
+
 class RgbEncoderInference:
     """Preprocess one RGB frame and return the pretrained latent vector."""
 
     def __init__(self, checkpoint_path: str | Path, device: str = "auto") -> None:
         self.device = resolve_device(device)
-        payload = torch.load(
-            checkpoint_path, map_location=self.device, weights_only=False
-        )
-        if payload.get("model_class") != "RgbAutoencoderV0":
-            raise ValueError("checkpoint model class is not RgbAutoencoderV0")
-        self.model = RgbAutoencoderV0(
-            RgbAutoencoderConfig(**payload["model_config"])
-        ).to(self.device)
-        self.model.load_state_dict(payload["model_state"])
-        self.model.eval()
+        self.model, payload = load_frozen_encoder(Path(checkpoint_path), self.device)
         self.metadata = payload["metadata"]
 
     def preprocess(self, rgb: np.ndarray) -> torch.Tensor:

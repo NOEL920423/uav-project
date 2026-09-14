@@ -334,6 +334,60 @@ class BcBaselineTests(unittest.TestCase):
                 "bc/test_yaw_rate_rmse",
             }.issubset(scalar_tags))
 
+    def test_resnet_training_and_live_inference_use_identical_features(self) -> None:
+        try:
+            from torchvision.models import resnet18
+        except ModuleNotFoundError as error:
+            if error.name != "torchvision":
+                raise
+            self.skipTest("optional torchvision dependency is not installed")
+        from uav_ml.inference.bc_flight import TopRgbBcPolicy
+        from uav_ml.inference.rgb_encoder import RESNET_PREPROCESSING
+        from uav_ml.tools.bc_baseline import _episode_arrays
+
+        with tempfile.TemporaryDirectory(prefix="resnet-bc-") as temporary:
+            root = Path(temporary)
+            dataset, ae_path = _make_fixture(root, encoder_source="top")
+            for image_path in dataset.glob("episode_*/observer_rgb/*.jpg"):
+                with Image.open(image_path) as source:
+                    image = source.resize((640, 360))
+                image.save(image_path)
+            ae_hash = _sha256(ae_path)
+            output = root / "resnet-run"
+            # Exercise the real architecture without network access in unit tests.
+            with mock.patch("torchvision.models.resnet18", side_effect=lambda **kw: resnet18(weights=None)) as builder:
+                summary = train_baseline(
+                    dataset, None, output,
+                    TrainingConfig(epochs=1, batch_size=4, seed=7), "cpu",
+                    image_source="top", encoder_type="resnet18",
+                )
+                self.assertIsNotNone(builder.call_args_list[0].kwargs["weights"])
+            self.assertEqual(_sha256(ae_path), ae_hash)
+            self.assertEqual(summary["encoder"]["latent_dimension"], 512)
+            self.assertEqual(summary["policy"]["model_config"]["observation_dimension"], 520)
+            checkpoint_path = output / "best.pt"
+            payload = torch.load(checkpoint_path, weights_only=False)
+            self.assertEqual(payload["encoder_preprocessing"], RESNET_PREPROCESSING)
+            with mock.patch("torch.hub.download_url_to_file", side_effect=AssertionError("runtime must not download")):
+                runtime = TopRgbBcPolicy(checkpoint_path, "top_rgb", torch.device("cpu"))
+            self.assertFalse(runtime.encoder.training)
+            self.assertFalse(any(p.requires_grad for p in runtime.encoder.parameters()))
+            splits = json.loads((output / "split_manifest.json").read_text())
+            episode_id = splits["splits"]["test"][0]
+            observations, _ = _episode_arrays(dataset, episode_id, runtime.encoder, torch.device("cpu"), 4, "top")
+            selected = select_episode_images(dataset, episode_id, "top")
+            jpeg = Path(selected[0]["image_path"]).read_bytes()
+            with torch.inference_mode():
+                expected = runtime.policy((torch.from_numpy(observations[:1]) - runtime.mean) / runtime.std)[0].numpy()
+            actual = runtime.act(jpeg, observations[0, -8:])
+            np.testing.assert_allclose(actual, expected, atol=1e-6)
+            self.assertEqual(actual.shape, (3,))
+            self.assertTrue(np.isfinite(actual).all())
+            payload["encoder_preprocessing"] = "incorrect"
+            torch.save(payload, checkpoint_path)
+            with self.assertRaisesRegex(ValueError, "encoder_preprocessing"):
+                TopRgbBcPolicy(checkpoint_path, "top_rgb", torch.device("cpu"))
+
     def test_tiny_top_autoencoder_uses_reconstruction_loss_and_tensorboard(self) -> None:
         with tempfile.TemporaryDirectory(prefix="ae-top-train-") as temporary:
             root = Path(temporary)

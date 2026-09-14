@@ -265,6 +265,7 @@ def test_rejected_reset_does_not_acknowledge_completion():
     node = supervisor_adapter()
     node._reset_ack_s = {}
     node._now_seconds = lambda: 10.0
+    node._timing = SimpleNamespace(record=lambda *args, **kwargs: None)
     node._log_startup_diagnostic = lambda *args, **kwargs: None
     node.get_logger = lambda: SimpleNamespace(warning=lambda message: None)
     node._service_done.__globals__["MSG_ACTION_REJECTED"] = "{action}: {message}"

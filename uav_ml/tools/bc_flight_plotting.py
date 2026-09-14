@@ -107,7 +107,7 @@ def _trajectory_plot(
     north = [item[1] for item in points]
     elapsed = [item[2] for item in points]
     figure, axis = plt.subplots(figsize=EPISODE_FIGURE_SIZE)
-    for obstacle in trace.get("obstacles", []):
+    for obstacle_index, obstacle in enumerate(trace.get("obstacles", [])):
         if not all(_finite(obstacle.get(key)) for key in (
             "east_m", "north_m", "radius_m"
         )):
@@ -119,6 +119,24 @@ def _trajectory_plot(
             alpha=0.45,
         )
         axis.add_patch(circle)
+        uav_radius = trace.get("uav_radius_m")
+        clearance = trace.get("collision_clearance_threshold_m")
+        if _finite(uav_radius) and _finite(clearance):
+            protected = Circle(
+                (float(obstacle["east_m"]), float(obstacle["north_m"])),
+                float(obstacle["radius_m"])
+                + float(uav_radius) + float(clearance),
+                fill=False,
+                edgecolor="#d62828",
+                linestyle="--",
+                linewidth=1.1,
+                alpha=0.8,
+                label=(
+                    "UAV collision envelope"
+                    if obstacle_index == 0 else None
+                ),
+            )
+            axis.add_patch(protected)
         if SHOW_OBSTACLE_LABELS:
             axis.text(
                 float(obstacle["east_m"]),

@@ -10,6 +10,7 @@ overlay.
 from __future__ import annotations
 
 import builtins
+import importlib.util
 from io import BytesIO
 import json
 import math
@@ -166,6 +167,14 @@ class IsaacRuntimeBridge:
         if self._owns_rclpy:
             rclpy.init(args=None)
         self._node = rclpy.create_node("isaac_runtime_bridge")
+        # Load the pure diagnostic helper without importing a ROS overlay.
+        helper = SCRIPT_ROOT.parents[1] / (
+            "ros2_ws/src/uav_px4_control/uav_px4_control/diagnostics/__init__.py"
+        )
+        spec = importlib.util.spec_from_file_location("uav_timing", helper)
+        timing_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(timing_module)
+        self._timing = timing_module.TimingRecorder(self._node)
         self._pose_publisher = self._node.create_publisher(
             PoseStamped, POSE_TOPIC, 10
         )
@@ -767,12 +776,18 @@ class IsaacRuntimeBridge:
         ):
             self._last_observer_publish_monotonic = now_monotonic
             try:
+                started_ns = time.monotonic_ns()
                 message = self._jpeg_message(
                     self._observer_rgb_annotator.get_data(),
                     stamp,
                     "isaac_observer_optical",
                     self._observer_resolution,
                 )
+                self._timing.record(
+                    "image_read", read_encode_ms=(time.monotonic_ns() - started_ns) / 1e6,
+                    capture_time_known=False,
+                )
+                self._timing.publish(OBSERVER_CAMERA_TOPIC, message)
                 self._observer_camera_publisher.publish(message)
                 self._observer_frame_count += 1
                 self._observer_camera_error = ""
@@ -913,6 +928,7 @@ class IsaacRuntimeBridge:
         if self._depth_annotator is not None:
             self._depth_annotator.detach()
             self._depth_annotator = None
+        self._timing.close()
         self._node.destroy_node()
         if self._owns_rclpy and rclpy.ok():
             rclpy.shutdown()

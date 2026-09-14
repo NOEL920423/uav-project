@@ -4,7 +4,9 @@ import json
 import math
 from pathlib import Path
 import unittest
+import tempfile
 from io import BytesIO
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
@@ -22,6 +24,90 @@ from uav_ml.inference.bc_flight import (
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+class TimingReportTests(unittest.TestCase):
+    def test_ulog_capture_rejects_unrelated_process(self):
+        import os
+        from uav_ml.tools.bc_flight_evaluation import ManagedFlightRuntime
+
+        runtime = ManagedFlightRuntime(Path('.'), Path('.'), False, 'cpu', Path('.'), 'top_rgb', 180)
+        runtime._isaac = SimpleNamespace(pid=os.getppid())
+        self.assertTrue(runtime._owns_px4_process(os.getpid()))
+        runtime._isaac = SimpleNamespace(pid=999999999)
+        self.assertFalse(runtime._owns_px4_process(os.getpid()))
+
+    def test_interrupted_evaluation_finalizes_saved_results(self):
+        from uav_ml.tools.bc_flight_evaluation import _finalize_evaluation
+
+        result = {
+            "schema": "uav_bc_flight_result/v1",
+            "episode": 1,
+            "terminal_reason": "timeout",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            episode_dir = root / "episode_000001"
+            episode_dir.mkdir()
+            (episode_dir / "result.json").write_text(json.dumps(result))
+            _finalize_evaluation(
+                root,
+                [],
+                image_source="top_rgb",
+                identity=SimpleNamespace(
+                    checkpoint_path="checkpoint.pt", checkpoint_sha256="digest"
+                ),
+            )
+            summary = json.loads((root / "summary.json").read_text())
+            self.assertEqual(summary["episodes"], [result])
+            self.assertTrue(summary["plots"]["summary"])
+
+    def test_join_uses_observed_monotonic_stamps_not_source_clock(self):
+        from scripts.diagnostics.summarize_bc_startup import write_timing_report
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "timing").mkdir()
+            events = [
+                {"node": "sender", "event": "publish", "mono_ns": 1000000,
+                 "topic": "image", "key": "header:999999:0"},
+                {"node": "receiver", "event": "receive", "mono_ns": 4000000,
+                 "topic": "image", "key": "header:999999:0"},
+                {"node": "receiver", "event": "receive", "mono_ns": 6000000,
+                 "topic": "px4", "key": "px4_wire:9"},
+            ]
+            text = "\n".join(json.dumps({"schema": "uav_timing/v1", **event})
+                             for event in events)
+            (root / "timing/events.jsonl").write_text(text + "\n{truncated\n")
+            summary = write_timing_report(root)
+            self.assertEqual(summary["statistics"][0]["max_ms"], 3.0)
+            self.assertEqual(summary["malformed_records"], 1)
+            self.assertEqual(summary["unmatched_receives"], {"receiver｜px4": 1})
+            self.assertIn("尚未證明", (root / "timing_summary.md").read_text())
+            self.assertEqual(summary["ulog"], None)
+
+    def test_empty_historical_log_does_not_invent_measurements(self):
+        from scripts.diagnostics.summarize_bc_startup import write_timing_report
+
+        with tempfile.TemporaryDirectory() as directory:
+            summary = write_timing_report(Path(directory))
+            self.assertEqual(summary["statistics"], [])
+            self.assertEqual(summary["event_count"], 0)
+
+    def test_open_ulog_survives_temporary_rootfs_removal(self):
+        from uav_ml.tools.bc_flight_evaluation import ManagedFlightRuntime
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "temporary.ulg"
+            source.write_bytes(b"ULog-test-evidence")
+            runtime = ManagedFlightRuntime(root, root, False, "cpu", root, "top_rgb", 180)
+            runtime._ulog_handles[str(source)] = source.open("rb")
+            source.unlink()
+            destination = root / "saved"
+            destination.mkdir()
+            runtime._write_ulog_snapshot(destination)
+            self.assertEqual((destination / source.name).read_bytes(), b"ULog-test-evidence")
 
 
 class BcFlightContractTests(unittest.TestCase):
@@ -99,6 +185,31 @@ class BcFlightContractTests(unittest.TestCase):
         stream = BytesIO()
         Image.new("RGB", (640, 360)).save(stream, format="JPEG")
         validate_live_image(stream.getvalue(), "top_rgb")
+
+    def test_live_fpv_rgb_and_depth_contracts_are_exact(self) -> None:
+        stream = BytesIO()
+        Image.new("RGB", (320, 180)).save(stream, format="JPEG")
+        validate_live_image(stream.getvalue(), "fpv_rgb")
+
+        stream = BytesIO()
+        depth = np.full((180, 320), 1000, dtype=np.uint16)
+        Image.fromarray(depth, mode="I;16").save(stream, format="PNG")
+        validate_live_image(stream.getvalue(), "fpv_depth")
+
+        stream = BytesIO()
+        Image.new("L", (320, 180)).save(stream, format="PNG")
+        with self.assertRaisesRegex(ValueError, "uint16"):
+            validate_live_image(stream.getvalue(), "fpv_depth")
+
+    def test_freshness_reason_tracks_requested_source(self) -> None:
+        self.assertEqual(
+            freshness_error(2.0, None, 1.9, True, 0.35, 0.25, "fpv_depth"),
+            "waiting_for_fpv_depth",
+        )
+        self.assertEqual(
+            freshness_error(2.0, 1.0, 1.9, True, 0.35, 0.25, "fpv_rgb"),
+            "stale_fpv_rgb",
+        )
 
 
 if __name__ == "__main__":

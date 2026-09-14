@@ -20,6 +20,8 @@ from std_msgs.msg import String
 
 from std_srvs.srv import SetBool
 
+from uav_px4_control.diagnostics import TimingRecorder
+
 from uav_interfaces.msg import (
     ControlMuxStatus,
     Px4OutputGateStatus,
@@ -100,6 +102,7 @@ class BcFlightSupervisorNode(Node):
     def __init__(self) -> None:
         """Create evidence subscriptions, service clients, and timers."""
         super().__init__("bc_flight_supervisor")
+        self._timing = TimingRecorder(self)
         message_module = importlib.import_module("px4_msgs.msg")
         self._VehicleCommand = message_module.VehicleCommand
         self._VehicleStatus = message_module.VehicleStatus
@@ -447,6 +450,7 @@ class BcFlightSupervisorNode(Node):
         message.header.frame_id = VALID_COMMAND_FRAME
         if self._controller.state == BcFlightState.TAKING_OFF:
             message.twist.linear.z = -self.config.takeoff_up_speed_mps
+        self._timing.publish(SOURCE_TOPICS[FLIGHT_LIFECYCLE], message)
         self._lifecycle_publisher.publish(message)
 
     def _request(self, key: str, client, request, now: float) -> None:
@@ -465,6 +469,7 @@ class BcFlightSupervisorNode(Node):
         if not client.service_is_ready():
             return
         self._last_action_s[key] = now
+        self._timing.record("service_request", action=key)
         future = client.call_async(request)
         self._pending[key] = future
         future.add_done_callback(
@@ -472,6 +477,7 @@ class BcFlightSupervisorNode(Node):
         )
 
     def _service_done(self, action: str, future) -> None:
+        self._timing.record("service_response", action=action)
         try:
             response = future.result()
         except Exception as error:  # noqa: BLE001
@@ -637,6 +643,7 @@ class BcFlightSupervisorNode(Node):
         self._status_publisher.publish(message)
 
     def _tick(self) -> None:
+        self._timing.tick()
         now = self._now_seconds()
         self._publish_lifecycle_command()
         evidence = self._evidence(now)

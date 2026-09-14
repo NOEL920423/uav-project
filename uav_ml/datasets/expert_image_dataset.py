@@ -148,9 +148,16 @@ def preprocess_expert_image(
     if image_source != "fpv_depth":
         raise ValueError(f"unsupported image source: {image_source}")
     with Image.open(path) as image:
-        depth = np.asarray(image, dtype=np.uint16)
+        return preprocess_depth_image(image, image_width, image_height)
+
+
+def preprocess_depth_image(
+    image: Image.Image, image_width: int = 128, image_height: int = 72
+) -> torch.Tensor:
+    """Apply the formal uint16-millimetre depth preprocessing to one image."""
+    depth = np.asarray(image, dtype=np.uint16)
     if depth.ndim != 2:
-        raise ValueError(f"FPV depth must be single-channel uint16: {path}")
+        raise ValueError("FPV depth must be single-channel uint16")
     valid = depth != 0
     normalized = np.zeros(depth.shape, dtype=np.float32)
     normalized[valid] = (

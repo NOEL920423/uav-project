@@ -13,7 +13,12 @@ import numpy as np
 from PIL import Image
 import torch
 
+from uav_ml.datasets.expert_image_dataset import (
+    IMAGE_PREPROCESSING,
+    preprocess_depth_image,
+)
 from uav_ml.datasets.rgb_episode_dataset import preprocess_rgb_image
+from uav_ml.inference.rgb_encoder import RESNET_PREPROCESSING, load_frozen_encoder
 from uav_ml.inference.bc_flight_contract import (
     ACTION_LIMITS,
     IMPLEMENTED_IMAGE_SOURCES,
@@ -27,8 +32,6 @@ from uav_ml.inference.bc_flight_contract import (
 from uav_ml.models import (
     LatentBcPolicy,
     LatentBcPolicyConfig,
-    RgbAutoencoderConfig,
-    RgbAutoencoderV0,
 )
 
 
@@ -113,15 +116,24 @@ def load_checkpoint_payload(
     payload = torch.load(
         checkpoint_path.resolve(), map_location=device, weights_only=False
     )
+    architecture = payload.get("encoder_architecture")
+    dimensions = {"RgbAutoencoderV0": 64, "ResNet18Encoder": 512}
+    if architecture not in dimensions:
+        raise ValueError(f"checkpoint encoder_architecture mismatch: {architecture!r}")
+    dimension = dimensions[architecture]
+    if architecture == "ResNet18Encoder" and payload.get("encoder_preprocessing") != RESNET_PREPROCESSING:
+        raise ValueError("checkpoint encoder_preprocessing mismatch")
     checks = {
         "format_version": BC_CHECKPOINT_FORMAT,
         "model_class": BC_MODEL_CLASS,
-        "observation_contract": BC_OBSERVATION_CONTRACT,
+        "observation_contract": f"latent{dimension}_plus_body_state8_v1.0",
         "action_contract": BC_ACTION_CONTRACT,
-        "latent_dimension": 64,
-        "encoder_architecture": "RgbAutoencoderV0",
+        "latent_dimension": dimension,
+        "encoder_architecture": architecture,
         "encoder_frozen": True,
-        "image_preprocessing": BC_IMAGE_PREPROCESSING,
+        "image_preprocessing": IMAGE_PREPROCESSING[
+            "top" if canonical_image_source(requested) == "top_rgb" else requested
+        ],
         "physical_action_limits": BC_ACTION_LIMITS,
     }
     for key, expected in checks.items():
@@ -157,7 +169,7 @@ class PolicyIdentity:
     image_source: str
 
 
-class TopRgbBcPolicy:
+class BcFlightPolicy:
     """Run the matching frozen encoder and normalized BC actor."""
 
     def __init__(
@@ -185,21 +197,13 @@ class TopRgbBcPolicy:
             raise ValueError(
                 "encoder SHA-256 differs from the BC training checkpoint"
             )
-        encoder_payload = torch.load(
-            encoder_path, map_location=device, weights_only=False
-        )
-        if encoder_payload.get("model_class") != "RgbAutoencoderV0":
-            raise ValueError("encoder checkpoint is not RgbAutoencoderV0")
-        encoder_config = RgbAutoencoderConfig(
-            **encoder_payload["model_config"]
-        )
-        if encoder_config.latent_dimension != 64:
-            raise ValueError("encoder latent dimension must be 64")
-        self.encoder = RgbAutoencoderV0(encoder_config).to(device)
-        self.encoder.load_state_dict(encoder_payload["model_state"])
-        self.encoder.eval()
-        for parameter in self.encoder.parameters():
-            parameter.requires_grad_(False)
+        self.encoder, encoder_payload = load_frozen_encoder(encoder_path, device)
+        if (encoder_payload["model_class"] != payload["encoder_architecture"]
+                or self.encoder.config.latent_dimension != payload["latent_dimension"]):
+            raise ValueError("encoder architecture or latent dimension mismatch")
+        observation_dimension = self.encoder.config.latent_dimension + 8
+        if payload["model_config"]["observation_dimension"] != observation_dimension:
+            raise ValueError("policy observation dimension does not match encoder")
         self.policy = LatentBcPolicy(
             LatentBcPolicyConfig(**payload["model_config"])
         ).to(device)
@@ -211,8 +215,8 @@ class TopRgbBcPolicy:
         self.std = torch.as_tensor(
             payload["observation_std"], dtype=torch.float32, device=device
         )
-        if self.mean.shape != (72,) or self.std.shape != (72,):
-            raise ValueError("checkpoint normalization must contain 72 values")
+        if self.mean.shape != (observation_dimension,) or self.std.shape != (observation_dimension,):
+            raise ValueError(f"checkpoint normalization must contain {observation_dimension} values")
         if not torch.isfinite(self.mean).all() or not torch.isfinite(
             self.std
         ).all() or torch.any(self.std <= 0):
@@ -227,25 +231,37 @@ class TopRgbBcPolicy:
         )
 
     @torch.inference_mode()
-    def act(self, jpeg_bytes: bytes, state8: np.ndarray) -> np.ndarray:
-        """Infer one normalized action from one TOP JPEG and exact state8."""
+    def act(self, image_bytes: bytes, state8: np.ndarray) -> np.ndarray:
+        """Infer one normalized action from one source-matched live image."""
         state = np.asarray(state8, dtype=np.float32)
         if state.shape != (8,) or not np.isfinite(state).all():
             raise ValueError("state8 must be a finite 8-vector")
-        validate_live_image(jpeg_bytes, self.identity.image_source)
+        validate_live_image(image_bytes, self.identity.image_source)
         try:
-            with Image.open(BytesIO(jpeg_bytes)) as source:
-                image = source.convert("RGB")
-                tensor = preprocess_rgb_image(
-                    image,
-                    image_width=self.encoder.config.image_width,
-                    image_height=self.encoder.config.image_height,
-                )
+            with Image.open(BytesIO(image_bytes)) as source:
+                if self.identity.image_source == "fpv_depth":
+                    tensor = preprocess_depth_image(
+                        source,
+                        self.encoder.config.image_width,
+                        self.encoder.config.image_height,
+                    )
+                else:
+                    tensor = preprocess_rgb_image(
+                        source.convert("RGB"),
+                        image_width=self.encoder.config.image_width,
+                        image_height=self.encoder.config.image_height,
+                    )
         except Exception as error:
-            raise ValueError(f"TOP RGB JPEG decode failed: {error}") from error
+            raise ValueError(
+                f"{self.identity.image_source} image decode failed: {error}"
+            ) from error
         image_tensor = tensor.unsqueeze(0).to(self.device)
         latent = self.encoder.encode(image_tensor)
         state_tensor = torch.from_numpy(state).unsqueeze(0).to(self.device)
         combined = torch.cat((latent, state_tensor), dim=1)
         normalized = (combined - self.mean) / self.std
         return self.policy(normalized)[0].cpu().numpy().astype(np.float32)
+
+
+# Kept as a compatibility alias for existing imports and checkpoints.
+TopRgbBcPolicy = BcFlightPolicy

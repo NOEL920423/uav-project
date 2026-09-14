@@ -11,6 +11,7 @@ from rclpy.node import Node
 from uav_interfaces.msg import Px4SyntheticTelemetry
 
 from uav_px4_control.control.control_mux_node import control_qos
+from uav_px4_control.diagnostics import TimingRecorder
 from uav_px4_control.px4.px4_mapping_gate_node import SYNTHETIC_TELEMETRY_TOPIC
 from uav_px4_control.px4.px4_setpoint_streamer_node import (
     FAILSAFE_FLAGS_TOPIC,
@@ -34,6 +35,7 @@ class Px4LiveTelemetryAdapter(Node):
     def __init__(self) -> None:
         """Subscribe read-only and expose the established Phase 7 contract."""
         super().__init__("px4_live_telemetry_adapter")
+        self._timing = TimingRecorder(self)
         message_module = importlib.import_module("px4_msgs.msg")
         self._status = None
         self._mode = None
@@ -78,18 +80,22 @@ class Px4LiveTelemetryAdapter(Node):
         self.create_timer(0.05, self._tick)
 
     def _status_callback(self, message) -> None:
+        self._timing.receive(VEHICLE_STATUS_TOPIC, message)
         self._status = message
         self._record_topic("vehicle_status")
 
     def _mode_callback(self, message) -> None:
+        self._timing.receive(VEHICLE_CONTROL_MODE_TOPIC, message)
         self._mode = message
         self._record_topic("vehicle_control_mode")
 
     def _odometry_callback(self, message) -> None:
+        self._timing.receive(VEHICLE_ODOMETRY_TOPIC, message)
         self._odometry = message
         self._record_topic("vehicle_odometry")
 
     def _flags_callback(self, message) -> None:
+        self._timing.receive(FAILSAFE_FLAGS_TOPIC, message)
         self._flags = message
         self._record_topic("failsafe_flags")
 
@@ -104,6 +110,7 @@ class Px4LiveTelemetryAdapter(Node):
         diagnostic.count += 1
 
     def _tick(self) -> None:
+        self._timing.tick()
         now = self.get_clock().now().nanoseconds / 1e9
         if now - self._last_diagnostic_log_s >= 5.0:
             self._last_diagnostic_log_s = now
@@ -171,6 +178,8 @@ class Px4LiveTelemetryAdapter(Node):
             odometry.velocity_frame == odometry.VELOCITY_FRAME_NED
         )
         message.fixture = "live-px4-read-only"
+        self._timing.consume()
+        self._timing.publish(SYNTHETIC_TELEMETRY_TOPIC, message)
         self._publisher.publish(message)
 
 
