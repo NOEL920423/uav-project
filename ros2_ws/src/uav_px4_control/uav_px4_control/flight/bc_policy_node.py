@@ -49,7 +49,7 @@ from uav_px4_control.control.control_source_models import (
 )
 
 
-from uav_px4_control.diagnostics import TimingRecorder
+from uav_px4_control.diagnostics import TimingRecorder, timed_callback
 
 
 IMAGE_TOPICS = {
@@ -175,6 +175,8 @@ class BcPolicyNode(Node):
         self._last_error = "disabled"
         self._image_contract_error = ""
         self._inference_count = 0
+        self._action_origin = {}
+        self._action_publish_count = 0
         self._waiting_logged = False
 
         qos = control_qos()
@@ -221,6 +223,7 @@ class BcPolicyNode(Node):
     def _now_seconds(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9
 
+    @timed_callback
     def _image_callback(self, message: CompressedImage) -> None:
         self._timing.receive(IMAGE_TOPICS[self._requested_source], message)
         image = bytes(message.data)
@@ -245,23 +248,30 @@ class BcPolicyNode(Node):
         self._image_receipt_s = self._now_seconds()
         self._image_sequence += 1
 
+    @timed_callback
     def _odometry_callback(self, message: Odometry) -> None:
         if message.header.frame_id != VALID_COMMAND_FRAME:
             self._last_error = "odometry_frame_is_not_px4_ned"
             return
+        self._timing.receive(ODOMETRY_TOPIC, message)
         self._odometry = message
         self._odometry_receipt_s = self._now_seconds()
 
+    @timed_callback
     def _goal_callback(self, message: PoseStamped) -> None:
         if message.header.frame_id != "isaac_world":
             self._last_error = "goal_frame_is_not_isaac_world"
             return
+        self._timing.receive(SCENE_GOAL_TOPIC, message)
         self._goal = message
 
+    @timed_callback
     def _enable_callback(self, request, response):
         self._enabled = bool(request.data)
         self._previous_action = (0.0, 0.0, 0.0)
         self._last_command = None
+        self._action_origin = {}
+        self._action_publish_count = 0
         self._last_error = "" if self._enabled else "disabled"
         response.success = True
         response.message = (
@@ -286,7 +296,13 @@ class BcPolicyNode(Node):
     def _infer(self) -> None:
         started_ns = time.monotonic_ns()
         self._timing.consume(image_sequence=self._image_sequence)
-        self._timing.record("inference_start", image_sequence=self._image_sequence)
+        observation_inputs = {
+            topic: dict(entry) for topic, entry in self._timing.inputs.items()
+        }
+        self._timing.record(
+            "inference_start", image_sequence=self._image_sequence,
+            observation_inputs=observation_inputs,
+        )
         assert self._image is not None
         assert self._odometry is not None
         assert self._goal is not None
@@ -327,10 +343,23 @@ class BcPolicyNode(Node):
         self._previous_action = tuple(float(value) for value in action)
         self._inference_count += 1
         self._inferred_image_sequence = self._image_sequence
+        completed_ns = time.monotonic_ns()
+        self._action_origin = {
+            "action_id": self._inference_count,
+            "image_topic": IMAGE_TOPICS[self._requested_source],
+            "observation_inputs": observation_inputs,
+            "inference_started_ns": started_ns,
+            "inference_completed_ns": completed_ns,
+        }
+        self._action_publish_count = 0
         self._timing.record(
             "inference_end", image_sequence=self._image_sequence,
-            inference_ms=(time.monotonic_ns() - started_ns) / 1e6,
+            inference_ms=(completed_ns - started_ns) / 1e6,
             inference_count=self._inference_count,
+            action_origin=self._action_origin,
+            state8=[float(value) for value in state],
+            action_body=[float(value) for value in action],
+            command_ned=list(self._last_command),
         )
 
     def _publish_command(self) -> None:
@@ -347,8 +376,11 @@ class BcPolicyNode(Node):
             SOURCE_TOPICS[BC_POLICY], message,
             image_sequence=self._inferred_image_sequence,
             inference_count=self._inference_count,
+            action_origin=self._action_origin,
+            repeated_action=self._action_publish_count > 0,
         )
-        self._command_publisher.publish(message)
+        self._timing.send(self._command_publisher, message)
+        self._action_publish_count += 1
 
     def _publish_status(self, ready: bool, reason: str) -> None:
         status = {
@@ -368,8 +400,9 @@ class BcPolicyNode(Node):
         message.data = json.dumps(
             status, sort_keys=True, separators=(",", ":")
         )
-        self._status_publisher.publish(message)
+        self._timing.send(self._status_publisher, message)
 
+    @timed_callback
     def _tick(self) -> None:
         self._timing.tick()
         now = self._now_seconds()

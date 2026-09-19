@@ -28,8 +28,8 @@ from uav_ml.inference.bc_flight import (
 MSG_PREFLIGHT = "[BC Flight] Validating checkpoint and runtime..."
 MSG_STARTING = "[BC Flight] Starting Isaac Sim, Pegasus, and PX4."
 MSG_WEBRTC = (
-    "[BC Flight] Open the Isaac Sim WebRTC client; the observer camera "
-    "is the active viewport."
+    "[BC Flight] Open the Isaac Sim WebRTC client; the selected policy "
+    "camera is the active viewport."
 )
 MSG_PREPARING = "[BC Flight] Preparing episode {episode} with seed {seed}."
 MSG_RUNNING = "[BC Flight] BC flight started."
@@ -187,6 +187,7 @@ class ManagedFlightRuntime:
         environment["PATH"] = f"{runtime_dir.resolve()}{os.pathsep}{environment.get('PATH', '')}"
         environment["UAV_EXPERT_SENSORS"] = "1"
         environment["UAV_OBSERVER_VIEWPORT"] = "1" if self.visible else "0"
+        environment["UAV_VIEWPORT_SOURCE"] = self.image_source
         environment.pop("DISPLAY", None)
         environment.pop("WAYLAND_DISPLAY", None)
         self._agent = subprocess.Popen(
@@ -335,6 +336,7 @@ class ManagedFlightRuntime:
         result_path: Path,
         runtime_dir: Path,
     ) -> dict:
+        runtime_dir.mkdir(parents=True, exist_ok=True)
         if self._uav(["expert-runtime-wait"], runtime_dir / "ready.log") != 0:
             raise RuntimeError("Isaac/PX4 runtime did not become ready")
         episode_id = f"episode_{episode:06d}"
@@ -561,6 +563,17 @@ def _finalize_evaluation(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    try:
+        from scripts.diagnostics.summarize_bc_startup import write_run_reader_summary
+        write_run_reader_summary(output_root)
+        print(
+            f"[BC Flight] Control summary: "
+            f"{output_root / 'closed_loop_control_summary.md'}",
+            flush=True,
+        )
+    except Exception:
+        import traceback
+        traceback.print_exc()
     print(MSG_FINISHED.format(path=summary_path), flush=True)
 
 
@@ -605,14 +618,8 @@ def main(argv: list[str] | None = None) -> int:
             episode_root = output_root / f"episode_{episode:06d}"
             result_path = episode_root / "result.json"
             runtime = ManagedFlightRuntime(
-                repository_root,
-                isaac_release,
-                bool(args.visible),
-                args.device,
-                checkpoint,
-                image_source,
-                args.timeout,
-                args.verbose,
+                repository_root, isaac_release, bool(args.visible), args.device,
+                checkpoint, image_source, args.timeout, args.verbose,
             )
             runtime.preflight()
             print(MSG_STARTING, flush=True)
@@ -620,26 +627,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(MSG_WEBRTC, flush=True)
             try:
                 runtime.start(episode_root)
-                print(
-                    MSG_PREPARING.format(episode=episode, seed=seed), flush=True
-                )
+                print(MSG_PREPARING.format(episode=episode, seed=seed), flush=True)
                 print(MSG_RUNNING, flush=True)
-                result = runtime.run_episode(
-                    episode, seed, result_path, episode_root
-                )
+                result = runtime.run_episode(episode, seed, result_path, episode_root)
                 results.append(result)
-                print(MSG_RESULT.format(
-                    episode=episode,
-                    reason=result.get("terminal_reason", "unknown"),
-                ), flush=True)
-                if result.get("terminal_reason") == "runtime_failure":
-                    print(
-                        f"[BC Flight] failure_reason: {result.get('failure_reason', 'unknown')}\n"
-                        f"[BC Flight] flight log: {episode_root / 'flight.log'}\n"
-                        f"{_tail(episode_root / 'flight.log')}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                print(MSG_RESULT.format(episode=episode, reason=result.get("terminal_reason", "unknown")), flush=True)
             finally:
                 print(MSG_CLEANUP, flush=True)
                 runtime.cleanup()

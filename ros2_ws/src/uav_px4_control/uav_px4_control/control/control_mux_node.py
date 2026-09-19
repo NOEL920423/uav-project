@@ -16,7 +16,7 @@ from std_msgs.msg import String
 
 from uav_interfaces.msg import ControlMuxStatus
 from uav_interfaces.srv import SetControlSource
-from uav_px4_control.diagnostics import TimingRecorder
+from uav_px4_control.diagnostics import TimingRecorder, timed_callback
 
 from uav_px4_control.control.control_mux import ControlSourceMux
 from uav_px4_control.control.control_source_models import (
@@ -95,7 +95,8 @@ class ControlMuxNode(Node):
         return self.get_clock().now().nanoseconds / 1e9
 
     def _candidate_callback(self, source: str):
-        def callback(message: TwistStamped) -> None:
+        @timed_callback
+        def callback(self, message: TwistStamped) -> None:
             self._timing.receive(SOURCE_TOPICS[source], message)
             command = ControlCommand(
                 source=source,
@@ -123,8 +124,9 @@ class ControlMuxNode(Node):
                 self.get_logger().warning(
                     f"unhealthy {source} candidate: {record.reason}"
                 )
-        return callback
+        return lambda message: callback(self, message)
 
+    @timed_callback
     def _set_source_callback(self, request, response):
         try:
             result = self.mux.request_source(
@@ -142,6 +144,7 @@ class ControlMuxNode(Node):
         response.status_message = result.status_message
         return response
 
+    @timed_callback
     def _tick(self) -> None:
         self._timing.tick()
         now = self._now_seconds()
@@ -159,9 +162,9 @@ class ControlMuxNode(Node):
         stamp = self.get_clock().now().to_msg()
         message = self._command_message(result, stamp)
         self._timing.publish(SELECTED_COMMAND_TOPIC, message)
-        self._selected_publisher.publish(message)
-        self._source_publisher.publish(String(data=result.active_source))
-        self._status_publisher.publish(self._status_message(result, stamp))
+        self._timing.send(self._selected_publisher, message)
+        self._timing.send(self._source_publisher, String(data=result.active_source))
+        self._timing.send(self._status_publisher, self._status_message(result, stamp))
 
     @staticmethod
     def _command_message(result: ControlMuxResult, stamp) -> TwistStamped:
@@ -211,7 +214,8 @@ class ControlMuxNode(Node):
             self.mux.request_source("HOLD", now)
             result = self.mux.step(now + 1.0 / self.config.publish_rate_hz)
             stamp = self.get_clock().now().to_msg()
-            self._selected_publisher.publish(
+            self._timing.send(
+                self._selected_publisher,
                 self._command_message(result, stamp)
             )
         return super().destroy_node()

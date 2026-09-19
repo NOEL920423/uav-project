@@ -242,6 +242,8 @@ node 與 evaluator，不需另外啟動 Python 診斷程式：
 - `timing_summary.md`：中文報告，先看回合結果與首次故障，再看各段
   平均、P95、最大耗時及事件順序。原始錯誤文字保留英文以方便搜尋。
 - `timing_summary.json`：相同觀測數據的結構化版本。
+- `control_summary.md`：每回合優先閱讀的中文控制摘要，只保留結果、新影像率、影像到 PX4、影像年齡、動作重送、最大 timer 間隔、ULog 可否比較與下一個假說。
+- `closed_loop_control_summary.md`：整次 closed-loop 的回合總覽；先看這份，再依異常回合連結打開其 `control_summary.md`。
 - `timing/*.jsonl`：各 node 的原始時間事件，可依報告提供的檔名與行號回查。
 - `px4_ulog/`：ULog、保存清單及 logger 原始輸出。evaluator 會在
   Pegasus 清除 temporary rootfs 前持有檔案並保存；若保存失敗會明確報錯。
@@ -261,4 +263,84 @@ PX4 參數；ULog 使用 logger 指令啟停。
 
 ```bash
 python scripts/diagnostics/summarize_bc_startup.py artifacts/evaluations/bc_flight/<run_directory>
+```
+
+### FPV and action timing evidence
+
+FPV `image_read` events now separate pose update, annotator read and JPEG
+encoding. The paired `publish` event carries a publication sequence and ROS
+message key. This sequence is **not** a renderer frame ID. Capture time,
+render completion and whether the pose update applies to the returned frame
+remain explicitly unknown; no extra render or sensor rate change is made.
+
+BC records the image, odometry and goal source keys and host receipt times
+used for each inference. Every action has an ID, an inference completion
+time, and a repeated-action flag. Mux, gate and streamer publications retain
+their consumed input references in the diagnostic JSONL only. ROS messages
+and model inputs are unchanged. The report joins these references only for
+BC-selected, safe-to-forward commands. It reports image receipt age at PX4
+publication, including repeated actions, and the first publication per action.
+These measurements stop at the host publisher API, not at PX4 reception.
+Old recordings without references remain unlinked rather than guessed.
+
+The report inspects saved ULogs using optional `pyulog` (`python -m pip install
+pyulog` in the report interpreter). It exports the available setpoint,
+position/velocity, attitude and timesync topics to CSV beside each ULog,
+lists absent topics and preserves dropout timestamps/durations in JSON.
+An import or parse failure is shown in stderr and the report. ULog timestamps
+are not automatically host timestamps or measured actuation times; logging
+may downsample setpoints. No host-to-PX4 delay is calculated without clock
+calibration. CSV NaN values retain PX4's unset-field representation.
+When timing is enabled, the streamer also records `/fmu/out/timesync_status`
+offsets, remote timestamps, protocol and round-trip time together with host
+clocks. Missing message support is reported. An absent publisher yields no
+witnesses; the report does not treat timesync availability alone as validated
+host/PX4 calibration or control execution latency.
+
+### Bounded scheduling diagnostics
+
+Control callbacks record entry, exit, wall duration and thread CPU duration,
+with PID/TID. To additionally capture Linux scheduler and I/O counters for
+the first 30 seconds of each node in an already planned targeted run:
+
+```bash
+UAV_TIMING_SCHED_SECONDS=30 ./uav bc-eval --episodes 1 --checkpoint <same_checkpoint> --seed <same_seed>
+```
+
+The environment variable is inherited by runtime processes;
+the extra counter sampling stops automatically and is disabled by default.
+Counters are sampled at timer entry, not by a new worker or subprocess.
+`schedstat` measures the calling thread's runqueue wait. Block I/O delay is
+reported in kernel ticks; process read/write bytes are supporting evidence,
+not a duration. Zero counters do not establish that kernel accounting is
+enabled. Missing `/proc` evidence is explicitly recorded and disables further
+sampling. Callback wall time minus CPU time includes preemption and other
+waits, so it must not be labeled I/O delay. Diagnostics have overhead that
+has not yet been measured in a simulator comparison.
+
+### Ground confirmation before startup
+
+The supervisor treats missing or expired land detection as unknown, not airborne.
+Startup requires fresh disarmed and landed evidence before selecting lifecycle
+control. Unknown ground evidence pauses startup/recovery without enable, mode,
+arming, or reset requests; an already selected source is switched to HOLD.
+The existing readiness timeout, overall startup deadline, recovery limit, and
+250 ms command timeout remain unchanged. Confirmed airborne evidence aborts;
+OFFBOARD request/history continues to prohibit startup recovery. Status `landed`
+is `null` while land evidence is missing or older than 1.5 seconds.
+
+When timing is enabled, control and status publishers also record
+`publish_api_start` and `publish_api_end`, including topic, source key, wall time,
+thread CPU time, and success. Existing publication/lineage events are retained.
+The API duration excludes diagnostic writes and does not measure PX4 reception
+or execution. A long API duration identifies a wait inside the publish call,
+but does not alone distinguish DDS locks/backpressure from CPU preemption.
+Use the existing bounded scheduler counters above to investigate that distinction;
+zero/unavailable accounting is not evidence of zero scheduling delay.
+
+Targeted regressions (run manually in the project's test environment):
+
+```bash
+PYTHONPATH=ros2_ws/src/uav_px4_control:. python -m pytest ros2_ws/src/uav_px4_control/test/test_bc_startup_recovery.py ros2_ws/src/uav_px4_control/test/test_bc_flight.py ros2_ws/src/uav_px4_control/test/test_px4_output_gate.py
+PYTHONPATH=ros2_ws/src/uav_px4_control:. python -m pytest tests/ml/test_bc_flight.py -k TimingReportTests
 ```

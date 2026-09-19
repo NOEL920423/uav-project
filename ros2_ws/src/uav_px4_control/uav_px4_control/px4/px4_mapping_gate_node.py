@@ -19,7 +19,7 @@ from uav_interfaces.msg import (
     Px4SyntheticTelemetry,
 )
 from uav_interfaces.srv import SetPx4OutputEnable
-from uav_px4_control.diagnostics import TimingRecorder
+from uav_px4_control.diagnostics import TimingRecorder, timed_callback
 
 from uav_px4_control.control.control_mux_node import (
     MUX_STATUS_TOPIC,
@@ -127,18 +127,22 @@ class Px4MappingGateNode(Node):
     def _now_seconds(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9
 
+    @timed_callback
     def _selected_callback(self, message: TwistStamped) -> None:
         self._timing.receive(SELECTED_COMMAND_TOPIC, message)
         self._selected_message = message
         self._selected_receipt_time_s = self._now_seconds()
 
+    @timed_callback
     def _source_callback(self, message: String) -> None:
         self._source = message.data
 
+    @timed_callback
     def _mux_callback(self, message: ControlMuxStatus) -> None:
         self._mux_status = message
         self._mux_receipt_time_s = self._now_seconds()
 
+    @timed_callback
     def _telemetry_callback(self, message: Px4SyntheticTelemetry) -> None:
         self._timing.receive(SYNTHETIC_TELEMETRY_TOPIC, message)
         self._telemetry = Px4TelemetryState(
@@ -226,6 +230,7 @@ class Px4MappingGateNode(Node):
             self._last_candidate_timestamp_us = timestamp_us
         return candidate, validation
 
+    @timed_callback
     def _enable_callback(self, request, response):
         result = self.gate.request_enable(request.enable)
         response.accepted = result.accepted
@@ -239,6 +244,7 @@ class Px4MappingGateNode(Node):
         response.status_message = result.message
         return response
 
+    @timed_callback
     def _tick(self) -> None:
         self._timing.tick()
         now = self._now_seconds()
@@ -276,11 +282,12 @@ class Px4MappingGateNode(Node):
         if candidate is not None and validation is not None:
             message = self._candidate_message(candidate, validation, stamp)
             self._timing.publish(CANDIDATE_TOPIC, message)
-            self._candidate_publisher.publish(message)
-        self._status_publisher.publish(
+            self._timing.send(self._candidate_publisher, message)
+        self._timing.send(
+            self._status_publisher,
             self._status_message(result, validation, candidate, stamp)
         )
-        self._safe_publisher.publish(Bool(data=result.safe_to_forward))
+        self._timing.send(self._safe_publisher, Bool(data=result.safe_to_forward))
 
     @staticmethod
     def _candidate_message(candidate, validation, stamp):

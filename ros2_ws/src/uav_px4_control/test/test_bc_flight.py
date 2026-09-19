@@ -35,12 +35,14 @@ def test_takeoff_hands_control_to_bc_without_astar_action() -> None:
     controller = BcFlightController()
     decisions = []
     evidence = BcFlightEvidence(
+        landed=True, recovery_vehicle_state_fresh=True,
         runtime_ready=True,
         observations_ready=True,
         telemetry_fresh=True,
     )
     decisions.append(controller.step(1.0, evidence))
     evidence = BcFlightEvidence(
+        landed=True, recovery_vehicle_state_fresh=True,
         runtime_ready=True,
         observations_ready=True,
         telemetry_fresh=True,
@@ -77,6 +79,7 @@ def test_output_readiness_timeout_does_not_enable_gate() -> None:
     """Missing gate evidence must time out without attempting to enable."""
     controller = BcFlightController()
     evidence = BcFlightEvidence(
+        landed=True, recovery_vehicle_state_fresh=True,
         runtime_ready=True,
         observations_ready=True,
         telemetry_fresh=True,
@@ -96,6 +99,7 @@ def test_source_loss_during_prestream_returns_to_lifecycle_selection() -> None:
     """Never request OFFBOARD or ARM after lifecycle authority is lost."""
     controller = BcFlightController()
     healthy = BcFlightEvidence(
+        landed=True, recovery_vehicle_state_fresh=True,
         runtime_ready=True, observations_ready=True, telemetry_fresh=True,
         lifecycle_selected=True, source_valid=True, output_safe=False,
     )
@@ -116,6 +120,7 @@ def test_source_loss_while_requesting_arm_cannot_enter_takeoff() -> None:
     controller = BcFlightController()
     controller.state = BcFlightState.REQUESTING_ARM
     lost = BcFlightEvidence(
+        landed=True, recovery_vehicle_state_fresh=True,
         runtime_ready=True, observations_ready=True, telemetry_fresh=True,
         lifecycle_selected=False, source_valid=False, offboard_active=True,
         vehicle_armed=False,

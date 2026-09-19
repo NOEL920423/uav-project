@@ -26,7 +26,7 @@ from uav_interfaces.msg import (
 from uav_interfaces.srv import SetPx4StreamEnable
 
 from uav_px4_control.control.control_mux_node import control_qos
-from uav_px4_control.diagnostics import TimingRecorder
+from uav_px4_control.diagnostics import TimingRecorder, timed_callback
 from uav_px4_control.px4.px4_mapping_gate_node import (
     CANDIDATE_TOPIC,
     GATE_STATUS_TOPIC,
@@ -278,6 +278,16 @@ class Px4SetpointStreamerNode(Node):
             self._failsafe_flags_callback,
             telemetry_qos,
         )
+        if self._timing.stream is not None:
+            timesync_type = getattr(message_module, "TimesyncStatus", None)
+            if timesync_type is not None:
+                self.create_subscription(
+                    timesync_type, "/fmu/out/timesync_status",
+                    self._timesync_callback, telemetry_qos,
+                )
+            else:
+                self._timing.record("timesync_unavailable", reason="px4_msgs lacks TimesyncStatus")
+                self.get_logger().warning("TIMING: px4_msgs lacks TimesyncStatus")
 
         input_qos = px4_input_qos()
         self._trajectory_publisher = self.create_publisher(
@@ -312,6 +322,19 @@ class Px4SetpointStreamerNode(Node):
     def _now_seconds(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9
 
+    @timed_callback
+    def _timesync_callback(self, message) -> None:
+        """Preserve clock witnesses without assuming a calibrated time mapping."""
+        self._timing.record(
+            "timesync", timestamp_wire_us=int(message.timestamp),
+            source_protocol=int(message.source_protocol),
+            remote_timestamp_us=int(message.remote_timestamp),
+            observed_offset_us=int(message.observed_offset),
+            estimated_offset_us=int(message.estimated_offset),
+            round_trip_time_us=int(message.round_trip_time),
+        )
+
+    @timed_callback
     def _candidate_callback(self, message: Px4SetpointCandidate) -> None:
         self._timing.receive(CANDIDATE_TOPIC, message)
         now = self._now_seconds()
@@ -329,30 +352,36 @@ class Px4SetpointStreamerNode(Node):
         )
         self.machine.observe_candidate(self._candidate)
 
+    @timed_callback
     def _safe_callback(self, message: Bool) -> None:
         self._safe_value = bool(message.data)
         self._safe_receipt_time_s = self._now_seconds()
 
+    @timed_callback
     def _gate_callback(self, message: Px4OutputGateStatus) -> None:
         self._timing.receive(GATE_STATUS_TOPIC, message)
         self._gate_status = message
         self._gate_receipt_time_s = self._now_seconds()
 
+    @timed_callback
     def _vehicle_status_callback(self, message) -> None:
         self._timing.receive(VEHICLE_STATUS_TOPIC, message)
         self._vehicle_status = message
         self._vehicle_status_receipt = self._now_seconds()
 
+    @timed_callback
     def _vehicle_control_mode_callback(self, message) -> None:
         self._timing.receive(VEHICLE_CONTROL_MODE_TOPIC, message)
         self._vehicle_control_mode = message
         self._vehicle_control_mode_receipt = self._now_seconds()
 
+    @timed_callback
     def _vehicle_odometry_callback(self, message) -> None:
         self._timing.receive(VEHICLE_ODOMETRY_TOPIC, message)
         self._vehicle_odometry = message
         self._vehicle_odometry_receipt = self._now_seconds()
 
+    @timed_callback
     def _failsafe_flags_callback(self, message) -> None:
         self._timing.receive(FAILSAFE_FLAGS_TOPIC, message)
         self._failsafe_flags = message
@@ -454,6 +483,7 @@ class Px4SetpointStreamerNode(Node):
             telemetry=self._telemetry(),
         )
 
+    @timed_callback
     def _enable_callback(self, request, response):
         accepted, status_message = self.machine.request_enable(request.enable)
         response.accepted = accepted
@@ -467,6 +497,7 @@ class Px4SetpointStreamerNode(Node):
         response.status_message = status_message
         return response
 
+    @timed_callback
     def _tick(self) -> None:
         self._timing.tick()
         now_clock = self.get_clock().now()
@@ -484,8 +515,8 @@ class Px4SetpointStreamerNode(Node):
                 mode = offboard_control_mode_fields(timestamp_us)
                 message = self._trajectory_message(trajectory)
                 self._timing.publish("/fmu/in/trajectory_setpoint", message)
-                self._trajectory_publisher.publish(message)
-                self._mode_publisher.publish(self._mode_message(mode))
+                self._timing.send(self._trajectory_publisher, message)
+                self._timing.send(self._mode_publisher, self._mode_message(mode))
             except (TypeError, ValueError) as error:
                 result = self.machine.force_mapping_fault(
                     now,
@@ -531,7 +562,8 @@ class Px4SetpointStreamerNode(Node):
                 thresholds_s=payload["telemetry_thresholds_s"],
             )
         self._last_result = result
-        self._status_publisher.publish(
+        self._timing.send(
+            self._status_publisher,
             self._status_message(result, now_clock.to_msg())
         )
 

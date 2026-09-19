@@ -241,6 +241,9 @@ class IsaacRuntimeBridge:
         self._observer_viewport_requested = (
             os.environ.get("UAV_OBSERVER_VIEWPORT", "0") == "1"
         )
+        self._viewport_source = os.environ.get(
+            "UAV_VIEWPORT_SOURCE", "top_rgb"
+        ).strip().lower()
         self._observer_viewport_selected = False
         if self._camera_enabled:
             self._setup_camera()
@@ -361,7 +364,12 @@ class IsaacRuntimeBridge:
         viewport = get_active_viewport()
         if viewport is None:
             return False
-        viewport.set_active_camera(OBSERVER_CAMERA_PATH)
+        camera_path = (
+            OBSERVER_CAMERA_PATH
+            if self._viewport_source in {"top", "top_rgb"}
+            else CAMERA_PATH
+        )
+        viewport.set_active_camera(camera_path)
         if not self._observer_viewport_selected:
             print(MSG_WEBRTC_VIEWPORT)
         self._observer_viewport_selected = True
@@ -758,10 +766,33 @@ class IsaacRuntimeBridge:
             return
         self._last_camera_publish_monotonic = now_monotonic
         try:
+            pose_started_ns = time.monotonic_ns()
             if not self._update_camera_pose():
                 raise RuntimeError("vehicle pose unavailable")
+            pose_updated_ns = time.monotonic_ns()
+            data = self._rgb_annotator.get_data()
+            read_completed_ns = time.monotonic_ns()
             message = self._jpeg_message(
-                self._rgb_annotator.get_data(), stamp, "isaac_fpv_optical"
+                data, stamp, "isaac_fpv_optical"
+            )
+            encoded_ns = time.monotonic_ns()
+            frame_sequence = self._camera_frame_count + 1
+            self._timing.record(
+                "image_read", topic=CAMERA_TOPIC, frame_sequence=frame_sequence,
+                sequence_kind="publication_not_render_frame",
+                pose_update_started_ns=pose_started_ns,
+                pose_updated_ns=pose_updated_ns,
+                read_completed_ns=read_completed_ns, encoded_ns=encoded_ns,
+                read_ms=(read_completed_ns - pose_updated_ns) / 1e6,
+                encode_ms=(encoded_ns - read_completed_ns) / 1e6,
+                read_encode_ms=(encoded_ns - pose_updated_ns) / 1e6,
+                capture_time_known=False, render_completed_ns=None,
+                render_frame_id=None, pose_applies_to_read_frame=None,
+            )
+            self._timing.publish(
+                CAMERA_TOPIC, message, frame_sequence=frame_sequence,
+                read_started_ns=pose_updated_ns, encoded_ns=encoded_ns,
+                capture_time_known=False,
             )
             self._camera_publisher.publish(message)
             self._camera_frame_count += 1
@@ -784,7 +815,8 @@ class IsaacRuntimeBridge:
                     self._observer_resolution,
                 )
                 self._timing.record(
-                    "image_read", read_encode_ms=(time.monotonic_ns() - started_ns) / 1e6,
+                    "image_read", topic=OBSERVER_CAMERA_TOPIC,
+                    read_encode_ms=(time.monotonic_ns() - started_ns) / 1e6,
                     capture_time_known=False,
                 )
                 self._timing.publish(OBSERVER_CAMERA_TOPIC, message)

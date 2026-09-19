@@ -92,7 +92,7 @@ class BcFlightEvidence:
     stream_stable: bool = False
     offboard_active: bool = False
     vehicle_armed: bool = False
-    landed: bool = True
+    landed: bool | None = None
     telemetry_fresh: bool = False
     failsafe: bool = False
     altitude_m: float = 0.0
@@ -225,9 +225,29 @@ class BcFlightController:
             if evidence.startup_stale is not None and self.first_stale is None:
                 self.first_stale = evidence.startup_stale
             if now > self.startup_deadline_s:
-                return self._abort(now, "overall startup deadline exceeded")
+                reason = "overall startup deadline exceeded"
+                if not self._flight_authority_seen and (
+                    evidence.landed is None or not evidence.recovery_vehicle_state_fresh
+                ):
+                    reason += ": fresh disarmed and landed confirmation unavailable"
+                return self._abort(now, reason)
+        if (
+            self.state in STARTUP_STATES | RECOVERY_STATES
+            and not self._flight_authority_seen
+        ):
+            if evidence.landed is False:
+                return self._abort(now, "startup prohibited: vehicle confirmed airborne")
+            if evidence.landed is None or not evidence.recovery_vehicle_state_fresh:
+                # Unknown ground state never authorizes enable, mode, or reset.
+                # Keep the original deadline and retry budget while awaiting it.
+                if self.state == BcFlightState.WAITING_INPUTS:
+                    return self._timed_out(
+                        now, self.config.readiness_timeout_s,
+                        "fresh disarmed and landed confirmation did not arrive",
+                    )
+                return self._decision("SELECT_HOLD")
         if self.state in RECOVERY_STATES:
-            if self._flight_authority_seen or not evidence.landed:
+            if self._flight_authority_seen or evidence.landed is False:
                 return self._abort(now, "startup stale recovery no longer permitted")
             # Unknown or stale vehicle state is not permission to reset.
             if not evidence.recovery_vehicle_state_fresh:
@@ -253,7 +273,7 @@ class BcFlightController:
                 return self._decision("ENABLE_OUTPUT")
             return self._decision("SELECT_LIFECYCLE")
         if self.state in STARTUP_STATES and evidence.startup_stale is not None:
-            if self._flight_authority_seen or not evidence.landed:
+            if self._flight_authority_seen:
                 return self._abort(now, "startup stale recovery prohibited after flight authority")
             if len(self.recovery_history) >= 2:
                 return self._abort(now, "startup stale recovery limit exceeded (2)")
@@ -265,6 +285,8 @@ class BcFlightController:
             actions = ("DISABLE_STREAM",) if evidence.recovery_vehicle_state_fresh else ()
             return self._decision(*actions)
         if self.state == BcFlightState.WAITING_INPUTS:
+            if self._flight_authority_seen:
+                return self._abort(now, "flight authority observed before startup readiness")
             if (
                 evidence.runtime_ready
                 and evidence.observations_ready

@@ -124,6 +124,7 @@ def test_bc_startup_waits_for_delayed_gate_telemetry() -> None:
     controller = BcFlightController()
     gate = Px4OutputSafetyGate()
     evidence = BcFlightEvidence(
+        landed=True, recovery_vehicle_state_fresh=True,
         runtime_ready=True,
         observations_ready=True,
         telemetry_fresh=True,

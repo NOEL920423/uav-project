@@ -20,7 +20,7 @@ from std_msgs.msg import String
 
 from std_srvs.srv import SetBool
 
-from uav_px4_control.diagnostics import TimingRecorder
+from uav_px4_control.diagnostics import TimingRecorder, timed_callback
 
 from uav_interfaces.msg import (
     ControlMuxStatus,
@@ -222,6 +222,7 @@ class BcFlightSupervisorNode(Node):
     def _now_seconds(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9
 
+    @timed_callback
     def _runtime_callback(self, message: String) -> None:
         try:
             payload = json.loads(message.data)
@@ -229,6 +230,7 @@ class BcFlightSupervisorNode(Node):
         except (TypeError, ValueError, json.JSONDecodeError):
             self._runtime_ready = False
 
+    @timed_callback
     def _policy_callback(self, message: String) -> None:
         try:
             payload = json.loads(message.data)
@@ -238,6 +240,7 @@ class BcFlightSupervisorNode(Node):
         except (TypeError, ValueError, json.JSONDecodeError):
             self._policy_status = {}
 
+    @timed_callback
     def _termination_callback(self, message: String) -> None:
         try:
             payload = json.loads(message.data)
@@ -249,15 +252,18 @@ class BcFlightSupervisorNode(Node):
         except (TypeError, ValueError, json.JSONDecodeError):
             return
 
+    @timed_callback
     def _mux_callback(self, message: ControlMuxStatus) -> None:
         self._mux_status = message
         self._mux_receipt_s = self._now_seconds()
 
+    @timed_callback
     def _gate_callback(self, message: Px4OutputGateStatus) -> None:
         self._gate_status = message
         self._gate_receipt_s = self._now_seconds()
         self._capture_startup_stale(message, "gate")
 
+    @timed_callback
     def _stream_callback(self, message: Px4StreamStatus) -> None:
         self._stream_status = message
         self._stream_receipt_s = self._now_seconds()
@@ -304,15 +310,18 @@ class BcFlightSupervisorNode(Node):
                 reason=getattr(message, "stop_reason", getattr(message, "hold_reason", "")),
             )
 
+    @timed_callback
     def _vehicle_status_callback(self, message) -> None:
         self._vehicle_status = message
         self._vehicle_status_receipt_s = self._now_seconds()
         self._controller.observe_flight_authority(self._is_armed(), self._is_offboard())
 
+    @timed_callback
     def _land_callback(self, message) -> None:
         self._land_detected = message
         self._land_receipt_s = self._now_seconds()
 
+    @timed_callback
     def _odometry_callback(self, message: Odometry) -> None:
         self._odometry = message
         self._odometry_receipt_s = self._now_seconds()
@@ -405,7 +414,11 @@ class BcFlightSupervisorNode(Node):
             stream_stable=stream_stable,
             offboard_active=self._is_offboard(),
             vehicle_armed=self._is_armed(),
-            landed=self._is_landed(),
+            landed=(self._is_landed() if (
+                self._land_detected is not None
+                and self._land_receipt_s is not None
+                and 0.0 <= now - self._land_receipt_s <= 1.5
+            ) else None),
             telemetry_fresh=telemetry_fresh,
             failsafe=bool(
                 self._vehicle_status is not None
@@ -420,6 +433,7 @@ class BcFlightSupervisorNode(Node):
                 and self._vehicle_status_receipt_s is not None
                 and 0.0 <= now - self._vehicle_status_receipt_s
                 <= self._vehicle_status_timeout_s
+                and self._land_detected is not None
                 and self._land_receipt_s is not None
                 # PX4 land detection has a one-second periodic heartbeat.
                 and 0.0 <= now - self._land_receipt_s <= 1.5
@@ -451,7 +465,7 @@ class BcFlightSupervisorNode(Node):
         if self._controller.state == BcFlightState.TAKING_OFF:
             message.twist.linear.z = -self.config.takeoff_up_speed_mps
         self._timing.publish(SOURCE_TOPICS[FLIGHT_LIFECYCLE], message)
-        self._lifecycle_publisher.publish(message)
+        self._timing.send(self._lifecycle_publisher, message)
 
     def _request(self, key: str, client, request, now: float) -> None:
         # Serialize opposite requests so an old enable cannot overtake reset.
@@ -640,12 +654,14 @@ class BcFlightSupervisorNode(Node):
         message.data = json.dumps(
             payload, sort_keys=True, separators=(",", ":")
         )
-        self._status_publisher.publish(message)
+        self._timing.send(self._status_publisher, message)
 
+    @timed_callback
     def _tick(self) -> None:
         self._timing.tick()
-        now = self._now_seconds()
         self._publish_lifecycle_command()
+        # A synchronous publish can block; evaluate freshness after it returns.
+        now = self._now_seconds()
         evidence = self._evidence(now)
         previous = self._controller.state
         decision = self._controller.step(now, evidence)

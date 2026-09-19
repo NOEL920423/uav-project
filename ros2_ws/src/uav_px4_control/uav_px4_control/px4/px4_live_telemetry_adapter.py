@@ -11,7 +11,7 @@ from rclpy.node import Node
 from uav_interfaces.msg import Px4SyntheticTelemetry
 
 from uav_px4_control.control.control_mux_node import control_qos
-from uav_px4_control.diagnostics import TimingRecorder
+from uav_px4_control.diagnostics import TimingRecorder, timed_callback
 from uav_px4_control.px4.px4_mapping_gate_node import SYNTHETIC_TELEMETRY_TOPIC
 from uav_px4_control.px4.px4_setpoint_streamer_node import (
     FAILSAFE_FLAGS_TOPIC,
@@ -79,21 +79,25 @@ class Px4LiveTelemetryAdapter(Node):
         )
         self.create_timer(0.05, self._tick)
 
+    @timed_callback
     def _status_callback(self, message) -> None:
         self._timing.receive(VEHICLE_STATUS_TOPIC, message)
         self._status = message
         self._record_topic("vehicle_status")
 
+    @timed_callback
     def _mode_callback(self, message) -> None:
         self._timing.receive(VEHICLE_CONTROL_MODE_TOPIC, message)
         self._mode = message
         self._record_topic("vehicle_control_mode")
 
+    @timed_callback
     def _odometry_callback(self, message) -> None:
         self._timing.receive(VEHICLE_ODOMETRY_TOPIC, message)
         self._odometry = message
         self._record_topic("vehicle_odometry")
 
+    @timed_callback
     def _flags_callback(self, message) -> None:
         self._timing.receive(FAILSAFE_FLAGS_TOPIC, message)
         self._flags = message
@@ -109,6 +113,7 @@ class Px4LiveTelemetryAdapter(Node):
         diagnostic.last_receive_s = now
         diagnostic.count += 1
 
+    @timed_callback
     def _tick(self) -> None:
         self._timing.tick()
         now = self.get_clock().now().nanoseconds / 1e9
@@ -180,7 +185,7 @@ class Px4LiveTelemetryAdapter(Node):
         message.fixture = "live-px4-read-only"
         self._timing.consume()
         self._timing.publish(SYNTHETIC_TELEMETRY_TOPIC, message)
-        self._publisher.publish(message)
+        self._timing.send(self._publisher, message)
 
 
 def main(args=None) -> int:

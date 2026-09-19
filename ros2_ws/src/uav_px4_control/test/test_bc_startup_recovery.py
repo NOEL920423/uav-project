@@ -16,7 +16,7 @@ def ready():
     """Provide positively confirmed ground readiness."""
     return BcFlightEvidence(
         runtime_ready=True, observations_ready=True, telemetry_fresh=True,
-        recovery_vehicle_state_fresh=True, lifecycle_selected=True,
+        recovery_vehicle_state_fresh=True, landed=True, lifecycle_selected=True,
         source_valid=True, output_ready=True,
     )
 
@@ -118,10 +118,65 @@ def test_unknown_vehicle_state_waits_without_reset():
     controller = BcFlightController()
     prestream(controller)
     unknown = replace(stale(), recovery_vehicle_state_fresh=False)
-    assert controller.step(1.0, unknown).actions == ()
-    assert controller.step(2.0, unknown).actions == ()
+    assert controller.step(1.0, unknown).actions == ("SELECT_HOLD",)
+    assert controller.step(2.0, unknown).actions == ("SELECT_HOLD",)
     assert controller.step(3.0, stale()).actions == ("DISABLE_STREAM",)
     assert len(controller.recovery_history) == 1
+
+
+@pytest.mark.parametrize("with_stale", [False, True])
+def test_missing_land_confirmation_waits_then_resumes(with_stale):
+    """Late land evidence cannot enable output or consume recovery attempts."""
+    controller = BcFlightController()
+    unknown = replace(stale() if with_stale else ready(),
+                      landed=None, recovery_vehicle_state_fresh=False)
+    for now in (0.0, 0.3, 1.0):
+        decision = controller.step(now, unknown)
+        assert decision.state == BcFlightState.WAITING_INPUTS
+        assert decision.actions == ()
+        assert not decision.failure_reason
+        assert controller.recovery_history == []
+    deadline = controller.startup_deadline_s
+    decision = controller.step(1.15, stale() if with_stale else ready())
+    assert decision.actions == (("DISABLE_STREAM",) if with_stale else ("SELECT_LIFECYCLE",))
+    assert controller.startup_deadline_s == deadline
+
+
+def test_missing_land_confirmation_times_out_with_actual_reason():
+    """Missing evidence is not reported as acquired flight authority."""
+    controller = BcFlightController()
+    unknown = replace(stale(), landed=None, recovery_vehicle_state_fresh=False)
+    controller.step(0.0, unknown)
+    decision = controller.step(controller.config.readiness_timeout_s + 0.01, unknown)
+    assert decision.state == BcFlightState.HOLDING
+    assert "landed confirmation did not arrive" in decision.failure_reason
+    assert "after flight authority" not in decision.failure_reason
+    assert controller.first_stale == unknown.startup_stale
+
+
+@pytest.mark.parametrize("during_recovery", [False, True])
+def test_unknown_ground_state_never_resets_or_extends_deadline(during_recovery):
+    """Expired evidence pauses prestream and recovery within the same budget."""
+    controller = BcFlightController()
+    prestream(controller)
+    if during_recovery:
+        controller.step(0.5, stale())
+    attempts = len(controller.recovery_history)
+    deadline = controller.startup_deadline_s
+    unknown = replace(stale(), landed=None, recovery_vehicle_state_fresh=False)
+    assert controller.step(1.0, unknown).actions == ("SELECT_HOLD",)
+    assert len(controller.recovery_history) == attempts
+    assert controller.startup_deadline_s == deadline
+    decision = controller.step(deadline + 0.01, unknown)
+    assert decision.state == BcFlightState.HOLDING
+    assert "landed confirmation unavailable" in decision.failure_reason
+
+
+def test_confirmed_airborne_before_startup_is_explicit_failure():
+    """Fresh airborne evidence must never enter the unknown-state wait."""
+    decision = BcFlightController().step(0.0, replace(ready(), landed=False))
+    assert decision.state == BcFlightState.HOLDING
+    assert "confirmed airborne" in decision.failure_reason
 
 
 def test_offboard_history_prevents_reset_even_after_leaving_offboard():
@@ -189,6 +244,7 @@ def test_recovered_flight_uses_normal_handoff_and_cleanup():
 
 def supervisor_adapter():
     """Load actual adapter methods without requiring ROS in pure tests."""
+    from uav_px4_control.diagnostics import timed_callback
     path = (
         Path(__file__).parents[1]
         / "uav_px4_control/flight/bc_flight_supervisor_node.py"
@@ -202,9 +258,12 @@ def supervisor_adapter():
     namespace = {
         "BcFlightState": BcFlightState, "StartupStale": StartupStale,
         "math": __import__("math"), "re": __import__("re"),
+        "timed_callback": timed_callback,
     }
     exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
-    return object.__new__(namespace[cls.name])
+    node = object.__new__(namespace[cls.name])
+    node._timing = SimpleNamespace(stream=None)
+    return node
 
 
 def test_adapter_caches_original_age_before_latched_updates():
@@ -282,6 +341,7 @@ def test_rejected_reset_does_not_acknowledge_completion():
 @pytest.mark.parametrize("arming,status_age,land_age,expected", [
     (1, 0.1, 0.1, True), (0, 0.1, 0.1, False), (2, 0.1, 0.1, False),
     (1, 1.26, 0.1, False), (1, 0.1, 1.6, False),
+    (1, 0.1, None, False), (1, 0.1, -0.1, False),
 ])
 def test_adapter_requires_explicit_fresh_disarmed_and_land_evidence(
     arming, status_age, land_age, expected, vehicle_status=None,
@@ -297,8 +357,8 @@ def test_adapter_requires_explicit_fresh_disarmed_and_land_evidence(
         NAVIGATION_STATE_OFFBOARD=14,
     )
     node._vehicle_status_receipt_s = 10.0 - status_age
-    node._land_receipt_s = 10.0 - land_age
-    node._land_detected = SimpleNamespace(landed=True)
+    node._land_receipt_s = None if land_age is None else 10.0 - land_age
+    node._land_detected = None if land_age is None else SimpleNamespace(landed=True)
     node._odometry_receipt_s = 10.0
     node._odometry = node._ground_down_m = None
     node._policy_status = {}
@@ -308,7 +368,9 @@ def test_adapter_requires_explicit_fresh_disarmed_and_land_evidence(
     node._vehicle_status_timeout_s = 1.25
     node._vehicle_odometry_timeout_s = 0.25
     node._reset_confirmed = lambda action, now: False
-    assert node._evidence(10.0).recovery_vehicle_state_fresh is expected
+    evidence = node._evidence(10.0)
+    assert evidence.recovery_vehicle_state_fresh is expected
+    assert evidence.landed is (True if land_age is not None and 0 <= land_age <= 1.5 else None)
 
 
 def test_recovery_evidence_with_installed_px4_message():
