@@ -1698,8 +1698,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--episodes",
-        required=True,
-        type=int,
+        required=True, # 必須有此參數
+        type=int, # 將參數數值轉成整數 integer，而非文字 "20"
         help=(
             "dataset-wide target number of accepted successful episodes"
         ),
