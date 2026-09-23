@@ -494,6 +494,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--nas-root",
+        type=Path,
+        default=(Path(os.environ["UAV_NAS_ROOT"])
+                 if os.environ.get("UAV_NAS_ROOT") else None),
+        help=(
+            "publish this completed evaluation under NAS/evaluations/bc_flight "
+            "and delete verified local artifacts"
+        ),
+    )
     parser.add_argument("--verbose", action="store_true", help="Show all subprocess stdout.")
     display = parser.add_mutually_exclusive_group()
     display.add_argument(
@@ -527,6 +537,40 @@ def _saved_result_records(output_root: Path, results: list[dict]) -> list[dict]:
                 flush=True,
             )
     return [records[episode] for episode in sorted(records)]
+
+
+def _finalize_episode_video(result_path: Path) -> dict:
+    """Render locally captured policy inputs and attach the outcome to result."""
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    episode_root = result_path.parent
+    spool_dir = episode_root / "policy_input_frames"
+    video = {
+        "filename": "policy_input.mp4",
+        "metadata_filename": "policy_input_video.json",
+    }
+    try:
+        from uav_ml.tools.bc_flight_video import render_policy_input_video
+
+        video.update(render_policy_input_video(
+            spool_dir, episode_root / "policy_input.mp4"
+        ))
+        video["status"] = "complete"
+        shutil.rmtree(spool_dir)
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as error:
+        video["status"] = "failed"
+        video["failure_reason"] = str(error)
+        print(
+            f"[BC Flight] Policy input video failed: {error}",
+            file=sys.stderr,
+            flush=True,
+        )
+    result["policy_input_video"] = video
+    temporary = result_path.with_suffix(result_path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    temporary.replace(result_path)
+    return result
 
 
 def _finalize_evaluation(
@@ -592,6 +636,10 @@ def main(argv: list[str] | None = None) -> int:
         return _replay_trace(args, repository_root)
     image_source = canonical_image_source(args.image_source)
     checkpoint = resolve_checkpoint(repository_root, args.checkpoint)
+    if shutil.which("ffmpeg") is None:
+        raise FileNotFoundError(
+            "ffmpeg is required for mandatory BC policy-input video recording"
+        )
     print(MSG_PREFLIGHT, flush=True)
     policy = BcFlightPolicy(
         checkpoint, image_source, torch.device(args.device)
@@ -630,6 +678,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(MSG_PREPARING.format(episode=episode, seed=seed), flush=True)
                 print(MSG_RUNNING, flush=True)
                 result = runtime.run_episode(episode, seed, result_path, episode_root)
+                result = _finalize_episode_video(result_path)
                 results.append(result)
                 print(MSG_RESULT.format(episode=episode, reason=result.get("terminal_reason", "unknown")), flush=True)
             finally:
@@ -642,6 +691,16 @@ def main(argv: list[str] | None = None) -> int:
             image_source=image_source,
             identity=identity,
         )
+    if args.nas_root is not None:
+        from uav_ml.tools.artifact_publish import publish_artifact_tree
+
+        destination = publish_artifact_tree(
+            output_root,
+            args.nas_root,
+            "evaluations/bc_flight",
+            delete_local=True,
+        )
+        print(f"[BC Flight] Published verified artifact: {destination}", flush=True)
     return 0
 
 

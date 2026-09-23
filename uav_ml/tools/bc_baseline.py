@@ -123,7 +123,8 @@ class TrainingConfig:
     epochs: int = 100
     batch_size: int = 64
     learning_rate: float = 1e-3
-    early_stopping_patience: int = 12
+    early_stopping_patience: int = 1000
+    min_epochs: int = 0
     seed: int = DEFAULT_SEED
 
 
@@ -644,6 +645,8 @@ def train_baseline(
         encode_batch_size,
     ) <= 0 or config.learning_rate <= 0:
         raise ValueError("training counts and learning rate must be positive")
+    if config.min_epochs < 0 or config.min_epochs > config.epochs:
+        raise ValueError("min_epochs must be nonnegative and cannot exceed epochs")
     if encoder_type not in ("autoencoder", "resnet18"):
         raise ValueError("encoder_type must be autoencoder or resnet18")
     if encoder_type == "resnet18" and (encoder_checkpoint is not None or image_source == "fpv_depth"):
@@ -736,6 +739,7 @@ def train_baseline(
         f"Learning rate:\n{config.learning_rate}\n\n"
         f"Early stopping patience:\n"
         f"{config.early_stopping_patience}\n\n"
+        f"Minimum epochs:\n{config.min_epochs}\n\n"
         f"TensorBoard:\n{'enabled' if tensorboard_enabled else 'disabled'}\n\n"
         f"TensorBoard port:\n{tensorboard_port}\n\n"
         f"Encoder:\n{encoder_checkpoint.resolve()}\n\n"
@@ -840,7 +844,10 @@ def train_baseline(
                 optimizer.param_groups[0]["lr"],
                 started,
             )
-            if stale_epochs >= config.early_stopping_patience:
+            if (
+                epoch >= config.min_epochs
+                and stale_epochs >= config.early_stopping_patience
+            ):
                 early_stopping_triggered = True
                 break
     except BaseException:
@@ -968,7 +975,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--patience", type=int, default=12)
+    parser.add_argument("--patience", type=int, default=1000)
+    parser.add_argument(
+        "--min-epochs",
+        type=int,
+        default=0,
+        help="do not apply early stopping before this epoch",
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--encode-batch-size", type=int, default=128)
@@ -1040,6 +1053,7 @@ def main() -> int:
                     batch_size=args.batch_size,
                     learning_rate=args.learning_rate,
                     early_stopping_patience=args.patience,
+                    min_epochs=args.min_epochs,
                     seed=args.seed,
                 ),
                 args.device,

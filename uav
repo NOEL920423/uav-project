@@ -58,7 +58,6 @@ Commands:
   px4-map-check     Validate pure and ROS diagnostic PX4 candidate mapping
   px4-gate-check    Validate fail-closed output gate and explicit recovery
   px4-boundary-check  Validate scene-to-safe_to_forward diagnostic graph
-  ml-doctor       Check Python, PyTorch, CUDA, GPU, and ML artifact locations
   ae-train        Train an episode-split FPV/TOP/depth Autoencoder baseline
   bc-train        Train and offline-evaluate the formal BC baseline
   bc-eval         Fly a TOP RGB BC policy through Isaac/Pegasus/PX4
@@ -73,6 +72,7 @@ Commands:
   expert-runtime-smoke  Restart PX4 episodes in one persistent Isaac runtime
   expert-scene-preview  Preview one formal expert scene over WebRTC
   expert-validate  Validate the formal cylinder expert dataset
+  artifact-publish Copy a completed local artifact to NAS after SHA-256 verification
   profile <name> <workflow> [arguments]
                  Run a maintained workflow preset, then append arguments
   topics         Inspect the current ROS graph and reject /fmu/in/ topics
@@ -110,6 +110,7 @@ Examples:
   ./uav expert-collect --episodes 100 --dataset bc_expert_cube --max-attempts 150 --resume
   ./uav expert-scene-preview --seed 103001
   ./uav expert-validate --episodes 100
+  ./uav artifact-publish artifacts/evaluations/bc_flight/run_TIMESTAMP --nas-root "$UAV_NAS_ROOT" --category evaluations/bc_flight --delete-local
   ./uav profile current expert-collect --episodes 10
   ./uav shell
 EOF
@@ -847,6 +848,8 @@ internal_bc_flight_run() {
     local checkpoint_path="$5"
     local ml_python="$6"
     local device="$7"
+    local video_spool_dir
+    video_spool_dir="$(dirname -- "$result_path")/policy_input_frames"
     clean_bootstrap required
     require_px4_msgs
     local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-180}"
@@ -858,6 +861,7 @@ internal_bc_flight_run() {
         episode:="$episode" \
         seed:="$random_seed" \
         image_source:="$image_source" \
+        video_spool_dir:="$video_spool_dir" \
         checkpoint_path:="$checkpoint_path" \
         ml_python:="$ml_python" \
         device:="$device"
@@ -1409,11 +1413,6 @@ main() {
             [[ $# -ge 2 ]] || die "usage: ./uav profile <name> <workflow> [arguments]"
             run_profile "$@"
             ;;
-        ml-doctor)
-            require_repository
-            shift
-            python3 -m uav_ml.tools.ml_doctor "$@"
-            ;;
         ae-train)
             require_repository
             shift
@@ -1464,6 +1463,11 @@ main() {
             require_repository
             shift
             python3 -m uav_ml.tools.validate_expert_collection "$@"
+            ;;
+        artifact-publish)
+            require_repository
+            shift
+            python3 -m uav_ml.tools.artifact_publish "$@"
             ;;
         expert-runtime-wait|expert-scene-prepare|expert-run-episode|bc-flight-run|isaac-trace-replay)
             require_repository

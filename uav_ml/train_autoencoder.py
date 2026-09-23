@@ -260,7 +260,8 @@ def train(
     dataset_name: str | None = None,
     tensorboard_enabled: bool = False,
     tensorboard_port: int = 6006,
-    early_stopping_patience: int = 12,
+    early_stopping_patience: int = 1000,
+    min_epochs: int = 0,
     latest_index_path: Path | None = None,
 ) -> dict:
     """Train, select on validation MSE, then evaluate the held-out test split."""
@@ -276,8 +277,11 @@ def train(
         or workers < 0
         or image_log_interval < 1
         or early_stopping_patience < 1
+        or min_epochs < 0
     ):
         raise ValueError("epochs/batch size/LR must be positive and workers nonnegative")
+    if min_epochs > epochs:
+        raise ValueError("min_epochs cannot exceed epochs")
     if latent_dimension < 2:
         raise ValueError("latent dimension must be at least 2")
     set_seeds(seed)
@@ -377,6 +381,7 @@ def train(
         "tensorboard_enabled": tensorboard_enabled,
         "tensorboard_port": tensorboard_port,
         "early_stopping_patience": early_stopping_patience,
+        "min_epochs": min_epochs,
     }
     training_config = {
         "dataset_name": resolved_dataset_name,
@@ -390,6 +395,7 @@ def train(
         "tensorboard_enabled": tensorboard_enabled,
         "tensorboard_port": tensorboard_port,
         "early_stopping_patience": early_stopping_patience,
+        "min_epochs": min_epochs,
     }
     with (output / "training_config.json").open("w", encoding="utf-8") as stream:
         json.dump(training_config, stream, indent=2, sort_keys=True)
@@ -407,6 +413,7 @@ def train(
         f"Batch size:\n{batch_size}\n\n"
         f"Learning rate:\n{learning_rate}\n\n"
         f"Early stopping patience:\n{early_stopping_patience}\n\n"
+        f"Minimum epochs:\n{min_epochs}\n\n"
         f"Output:\n{output.resolve()}\n\n"
         f"TensorBoard:\n{'enabled' if tensorboard_enabled else 'disabled'}\n\n"
         f"TensorBoard port:\n{tensorboard_port}\n\n"
@@ -452,7 +459,10 @@ def train(
                 _save_checkpoint(best_path, model, optimizer, epoch, row, metadata)
             else:
                 stale_epochs += 1
-            should_stop = stale_epochs >= early_stopping_patience
+            should_stop = (
+                epoch >= min_epochs
+                and stale_epochs >= early_stopping_patience
+            )
             print(
                 f"Epoch {epoch}/{epochs} "
                 f"train_loss={row['train_mse']:.6f} "
@@ -602,7 +612,13 @@ def _parser() -> argparse.ArgumentParser:
         "--image-source", choices=IMAGE_SOURCES, default="top"
     )
     parser.add_argument("--image-log-interval", type=int, default=5)
-    parser.add_argument("--patience", type=int, default=12)
+    parser.add_argument("--patience", type=int, default=1000)
+    parser.add_argument(
+        "--min-epochs",
+        type=int,
+        default=0,
+        help="do not apply early stopping before this epoch",
+    )
     add_tensorboard_arguments(parser)
     return parser
 
@@ -666,6 +682,7 @@ def main() -> int:
                 tensorboard_enabled=args.tensorboard,
                 tensorboard_port=args.tensorboard_port,
                 early_stopping_patience=args.patience,
+                min_epochs=args.min_epochs,
                 latest_index_path=latest_index,
             )
             print(

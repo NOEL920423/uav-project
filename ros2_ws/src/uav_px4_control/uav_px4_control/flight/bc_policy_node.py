@@ -40,6 +40,7 @@ from uav_ml.inference.bc_flight_contract import (
     validate_live_image,
     yaw_from_quaternion,
 )
+from uav_ml.tools.bc_flight_video import capture_policy_input_frame
 
 from uav_px4_control.control.control_mux_node import control_qos
 from uav_px4_control.control.control_source_models import (
@@ -99,6 +100,7 @@ class BcPolicyNode(Node):
         self.declare_parameter("odometry_freshness_timeout_s", 0.25)
         self.declare_parameter("command_publish_rate_hz", 20.0)
         self.declare_parameter("inference_timeout_s", 0.50)
+        self.declare_parameter("video_spool_dir", "")
         self._image_timeout_s = float(
             self.get_parameter("image_freshness_timeout_s").value
         )
@@ -175,6 +177,13 @@ class BcPolicyNode(Node):
         self._last_error = "disabled"
         self._image_contract_error = ""
         self._inference_count = 0
+        video_spool_value = str(
+            self.get_parameter("video_spool_dir").value
+        ).strip()
+        self._video_spool_dir = (
+            Path(video_spool_value).expanduser().resolve()
+            if video_spool_value else None
+        )
         self._action_origin = {}
         self._action_publish_count = 0
         self._waiting_logged = False
@@ -361,6 +370,19 @@ class BcPolicyNode(Node):
             action_body=[float(value) for value in action],
             command_ned=list(self._last_command),
         )
+        if self._video_spool_dir is not None:
+            try:
+                capture_policy_input_frame(
+                    self._video_spool_dir,
+                    image_bytes=self._image,
+                    image_source=self._requested_source,
+                    inference_count=self._inference_count,
+                    timestamp_ns=completed_ns,
+                    action_body=tuple(float(value) for value in action),
+                )
+            except (OSError, ValueError) as error:
+                self._last_error = f"video_capture_failed:{error}"
+                self.get_logger().error(self._last_error)
 
     def _publish_command(self) -> None:
         assert self._last_command is not None
