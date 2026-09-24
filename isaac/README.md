@@ -1,8 +1,8 @@
 # Active Isaac runtime
 
-`runtime/bootstrap.py` and `runtime/runtime_bridge.py` are the active
-Isaac/Pegasus integration. The bootstrap loads the bridge from its own
-directory, so the pair must remain together.
+`runtime/bootstrap.py` and `runtime/environment.py` are the active
+Isaac/Pegasus integration. The bootstrap loads the environment module from its
+own directory, so the pair must remain together.
 
 Historical Isaac Script Editor pipelines are retained under `legacy/` and are
 not part of the verified flight command.
@@ -13,7 +13,7 @@ stay in the external ROS 2 recorder; the embedded bridge never writes dataset
 files.
 
 Set `UAV_EXPERT_SENSORS=1` for the canonical expert camera contracts.
-`runtime/episode_scene.py`
+`runtime/environment.py`
 generates eight decorated high-rise buildings, including two guaranteed direct
 path blockers, and exact legacy episode lighting. The auxiliary camera uses the
 Episode Manager's effective `TOP` Observer override and publishes on

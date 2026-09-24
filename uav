@@ -34,52 +34,52 @@ die() {
 
 usage() {
     cat <<'EOF'
-Usage: ./uav <command> [arguments]
+用法：./uav <command> [arguments]
 
-Safe ROS 2 Jazzy developer workflow for this repository.
+本專案安全的 ROS 2 Jazzy 開發工作流程。
 
-Commands:
-  help           Show this help
-  status         Show Git and workspace status without modifying files
-  doctor         Check ROS, Python, workspace, environment, and topic safety
-  build          Build the ROS 2 workspace in an isolated Jazzy environment
-  test           Test an existing workspace build
-  verify         Run doctor, build, tests, interface/import/static checks
-  offline        Launch the offline planner interactively
-  offline-check  Run and validate the finite offline planner harness
-  trajectory-check  Validate standalone path-to-trajectory parameterization
-  pipeline-check    Validate scene-to-planner-to-trajectory integration
-  tracking-check    Validate direct offline closed-loop trajectory tracking
-  tracking-safety-check  Validate stale-input HOLD behavior
-  full-pipeline-check    Validate complete scene-to-tracking integration
-  mux-check         Validate offline source selection and safe handoff
-  mux-safety-check  Validate stale-source latch and explicit recovery
-  control-stack-check  Validate scene-to-follower-to-mux-to-plant graph
-  px4-map-check     Validate pure and ROS diagnostic PX4 candidate mapping
-  px4-gate-check    Validate fail-closed output gate and explicit recovery
-  px4-boundary-check  Validate scene-to-safe_to_forward diagnostic graph
-  ae-train        Train an episode-split FPV/TOP/depth Autoencoder baseline
-  bc-train        Train and offline-evaluate the formal BC baseline
-  bc-eval         Fly a TOP RGB BC policy through Isaac/Pegasus/PX4
-  bc-eval-plot    Regenerate plots from a formal BC evaluation artifact
-  ml-test         Run ROS/Isaac-independent ML regression tests
-  px4-stream-offline-check  Validate the PX4-independent stream boundary
-  px4-sitl-doctor     Read-only check of an already-running SITL/XRCE graph
-  px4-sitl-stream-check  Explicitly stream to already-running SITL only
-  px4-sitl-flight-check  Fly one guarded ASTAR_EXPERT mission in running SITL
-  isaac-runtime-flight-check  Require Isaac evidence for the guarded mission
-  expert-collect  Collect a resumable canonical cylinder expert dataset
-  expert-runtime-smoke  Restart PX4 episodes in one persistent Isaac runtime
-  expert-scene-preview  Preview one formal expert scene over WebRTC
-  expert-validate  Validate the formal cylinder expert dataset
-  artifact-publish Copy a completed local artifact to NAS after SHA-256 verification
+指令：
+  help           顯示此說明
+  status         不修改檔案，顯示 Git 與 workspace 狀態
+  doctor         檢查 ROS、Python、workspace、環境與 topic 安全性
+  build          在隔離的 Jazzy 環境建置 ROS 2 workspace
+  test           測試已建置的 workspace
+  verify         執行 doctor、build、測試、介面／import／靜態檢查
+  offline        互動式啟動離線 planner
+  offline-check  執行並驗證有限時間的離線 planner harness
+  trajectory-check  驗證獨立的路徑至軌跡參數化流程
+  pipeline-check    驗證 scene 至 planner 至 trajectory 的整合
+  tracking-check    驗證直接離線 closed-loop 軌跡追蹤
+  tracking-safety-check  驗證輸入過期時的 HOLD 行為
+  full-pipeline-check    驗證完整 scene 至 tracking 的整合
+  mux-check         驗證離線控制來源選擇與安全切換
+  mux-safety-check  驗證過期來源鎖定與明確復原
+  control-stack-check  驗證 scene、follower、mux 與 plant 的整體圖
+  px4-map-check     驗證純函式與 ROS 診斷用的 PX4 candidate mapping
+  px4-gate-check    驗證 fail-closed output gate 與明確復原
+  px4-boundary-check  驗證 scene 至 safe_to_forward 診斷圖
+  ae-train        訓練以 episode 分割的 FPV/TOP/depth Autoencoder baseline
+  bc-train        訓練並離線評估正式的 BC baseline
+  bc-eval         使用 Isaac/Pegasus/PX4 飛行 TOP RGB BC policy
+  bc-eval-plot    由正式 BC evaluation artifact 重新產生圖表
+  ml-test         執行不依賴 ROS/Isaac 的 ML regression tests
+  px4-stream-offline-check  驗證不依賴 PX4 的 stream boundary
+  px4-sitl-doctor     唯讀檢查已執行的 SITL/XRCE graph
+  px4-sitl-stream-check  僅向已執行的 SITL 明確傳送 stream
+  px4-sitl-flight-check  在執行中的 SITL 飛行一個受保護的 ASTAR_EXPERT 任務
+  isaac-runtime-flight-check  要求受保護任務具備 Isaac evidence
+  expert-collect  收集可續跑的 canonical cylinder expert dataset
+  expert-runtime-smoke  在單一持續 Isaac runtime 中重啟 PX4 episodes
+  expert-scene-preview  透過 WebRTC 預覽一個正式 expert scene
+  expert-validate  驗證正式 cylinder expert dataset
+  artifact-publish SHA-256 驗證後將完成的本地 artifact 複製至 NAS
   profile <name> <workflow> [arguments]
-                 Run a maintained workflow preset, then append arguments
-  topics         Inspect the current ROS graph and reject /fmu/in/ topics
-  interfaces     Show custom interfaces and planner topic contracts
-  shell          Open a clean interactive ROS 2 workspace shell
+                 執行維護中的 workflow preset，並附加額外 arguments
+  topics         檢查目前 ROS graph 並拒絕 /fmu/in/ topics
+  interfaces     顯示自訂 interfaces 與 planner topic contracts
+  shell          開啟乾淨的互動式 ROS 2 workspace shell
 
-Examples:
+範例：
   ./uav verify
   ./uav offline use_sim_time:=false
   ./uav offline-check
@@ -231,7 +231,7 @@ print_clean_summary() {
 source_setup_file() {
     local setup_file="$1"
     set +u
-    # ROS-generated setup scripts legitimately probe optional unset variables.
+    # ROS 產生的 setup 腳本會合理地檢查可能未設定的變數。
     # shellcheck disable=SC1090,SC1091
     source "$setup_file"
     set -u
@@ -1002,9 +1002,7 @@ command_expert_scene_preview() {
         "MicroXRCEAgent is not available"
     if ! /usr/bin/python3 - \
         "$REPO_ROOT/isaac/runtime/bootstrap.py" \
-        "$REPO_ROOT/isaac/runtime/episode_scene.py" \
-        "$REPO_ROOT/isaac/runtime/runtime_bridge.py" \
-        "$REPO_ROOT/isaac/runtime/scene_visual_materials.py" <<'PY'
+        "$REPO_ROOT/isaac/runtime/environment.py" <<'PY'
 import pathlib
 import sys
 

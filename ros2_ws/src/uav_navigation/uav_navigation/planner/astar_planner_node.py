@@ -151,7 +151,7 @@ class AstarPlannerNode(Node):
             "use_clearance_aware_cost": True,
             "soft_clearance_radius_m": 0.40,
             "clearance_cost_weight": 0.25,
-            "flight_altitude_m": 2.0,
+            "flight_altitude_m": 1.5,
             "enable_overfly_short_obstacles": True,
             "overfly_vertical_clearance_m": 0.35,
             "ned_offset_x": 0.0,

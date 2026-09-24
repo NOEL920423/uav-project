@@ -8,8 +8,8 @@ import pytest
 
 
 ROOT = Path(__file__).parents[2]
-SOURCE = ROOT / "isaac" / "runtime" / "episode_scene.py"
-SPEC = importlib.util.spec_from_file_location("episode_scene", SOURCE)
+SOURCE = ROOT / "isaac" / "runtime" / "environment.py"
+SPEC = importlib.util.spec_from_file_location("environment", SOURCE)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)

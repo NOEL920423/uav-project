@@ -29,7 +29,7 @@ astar_planner:
     # Soft-clearance cost weight [dimensionless].
     clearance_cost_weight: 0.25
     # Fixed height above the Isaac world origin [m].
-    flight_altitude_m: 2.0
+    flight_altitude_m: 1.5
     # Ignore obstacles that can be safely overflown at the fixed altitude.
     enable_overfly_short_obstacles: true
     # Required vertical separation over an obstacle top [m].

@@ -39,7 +39,7 @@ SCRIPT_ROOT = Path(__file__).resolve().parent
 if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
 
-from scene_visual_materials import (
+from environment import (
     DISABLE_ENVIRONMENT_LIGHTS,
     FLOOR_COLOR,
     OBSTACLE_COLOR,
@@ -50,7 +50,7 @@ from scene_visual_materials import (
 )
 
 
-RUNTIME_BRIDGE_SCRIPT = SCRIPT_ROOT / "runtime_bridge.py"
+RUNTIME_BRIDGE_SCRIPT = SCRIPT_ROOT / "environment.py"
 PERSISTENT_SMOKE_CONTROL_SCRIPT = SCRIPT_ROOT / "persistent_smoke_control.py"
 PX4_ROOT = Path.home() / "PX4-Autopilot"
 VEHICLE_PRIM_PATH = "/World/quadrotor"

@@ -89,7 +89,7 @@ bc_flight_supervisor + bc_episode_monitor
 - `uav_ml/tools/{expert_collect,persistent_runtime,bc_baseline,bc_flight_evaluation,training_cli}.py`
 - `uav_ml/train_autoencoder.py`, `uav_ml/train_bc.py`
 - Formal dataset, AE/BC model, and BC inference modules
-- `isaac/runtime/{bootstrap,runtime_bridge,episode_scene,formal_expert_sensor_contract,scene_visual_materials}.py`
+- `isaac/runtime/{bootstrap,environment,formal_expert_sensor_contract}.py`
 - Active nodes and launch/config files named above from `uav_navigation`, `uav_scene_bridge`, `uav_data_recorder`, and `uav_px4_control`
 
 ### SUPPORT

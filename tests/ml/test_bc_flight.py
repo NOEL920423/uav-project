@@ -184,12 +184,12 @@ class TimingReportTests(unittest.TestCase):
 
     def test_fpv_timing_marks_capture_unknown_and_records_publication(self):
         import ast
-        source = ast.parse((REPOSITORY_ROOT / "isaac/runtime/runtime_bridge.py").read_text())
-        cls = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "IsaacRuntimeBridge")
+        source = ast.parse((REPOSITORY_ROOT / "isaac/runtime/environment.py").read_text())
+        cls = next(node for node in ast.walk(source) if isinstance(node, ast.ClassDef) and node.name == "IsaacRuntimeBridge")
         method = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "_publish_camera")
         import time
         scope = {"time": time, "CAMERA_PUBLISH_PERIOD_S": 0.2, "CAMERA_TOPIC": "fpv"}
-        exec(compile(ast.Module(body=[method], type_ignores=[]), "runtime_bridge.py", "exec"), scope)
+        exec(compile(ast.Module(body=[method], type_ignores=[]), "environment.py", "exec"), scope)
         events = []
         sent = []
         owner = SimpleNamespace(

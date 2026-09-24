@@ -14,7 +14,7 @@ from unittest import mock
 import numpy as np
 from PIL import Image
 
-from isaac.runtime.episode_scene import NUM_OBSTACLES, generate_episode_scene
+from isaac.runtime.environment import NUM_OBSTACLES, generate_episode_scene
 from isaac.runtime.formal_expert_sensor_contract import (
     FORMAL_RGB_NOMINAL_RATE_HZ,
     FPV_RGB_HEIGHT,

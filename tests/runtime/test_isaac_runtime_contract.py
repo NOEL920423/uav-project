@@ -16,7 +16,7 @@ from isaac.runtime.formal_expert_sensor_contract import (
 
 ROOT = Path(__file__).parents[2]
 BOOTSTRAP = ROOT / "isaac" / "runtime" / "bootstrap.py"
-BRIDGE = ROOT / "isaac" / "runtime" / "runtime_bridge.py"
+BRIDGE = ROOT / "isaac" / "runtime" / "environment.py"
 SENSOR_CONTRACT = (
     ROOT / "isaac" / "runtime" / "formal_expert_sensor_contract.py"
 )
@@ -77,10 +77,10 @@ def test_runtime_bridge_has_no_storage_or_control_boundary():
     assert not [token for token in forbidden if token in source]
 
 
-def test_bootstrap_uses_runtime_bridge_without_episode_manager():
+def test_bootstrap_uses_environment_without_episode_manager():
     """Bootstrap startup remains isolated from episode lifecycle."""
     source = BOOTSTRAP.read_text(encoding="utf-8")
-    assert 'RUNTIME_BRIDGE_SCRIPT = SCRIPT_ROOT / "runtime_bridge.py"' in source
+    assert 'RUNTIME_BRIDGE_SCRIPT = SCRIPT_ROOT / "environment.py"' in source
     assert "def create_bootstrap_scene" in source
     assert 'BOOTSTRAP_SCENE_ROOT = "/World/BootstrapScene"' in source
     assert "6.isaac_ros2_episode_manager.py" not in source

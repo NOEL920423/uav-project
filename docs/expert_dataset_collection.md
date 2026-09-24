@@ -62,7 +62,7 @@ creating the formal dataset.
 ## Frozen research contract
 
 Every formal episode uses normal mode from
-`isaac/runtime/episode_scene.py`: start `(0, 0)`, goal `(3, 5)`, exactly eight
+`isaac/runtime/environment.py`: start `(0, 0)`, goal `(3, 5)`, exactly eight
 high-rise buildings, the frozen width/depth/height/yaw ranges, 0.50 m minimum
 gap, two guaranteed direct-path blockers, and canonical lighting. The collector
 validates the pure deterministic scene before starting the flight and the

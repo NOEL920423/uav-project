@@ -17,7 +17,7 @@ from typing import Callable
 
 from PIL import UnidentifiedImageError
 
-from isaac.runtime.episode_scene import generate_episode_scene
+from isaac.runtime.environment import generate_episode_scene
 from uav_ml.tools.expert_visual_qa import create_contact_sheet
 from uav_ml.tools.persistent_runtime import (
     FatalRuntimeError,

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from isaac.runtime.episode_scene import (
+from isaac.runtime.environment import (
     CYLINDER_HEIGHT_MAX,
     CYLINDER_HEIGHT_MIN,
     OBSTACLE_YAW_MAX_DEG,
