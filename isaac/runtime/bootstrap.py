@@ -45,6 +45,7 @@ from environment import (
     OBSTACLE_COLOR,
     RTX_AMBIENT_OCCLUSION_ENABLED,
     RTX_SHADOWS_ENABLED,
+    TARGET_POS,
     bind_material,
     create_scene_materials,
 )
@@ -150,7 +151,7 @@ def create_bootstrap_scene(stage) -> None:
     goal.CreateRadiusAttr(0.25)
     goal.CreateHeightAttr(0.02)
     goal.AddTranslateOp().Set(
-        Gf.Vec3d(0.5, 3.0, 0.01)
+        Gf.Vec3d(TARGET_POS[0], TARGET_POS[1], 0.01)
     )
     goal.CreateDisplayColorAttr(
         [Gf.Vec3f(0.20, 0.85, 0.25)]

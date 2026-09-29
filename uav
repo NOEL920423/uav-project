@@ -69,6 +69,7 @@ usage() {
   px4-sitl-flight-check  在執行中的 SITL 飛行一個受保護的 ASTAR_EXPERT 任務
   isaac-runtime-flight-check  要求受保護任務具備 Isaac evidence
   expert-collect  收集可續跑的 canonical cylinder expert dataset
+  expert-collect-publish  收集、驗證、上傳 NAS，成功後刪除本機 dataset
   expert-runtime-smoke  在單一持續 Isaac runtime 中重啟 PX4 episodes
   expert-scene-preview  透過 WebRTC 預覽一個正式 expert scene
   expert-validate  驗證正式 cylinder expert dataset
@@ -108,6 +109,7 @@ usage() {
   ./uav expert-collect --episodes 100 --dataset bc_expert_cube
   ./uav expert-runtime-smoke --episodes 2
   ./uav expert-collect --episodes 100 --dataset bc_expert_cube --max-attempts 150 --resume
+  ./uav expert-collect-publish --episodes 100 --max-attempts 150 --dataset cylinder_v3 --nas-root /home/noel_614420090/NAS
   ./uav expert-scene-preview --seed 103001
   ./uav expert-validate --episodes 100
   ./uav artifact-publish artifacts/evaluations/bc_flight/run_TIMESTAMP --nas-root "$UAV_NAS_ROOT" --category evaluations/bc_flight --delete-local
@@ -1263,6 +1265,64 @@ command_verify() {
     return "$verify_status"
 }
 
+expert_collect_publish_usage() {
+    cat <<'EOF'
+用法：./uav expert-collect-publish --episodes <N> --dataset <name> [--max-attempts <N>] [--nas-root <path>]
+
+依序收集、驗證並以 SHA-256 驗證後上傳 dataset；僅在上傳完整成功後
+刪除 artifacts/datasets/<name> 的本機資料。dataset 必須是簡短名稱，
+例如 cylinder_v3。NAS 路徑優先使用 --nas-root，否則使用 UAV_NAS_ROOT。
+EOF
+}
+
+command_expert_collect_publish() {
+    local episodes="" max_attempts="" dataset=""
+    local nas_root="${UAV_NAS_ROOT:-}"
+    while (($#)); do
+        case "$1" in
+            --episodes|--max-attempts|--dataset|--nas-root)
+                (($# >= 2)) || die "missing value for $1"
+                case "$1" in
+                    --episodes) episodes="$2" ;;
+                    --max-attempts) max_attempts="$2" ;;
+                    --dataset) dataset="$2" ;;
+                    --nas-root) nas_root="$2" ;;
+                esac
+                shift 2
+                ;;
+            -h|--help)
+                expert_collect_publish_usage
+                return 0
+                ;;
+            *)
+                die "unknown expert-collect-publish argument: $1"
+                return 64
+                ;;
+        esac
+    done
+    [[ "$episodes" =~ ^[1-9][0-9]*$ ]] || die "--episodes must be a positive integer"
+    [[ -z "$max_attempts" || "$max_attempts" =~ ^[1-9][0-9]*$ ]] || \
+        die "--max-attempts must be a positive integer"
+    [[ "$dataset" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || \
+        die "--dataset must be a simple dataset name"
+    [[ -n "$nas_root" && -d "$nas_root" ]] || \
+        die "--nas-root must be an existing mounted directory"
+
+    local dataset_root="$REPO_ROOT/artifacts/datasets/$dataset"
+    local -a collect_arguments=(--episodes "$episodes" --dataset "$dataset")
+    if [[ -n "$max_attempts" ]]; then
+        collect_arguments+=(--max-attempts "$max_attempts")
+    fi
+    info "collecting dataset: $dataset_root"
+    python3 -m uav_ml.tools.expert_collect "${collect_arguments[@]}"
+    info "validating dataset: $dataset_root"
+    python3 -m uav_ml.tools.validate_expert_collection \
+        --dataset "$dataset_root" --finalize
+    info "publishing verified dataset to NAS: $nas_root/datasets/$dataset"
+    python3 -m uav_ml.tools.artifact_publish \
+        "$dataset_root" --nas-root "$nas_root" --category datasets --delete-local
+}
+
 command_offline_check() {
     mkdir -p "$RUN_LOG_DIR"
     local timestamp
@@ -1440,6 +1500,11 @@ main() {
             require_repository
             shift
             python3 -m uav_ml.tools.expert_collect "$@"
+            ;;
+        expert-collect-publish)
+            require_repository
+            shift
+            command_expert_collect_publish "$@"
             ;;
         expert-runtime-smoke)
             require_repository

@@ -16,6 +16,13 @@ from PIL import Image
 from uav_ml.inference.rgb_encoder import RgbEncoderInference
 
 
+# Exploratory collections record these limits as diagnostics; structural
+# sample validation remains a hard requirement.
+QUALITY_MIN_SAMPLE_RATE_HZ = 3.0
+QUALITY_MAX_SAMPLE_RATE_HZ = 7.0
+QUALITY_MIN_IMAGE_LUMINANCE = 5.0
+QUALITY_MIN_IMAGE_DYNAMIC_RANGE = 32
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 RECORDER_SOURCE = REPOSITORY_ROOT / "ros2_ws" / "src" / "uav_data_recorder"
 sys.path.insert(0, str(RECORDER_SOURCE))
@@ -99,6 +106,7 @@ def validate_episode(
     latent_norms: list[float] = []
     image_luminance_means: list[float] = []
     image_dynamic_ranges: list[int] = []
+    quality_warnings: list[dict] = []
     observations: list[np.ndarray] = []
     targets: list[np.ndarray] = []
     for index, row in enumerate(rows, start=1):
@@ -122,11 +130,20 @@ def validate_episode(
             rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
         luminance_mean = float(rgb.astype(np.float32).mean())
         dynamic_range = int(rgb.max()) - int(rgb.min())
-        if luminance_mean < 5.0 or dynamic_range < 32:
-            raise ValueError(
-                f"sample {index} is blank/dark: mean={luminance_mean:.3f}, "
-                f"range={dynamic_range}"
-            )
+        if luminance_mean < QUALITY_MIN_IMAGE_LUMINANCE:
+            quality_warnings.append({
+                "code": "image_below_luminance_target",
+                "sample_id": index,
+                "observed": luminance_mean,
+                "minimum": QUALITY_MIN_IMAGE_LUMINANCE,
+            })
+        if dynamic_range < QUALITY_MIN_IMAGE_DYNAMIC_RANGE:
+            quality_warnings.append({
+                "code": "image_below_dynamic_range_target",
+                "sample_id": index,
+                "observed": dynamic_range,
+                "minimum": QUALITY_MIN_IMAGE_DYNAMIC_RANGE,
+            })
         latent = encoder.encode(rgb).astype(np.float32)
         if latent.shape != (64,) or not np.isfinite(latent).all():
             raise ValueError(f"sample {index} did not produce a finite 64D latent")
@@ -183,8 +200,17 @@ def validate_episode(
     observed_rate = 0.0
     if len(image_times) > 1:
         observed_rate = (len(image_times) - 1) / (image_times[-1] - image_times[0])
-    if len(image_times) > 1 and not 3.0 <= observed_rate <= 7.0:
-        raise ValueError(f"observed dataset rate is unreasonable: {observed_rate:.3f} Hz")
+    if len(image_times) < 2 or not (
+        QUALITY_MIN_SAMPLE_RATE_HZ
+        <= observed_rate
+        <= QUALITY_MAX_SAMPLE_RATE_HZ
+    ):
+        quality_warnings.append({
+            "code": "dataset_sampling_rate_outside_target",
+            "observed_hz": observed_rate,
+            "minimum_hz": QUALITY_MIN_SAMPLE_RATE_HZ,
+            "maximum_hz": QUALITY_MAX_SAMPLE_RATE_HZ,
+        })
     terminal = episode.get("terminal_flight_status") or {}
     accumulated = episode.get("accumulated_flight_evidence") or {}
     if success:
@@ -225,6 +251,7 @@ def validate_episode(
         "episode_success": success,
         "sample_count": len(rows),
         "observed_sampling_rate_hz": observed_rate,
+        "quality_warnings": quality_warnings,
         "timestamps_strictly_monotonic": True,
         "maximum_state_image_error_s": max(state_errors, default=None),
         "maximum_action_image_error_s": max(action_errors, default=None),

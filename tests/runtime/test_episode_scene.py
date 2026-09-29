@@ -25,14 +25,26 @@ def test_seed_reproduces_configured_obstacle_scene():
     assert left["target_marker"] == [3.0, 5.0, 0.0]
     assert left["goal"] == [3.0, 5.0, 1.5]
     assert len(left["obstacles"]) == MODULE.NUM_OBSTACLES
+    assert MODULE.NUM_OBSTACLES == (
+        MODULE.DIRECT_PATH_BLOCKER_COUNT
+        + MODULE.RANDOM_OBSTACLE_COUNT
+    )
+    assert sum(
+        item["placement_mode"] == "random" for item in left["obstacles"]
+    ) == MODULE.RANDOM_OBSTACLE_COUNT
     assert {item["shape"] for item in left["obstacles"]} == {
         "cylinder"
     }
     assert left["direct_path_blocker_count"] == 2
-    assert left["obstacles"][0]["x"] == pytest.approx(1.0852854015267037)
     assert left["obstacles"][0]["placement_mode"] == (
         "guaranteed_direct_path_blocker"
     )
+    assert left["obstacles"][0]["variant"] == "special_large"
+    assert left["obstacles"][0]["radius_basis_width"] == pytest.approx(0.72)
+    assert left["obstacles"][0]["radius_basis_depth"] == pytest.approx(0.72)
+    assert left["obstacles"][0]["height"] == pytest.approx(5.2)
+    assert len(left["walls"]) == 4
+    assert all(wall["name"].startswith("Wall_") for wall in left["walls"])
     assert left["lighting"]["mode"] == "neutral_dome_only"
     assert left["lighting"]["dome"]["intensity"] == 800.0
     assert "key" not in left["lighting"]

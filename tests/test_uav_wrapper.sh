@@ -62,6 +62,8 @@ help_output="$("$UAV" help)"
     fail "pipeline-check is missing from help"
 [[ "$help_output" == *"expert-collect"* ]] || \
     fail "expert-collect is missing from help"
+[[ "$help_output" == *"expert-collect-publish"* ]] || \
+    fail "expert-collect-publish is missing from help"
 expert_help="$($UAV expert-collect --help)"
 [[ "$expert_help" == *"--episodes EPISODES"* ]] || \
     fail "expert-collect help is missing --episodes"
@@ -69,6 +71,14 @@ expert_help="$($UAV expert-collect --help)"
     fail "expert-collect help is missing --resume"
 [[ "$expert_help" == *"--seed SEED"* ]] || \
     fail "expert-collect help is missing --seed"
+publish_help="$($UAV expert-collect-publish --help)"
+[[ "$publish_help" == *"--nas-root <path>"* ]] || \
+    fail "expert-collect-publish help is missing --nas-root"
+if "$UAV" expert-collect-publish --episodes 1 --dataset cylinder_v3 \
+    >/dev/null 2>&1
+then
+    fail "expert-collect-publish accepted a missing NAS root"
+fi
 
 git -C "$REPO_ROOT" check-ignore -q ros2_ws/build/example
 git -C "$REPO_ROOT" check-ignore -q ros2_ws/install/example

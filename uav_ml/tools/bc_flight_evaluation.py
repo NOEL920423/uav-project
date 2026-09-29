@@ -543,17 +543,24 @@ def _finalize_episode_video(result_path: Path) -> dict:
     """Render locally captured policy inputs and attach the outcome to result."""
     result = json.loads(result_path.read_text(encoding="utf-8"))
     episode_root = result_path.parent
+    output_root = episode_root.parent
+    videos_dir = output_root / "videos"
+    videos_dir.mkdir(parents=True, exist_ok=True)
     spool_dir = episode_root / "policy_input_frames"
+    video_path = videos_dir / f"episode_{int(result['episode']):06d}.mp4"
+    metadata_path = videos_dir / f"episode_{int(result['episode']):06d}.json"
     video = {
-        "filename": "policy_input.mp4",
-        "metadata_filename": "policy_input_video.json",
+        "filename": str(video_path.relative_to(output_root)),
+        "metadata_filename": str(metadata_path.relative_to(output_root)),
     }
     try:
         from uav_ml.tools.bc_flight_video import render_policy_input_video
 
         video.update(render_policy_input_video(
-            spool_dir, episode_root / "policy_input.mp4"
+            spool_dir, video_path, metadata_path=metadata_path
         ))
+        video["filename"] = str(video_path.relative_to(output_root))
+        video["metadata_filename"] = str(metadata_path.relative_to(output_root))
         video["status"] = "complete"
         shutil.rmtree(spool_dir)
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as error:

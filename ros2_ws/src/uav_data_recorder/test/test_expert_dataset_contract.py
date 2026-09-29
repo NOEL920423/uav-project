@@ -1,8 +1,10 @@
 """Regression tests for the dataset geometry and join contract."""
 
 import math
+from io import BytesIO
 
 import pytest
+from PIL import Image
 
 from uav_data_recorder.expert_dataset_contract import (
     SYNCHRONIZATION_TOLERANCE_S,
@@ -14,10 +16,25 @@ from uav_data_recorder.expert_dataset_contract import (
     nearest,
     ned_to_body,
     normalize_action,
+    perceptual_hash_distance,
+    perceptual_hash_jpeg,
     previous,
     recording_window_rejection,
     update_recording_window,
+    update_visual_run,
 )
+
+
+def _jpeg_with_bright_half(left_bright: bool) -> bytes:
+    """Build one small deterministic JPEG for perceptual-hash regression."""
+    image = Image.new("L", (32, 32), color=0)
+    image.paste(
+        255,
+        (0 if left_bright else 16, 0, 16 if left_bright else 32, 32),
+    )
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=85)
+    return output.getvalue()
 
 
 def test_ned_body_rotation_matches_forward_right_contract():
@@ -50,6 +67,34 @@ def test_timestamp_join_exposes_error_and_previous_control_sample():
     assert selected == values[1]
     assert abs(selected.timestamp_s - 1.06) < SYNCHRONIZATION_TOLERANCE_S
     assert previous(values, selected) == values[0]
+
+
+def test_perceptual_hash_groups_same_view_and_separates_changed_view():
+    """Visual duplicate filtering is robust to JPEG byte-level differences."""
+    left = _jpeg_with_bright_half(True)
+    repeated = _jpeg_with_bright_half(True)
+    right = _jpeg_with_bright_half(False)
+    left_hash = perceptual_hash_jpeg(left, 8)
+    assert perceptual_hash_distance(
+        left_hash, perceptual_hash_jpeg(repeated, 8)
+    ) == 0
+    assert perceptual_hash_distance(
+        left_hash, perceptual_hash_jpeg(right, 8)
+    ) > 4
+
+
+def test_visual_run_keeps_at_most_three_consecutive_similar_images():
+    """The fourth visually similar image is rejected until the view changes."""
+    accepted, previous, count = update_visual_run(None, 0, 10, 4, 3)
+    assert (accepted, previous, count) == (True, 10, 1)
+    accepted, previous, count = update_visual_run(previous, count, 11, 4, 3)
+    assert (accepted, previous, count) == (True, 11, 2)
+    accepted, previous, count = update_visual_run(previous, count, 10, 4, 3)
+    assert (accepted, previous, count) == (True, 10, 3)
+    assert update_visual_run(previous, count, 11, 4, 3) == (
+        False, previous, 3
+    )
+    assert update_visual_run(previous, count, 255, 4, 3) == (True, 255, 1)
 
 
 def test_flight_status_lookup_is_causal_at_tracking_boundaries():

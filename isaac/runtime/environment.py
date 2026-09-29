@@ -11,9 +11,15 @@ from __future__ import annotations
 
 # RGB values are linear USD colors.  The light gray floor and navy obstacles
 # provide both luminance and hue contrast in TOP and FPV images.
+# 障礙物本體 RGB 顏色（0.0 到 1.0）。
 OBSTACLE_COLOR = (0.03, 0.08, 0.18)
+# 地板 RGB 顏色（0.0 到 1.0）。
 FLOOR_COLOR = (0.60, 0.60, 0.60)
+# 四面牆壁 RGB 顏色（0.0 到 1.0）。
+WALL_COLOR = (0.45, 0.45, 0.45)
+# 起點標記 RGB 顏色（0.0 到 1.0）。
 START_MARKER_COLOR = (0.0, 0.3, 1.0)
+# 終點標記 RGB 顏色（0.0 到 1.0）。
 GOAL_MARKER_COLOR = (1.0, 0.0, 0.0)
 
 MATERIAL_ROUGHNESS = 1.0
@@ -25,14 +31,15 @@ MATERIAL_EMISSIVE_COLOR = (0.0, 0.0, 0.0)
 # The Pegasus default environment contains a local 100000-intensity
 # SphereLight.  Disable environment lights and replace them with one neutral,
 # direction-independent DomeLight for the formal ML scene.
-DISABLE_ENVIRONMENT_LIGHTS = True
-DOME_LIGHT_INTENSITY = 800.0
-DOME_LIGHT_COLOR = (1.0, 1.0, 1.0)
-RTX_SHADOWS_ENABLED = False
-RTX_AMBIENT_OCCLUSION_ENABLED = False
+DISABLE_ENVIRONMENT_LIGHTS = True  # 是否關閉 Pegasus 原有環境光源。
+DOME_LIGHT_INTENSITY = 800.0  # Dome 全域光照強度。
+DOME_LIGHT_COLOR = (1.0, 1.0, 1.0)  # Dome 全域光照 RGB 顏色。
+RTX_SHADOWS_ENABLED = False  # 是否啟用 RTX 陰影。
+RTX_AMBIENT_OCCLUSION_ENABLED = False  # 是否啟用 RTX 環境遮蔽。
 
 OBSTACLE_MATERIAL_NAME = "ObstacleMatte"
 FLOOR_MATERIAL_NAME = "FloorMatte"
+WALL_MATERIAL_NAME = "WallMatte"
 START_MARKER_MATERIAL_NAME = "StartMarkerMatte"
 GOAL_MARKER_MATERIAL_NAME = "GoalMarkerMatte"
 
@@ -85,6 +92,11 @@ def create_scene_materials(stage, scene_root: str):
             f"{materials_root}/{FLOOR_MATERIAL_NAME}",
             FLOOR_COLOR,
         ),
+        "wall": create_matte_material(
+            stage,
+            f"{materials_root}/{WALL_MATERIAL_NAME}",
+            WALL_COLOR,
+        ),
         "start_marker": create_matte_material(
             stage,
             f"{materials_root}/{START_MARKER_MATERIAL_NAME}",
@@ -115,48 +127,72 @@ import sys
 SCRIPT_ROOT = Path(__file__).resolve().parent
 if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
+from formal_expert_sensor_contract import TOP_RGB_COVERAGE_M
 
-# 障礙物數量
-NUM_OBSTACLES = 10
-
-# 有效的障礙物參數
+# ===== 可調整場景參數（修改此區即可改變新生成 episode 的場景） =====
+# 是否強制在起點至終點直線上放置 blocker。
 GUARANTEE_DIRECT_PATH_BLOCKERS = True
+# 直線 blocker 數量；設為 0 可關閉直線障礙物。
 DIRECT_PATH_BLOCKER_COUNT = 2
+# 額外隨機障礙物數量；設為 0 即不生成隨機障礙物。
+RANDOM_OBSTACLE_COUNT = 0
+# 場景障礙物總數，由直線 blocker 與隨機障礙物數量自動相加。
+NUM_OBSTACLES = DIRECT_PATH_BLOCKER_COUNT + RANDOM_OBSTACLE_COUNT
+# 兩個直線 blocker 在起點到終點線段上的比例範圍。
 DIRECT_PATH_BLOCKER_T_RANGES = ((0.34, 0.38), (0.62, 0.66))
+# 直線 blocker 可離開中心線的最大橫向距離（公尺）。
 DIRECT_PATH_BLOCKER_LATERAL_JITTER_M = 0.08
+# 直線 blocker 的最小高度（公尺）。
 DIRECT_PATH_BLOCKER_HEIGHT_MIN = 3.20
+# 特大型 blocker 的索引（從 0 開始）。
+SPECIAL_BLOCKER_INDEX = 0
+# 特大型 blocker 的寬度基準（公尺）。
+SPECIAL_BLOCKER_RADIUS_BASIS_WIDTH = 0.72
+# 特大型 blocker 的深度基準（公尺）。
+SPECIAL_BLOCKER_RADIUS_BASIS_DEPTH = 0.72
+# 特大型 blocker 的高度（公尺）。
+SPECIAL_BLOCKER_HEIGHT = 5.20
 
-# 障礙物生成範圍
+# 可飛行區域與牆壁內側面的 X 座標範圍（公尺）。
 X_MIN = -5.0
 X_MAX = 5.0
+# 可飛行區域與牆壁內側面的 Y 座標範圍（公尺）。
 Y_MIN = -2.0
 Y_MAX = 7.0
+# 牆壁厚度（公尺）。
+WALL_THICKNESS_M = 0.25
+# 牆壁高度（公尺）。
+WALL_HEIGHT_M = 5.50
 
+# 無人機起點位置 x, y, z（公尺）。
 START_POS = (0.0, 0.0, 0.0)
+# 終點地面標記位置 x, y, z（公尺）。
 TARGET_POS = (3.0, 5.0, 0.0)
+# 飛行目標高度（公尺）。
 FLIGHT_ALTITUDE_M = 1.5
+# 起點與終點圓形標記半徑（公尺）。
 DISK_RADIUS = 0.5
 
 # 額外安全距離
-DISK_SAFE_MARGIN = 1.0
+DISK_SAFE_MARGIN = 1.0  # 起點與終點周圍禁止生成障礙物的額外距離（公尺）。
 START_CLEAR_RADIUS = DISK_RADIUS + DISK_SAFE_MARGIN
 TARGET_CLEAR_RADIUS = DISK_RADIUS + DISK_SAFE_MARGIN
 
-RADIUS_BASIS_WIDTH_MIN = 0.46
-RADIUS_BASIS_WIDTH_MAX = 0.72
-RADIUS_BASIS_DEPTH_MIN = 0.46
-RADIUS_BASIS_DEPTH_MAX = 0.72
+RADIUS_BASIS_WIDTH_MIN = 0.46  # 隨機障礙物最小寬度基準（公尺）。
+RADIUS_BASIS_WIDTH_MAX = 0.72  # 隨機障礙物最大寬度基準（公尺）。
+RADIUS_BASIS_DEPTH_MIN = 0.46  # 隨機障礙物最小深度基準（公尺）。
+RADIUS_BASIS_DEPTH_MAX = 0.72  # 隨機障礙物最大深度基準（公尺）。
 
 # 障礙物高度最小值和最大值
-CYLINDER_HEIGHT_MIN = 2.80
-CYLINDER_HEIGHT_MAX = 5.20
+CYLINDER_HEIGHT_MIN = 2.80  # 隨機障礙物最小高度（公尺）。
+CYLINDER_HEIGHT_MAX = 5.20  # 隨機障礙物最大高度（公尺）。
 
-BLOCKER_RADIUS_BASIS_WIDTH_MIN = 0.56
-BLOCKER_RADIUS_BASIS_DEPTH_MIN = 0.56
+BLOCKER_RADIUS_BASIS_WIDTH_MIN = 0.56  # 一般直線 blocker 最小寬度基準（公尺）。
+BLOCKER_RADIUS_BASIS_DEPTH_MIN = 0.56  # 一般直線 blocker 最小深度基準（公尺）。
 # These decoration samples remain in the RNG contract. Removing their draws
 # changes later placement draws and therefore seed-to-geometry mapping.
-OBSTACLE_YAW_MIN_DEG = -35.0
-OBSTACLE_YAW_MAX_DEG = 35.0
+OBSTACLE_YAW_MIN_DEG = -35.0  # 障礙物最小偏航角（度）。
+OBSTACLE_YAW_MAX_DEG = 35.0  # 障礙物最大偏航角（度）。
 SCENE_DECORATION_WINDOW_THICKNESS_M = 0.018
 SCENE_DECORATION_WINDOW_HEIGHT_M = 0.16
 SCENE_DECORATION_WINDOW_MARGIN_M = 0.08
@@ -182,10 +218,10 @@ SCENE_DECORATION_WINDOW_OFF_COLOR = (0.035, 0.055, 0.075)
 SCENE_DECORATION_ROOF_STYLES = ("flat", "crown", "antenna")
 
 # 兩個 cylinder 外緣間的最小實體距離，不是中心距離
-MIN_OBSTACLE_GAP = 0.50
+MIN_OBSTACLE_GAP = 0.50  # 兩個圓柱表面間的最小間距（公尺）。
 
-MAX_PLACEMENT_ATTEMPTS = 1000
-RESET_POSITION_TOLERANCE_M = 0.50
+MAX_PLACEMENT_ATTEMPTS = 1000  # 每個障礙物允許的最大隨機放置嘗試次數。
+RESET_POSITION_TOLERANCE_M = 0.50  # 重置位置距離起點的最大容許誤差（公尺）。
 LIGHTING_CONTRACT = {
     "mode": "neutral_dome_only",
     "root": "/World/GeneratedEpisode/Lights",
@@ -195,6 +231,97 @@ LIGHTING_CONTRACT = {
         "color": list(DOME_LIGHT_COLOR),
     },
 }
+
+# ===== 可調整相機、ROS 輸出與預覽參數 =====
+# 無人機本體 USD Prim 路徑。
+VEHICLE_BODY_PATH = "/World/quadrotor/body"
+# 發布無人機姿態的 ROS topic。
+POSE_TOPIC = "/isaac_uav/pose"
+# 發布場景與 runtime 狀態的 ROS topic。
+STATUS_TOPIC = "/uav/isaac/runtime_status"
+# 場景資料使用的座標框架名稱。
+FRAME_ID = "isaac_world"
+# FPV RGB 影像輸出 topic。
+CAMERA_TOPIC = "/uav/isaac/fpv/image/compressed"
+# FPV 相機 USD 路徑。
+CAMERA_PATH = "/World/RuntimeSensors/FPVCamera"
+# Observer 相機 USD 路徑。
+OBSERVER_CAMERA_PATH = "/World/RuntimeSensors/ObserverCamera"
+# Observer RGB 影像輸出 topic。
+OBSERVER_CAMERA_TOPIC = "/uav/isaac/observer/image/compressed"
+# FPV 深度影像輸出 topic。
+DEPTH_TOPIC = "/uav/isaac/fpv/depth/compressed"
+# 場景切換命令接收 topic。
+EPISODE_COMMAND_TOPIC = "/uav/isaac/episode_command"
+# 正式生成場景的 USD 根路徑。
+SCENE_ROOT = "/World/GeneratedEpisode"
+# Bootstrap 預覽場景的 USD 根路徑。
+BOOTSTRAP_SCENE_ROOT = "/World/BootstrapScene"
+# 軌跡回放物件的 USD 根路徑。
+REPLAY_ROOT = "/World/TrajectoryReplay"
+# JPEG 影像品質（1 到 100）。
+JPEG_QUALITY = 85
+# FPV 深度影像發布週期（秒）。
+DEPTH_PUBLISH_PERIOD_S = 0.20
+# 深度相機最小有效距離（公尺）。
+DEPTH_MIN_M = 0.05
+# 深度相機最大有效距離（公尺）。
+DEPTH_MAX_M = 30.0
+# FPV 相機相對機體前方偏移（公尺）。
+FPV_FORWARD_OFFSET_M = 0.45
+# FPV 相機相對機體垂直偏移（公尺）。
+FPV_HEIGHT_M = 0.12
+# FPV 相機注視點前方距離（公尺）。
+FPV_LOOK_AHEAD_M = 3.5
+# FPV 相機注視點垂直偏移（公尺；負值向下）。
+FPV_LOOK_DOWN_M = -0.8
+# FPV 相機焦距。
+FPV_FOCAL_LENGTH = 12.0
+# FPV 相機水平感光面寬度。
+FPV_HORIZONTAL_APERTURE = 28.0
+# 非正式模式的 Observer 視角模式（TOP 或追蹤視角）。
+OBSERVER_MODE = "TOP"
+# 追蹤式 Observer 相機後方距離（公尺）。
+OBSERVER_BACK_DISTANCE_M = 3.2
+# 追蹤式 Observer 相機高度（公尺）。
+OBSERVER_HEIGHT_M = 5.2
+# 追蹤式 Observer 相機側向偏移（公尺）。
+OBSERVER_SIDE_OFFSET_M = 2.2
+# 追蹤式 Observer 相機前方注視距離（公尺）。
+OBSERVER_LOOK_AHEAD_M = 2.5
+# 追蹤式 Observer 相機注視高度偏移（公尺）。
+OBSERVER_LOOK_AT_HEIGHT_M = -1.2
+# TOP Observer 相機高度（公尺）。
+OBSERVER_TOP_HEIGHT_M = 9.0
+# TOP Observer 相機注視高度（公尺）。
+OBSERVER_TOP_LOOK_AT_HEIGHT_M = 0.0
+# Observer 相機焦距。
+OBSERVER_FOCAL_LENGTH = 18.0
+# Observer 相機水平感光面寬度。
+OBSERVER_HORIZONTAL_APERTURE = 22.0
+# 正式資料集 TOP 相機眼睛位置 x, y, z（公尺）。
+FORMAL_OBSERVER_EYE = (0.0, 2.5, 15.0)
+# 正式資料集 TOP 相機注視位置 x, y, z（公尺）。
+FORMAL_OBSERVER_TARGET = (0.0, 2.5, 0.0)
+# 正式資料集 TOP 相機向上方向 x, y, z。
+FORMAL_OBSERVER_UP = (0.0, 1.0, 0.0)
+# 正式資料集 TOP 相機覆蓋寬、高（公尺）。
+FORMAL_OBSERVER_COVERAGE_M = TOP_RGB_COVERAGE_M
+# FPV 與 Observer 相機裁切距離範圍（公尺）。
+CAMERA_CLIPPING_RANGE = (0.05, 10000.0)
+# 相機追蹤平滑係數。
+CAMERA_SMOOTHING = 0.18
+# Bootstrap 預覽模式的目標與正式 episode 共用相同位置。
+GOAL = (TARGET_POS[0], TARGET_POS[1], FLIGHT_ALTITUDE_M)
+# Bootstrap 預覽模式的預設障礙物清單。
+OBSTACLES = ({
+    "name": "BootstrapObstacle_001",
+    "x": -1.5,
+    "y": 1.5,
+    "z": 1.25,
+    "radius": 0.43,
+    "height": 2.5,
+},)
 
 
 def _distance_2d(
@@ -237,22 +364,29 @@ def _is_valid_obstacle_position(
 Radius 是由 radius basis width/depth 計算：
 radius = 0.5 * math.hypot(radius_basis_width, radius_basis_depth)
 """
-def _random_cylinder_spec(rng: random.Random, blocker: bool = False) -> dict:
-    radius_basis_width = rng.uniform(
-        BLOCKER_RADIUS_BASIS_WIDTH_MIN
-        if blocker else RADIUS_BASIS_WIDTH_MIN,
-        RADIUS_BASIS_WIDTH_MAX,
-    )
-    radius_basis_depth = rng.uniform(
-        BLOCKER_RADIUS_BASIS_DEPTH_MIN
-        if blocker else RADIUS_BASIS_DEPTH_MIN,
-        RADIUS_BASIS_DEPTH_MAX,
-    )
-    height = rng.uniform(
-        max(CYLINDER_HEIGHT_MIN, DIRECT_PATH_BLOCKER_HEIGHT_MIN)
-        if blocker else CYLINDER_HEIGHT_MIN,
-        CYLINDER_HEIGHT_MAX,
-    )
+def _random_cylinder_spec(
+    rng: random.Random, blocker: bool = False, special: bool = False
+) -> dict:
+    if special:
+        radius_basis_width = SPECIAL_BLOCKER_RADIUS_BASIS_WIDTH
+        radius_basis_depth = SPECIAL_BLOCKER_RADIUS_BASIS_DEPTH
+        height = SPECIAL_BLOCKER_HEIGHT
+    else:
+        radius_basis_width = rng.uniform(
+            BLOCKER_RADIUS_BASIS_WIDTH_MIN
+            if blocker else RADIUS_BASIS_WIDTH_MIN,
+            RADIUS_BASIS_WIDTH_MAX,
+        )
+        radius_basis_depth = rng.uniform(
+            BLOCKER_RADIUS_BASIS_DEPTH_MIN
+            if blocker else RADIUS_BASIS_DEPTH_MIN,
+            RADIUS_BASIS_DEPTH_MAX,
+        )
+        height = rng.uniform(
+            max(CYLINDER_HEIGHT_MIN, DIRECT_PATH_BLOCKER_HEIGHT_MIN)
+            if blocker else CYLINDER_HEIGHT_MIN,
+            CYLINDER_HEIGHT_MAX,
+        )
     yaw_deg = rng.uniform(OBSTACLE_YAW_MIN_DEG, OBSTACLE_YAW_MAX_DEG)
     # Preserve this legacy draw so every seed keeps its exact geometry and
     # decoration RNG sequence even though obstacle color is now fixed.
@@ -329,7 +463,11 @@ def _generate_obstacles(rng: random.Random) -> list[dict]:
     for blocker_index in range(blocker_count):
         t_min, t_max = DIRECT_PATH_BLOCKER_T_RANGES[blocker_index]
         for _attempt in range(MAX_PLACEMENT_ATTEMPTS):
-            spec = _random_cylinder_spec(rng, blocker=True)
+            spec = _random_cylinder_spec(
+                rng,
+                blocker=True,
+                special=blocker_index == SPECIAL_BLOCKER_INDEX,
+            )
             radius = spec["radius"]
             t = rng.uniform(t_min, t_max)
             lateral_limit = min(
@@ -358,6 +496,11 @@ def _generate_obstacles(rng: random.Random) -> list[dict]:
                 "y": y,
                 "z": 0.5 * spec["height"],
                 "placement_mode": "guaranteed_direct_path_blocker",
+                "variant": (
+                    "special_large"
+                    if blocker_index == SPECIAL_BLOCKER_INDEX
+                    else "standard"
+                ),
             })
             placed.append(spec)
             break
@@ -435,6 +578,37 @@ def _blocked_goal_fixture() -> dict:
     return spec
 
 
+def _collision_walls() -> list[dict]:
+    """Return the four static walls enclosing the navigable mission area."""
+    half_thickness = 0.5 * WALL_THICKNESS_M
+    center_x = 0.5 * (X_MIN + X_MAX)
+    center_y = 0.5 * (Y_MIN + Y_MAX)
+    span_x = X_MAX - X_MIN + 2.0 * WALL_THICKNESS_M
+    span_y = Y_MAX - Y_MIN
+    return [
+        {
+            "name": "Wall_West",
+            "position": [X_MIN - half_thickness, center_y, WALL_HEIGHT_M / 2.0],
+            "size": [WALL_THICKNESS_M, span_y, WALL_HEIGHT_M],
+        },
+        {
+            "name": "Wall_East",
+            "position": [X_MAX + half_thickness, center_y, WALL_HEIGHT_M / 2.0],
+            "size": [WALL_THICKNESS_M, span_y, WALL_HEIGHT_M],
+        },
+        {
+            "name": "Wall_South",
+            "position": [center_x, Y_MIN - half_thickness, WALL_HEIGHT_M / 2.0],
+            "size": [span_x, WALL_THICKNESS_M, WALL_HEIGHT_M],
+        },
+        {
+            "name": "Wall_North",
+            "position": [center_x, Y_MAX + half_thickness, WALL_HEIGHT_M / 2.0],
+            "size": [span_x, WALL_THICKNESS_M, WALL_HEIGHT_M],
+        },
+    ]
+
+
 def generate_episode_scene(
     episode_id: str,
     seed: int,
@@ -480,6 +654,11 @@ def generate_episode_scene(
         "normal_obstacle_count": NUM_OBSTACLES,
         "direct_path_blocker_count": direct_blocker_count,
         "obstacles": obstacles,
+        "walls": _collision_walls(),
+        "wall_collision_bounds": {
+            "east": [X_MIN, X_MAX],
+            "north": [Y_MIN, Y_MAX],
+        },
         "lighting": LIGHTING_CONTRACT,
         "placement_contract": {
             "area": {"x": [X_MIN, X_MAX], "y": [Y_MIN, Y_MAX]},
@@ -549,68 +728,16 @@ else:
 
 
 if ISAAC_RUNTIME_AVAILABLE:
-    VEHICLE_BODY_PATH = "/World/quadrotor/body"
-    POSE_TOPIC = "/isaac_uav/pose"
-    STATUS_TOPIC = "/uav/isaac/runtime_status"
-    FRAME_ID = "isaac_world"
     SCHEMA = "uav_isaac_runtime/v1"
     BOOTSTRAP_SCENE_ID = "bootstrap_fixed_scene_v1"
     SCENE_REVISION = 1
     PUBLISH_PERIOD_S = 0.05
     CAMERA_PUBLISH_PERIOD_S = FORMAL_RGB_PUBLISH_PERIOD_S
-    CAMERA_TOPIC = "/uav/isaac/fpv/image/compressed"
-    CAMERA_PATH = "/World/RuntimeSensors/FPVCamera"
-    OBSERVER_CAMERA_PATH = "/World/RuntimeSensors/ObserverCamera"
-    OBSERVER_CAMERA_TOPIC = "/uav/isaac/observer/image/compressed"
-    DEPTH_TOPIC = "/uav/isaac/fpv/depth/compressed"
-    EPISODE_COMMAND_TOPIC = "/uav/isaac/episode_command"
-    BOOTSTRAP_SCENE_ROOT = "/World/BootstrapScene"
-    SCENE_ROOT = "/World/GeneratedEpisode"
-    REPLAY_ROOT = "/World/TrajectoryReplay"
     CAMERA_WIDTH = FPV_RGB_WIDTH
     CAMERA_HEIGHT = FPV_RGB_HEIGHT
     MSG_WEBRTC_VIEWPORT = (
         "[IsaacRuntimeBridge] WebRTC viewport uses the fixed TOP camera."
     )
-
-    JPEG_QUALITY = 85
-    DEPTH_PUBLISH_PERIOD_S = 0.20
-    DEPTH_MIN_M = 0.05
-    DEPTH_MAX_M = 30.0
-    FPV_FORWARD_OFFSET_M = 0.45
-    FPV_HEIGHT_M = 0.12
-    FPV_LOOK_AHEAD_M = 3.5
-    FPV_LOOK_DOWN_M = -0.8
-    FPV_FOCAL_LENGTH = 12.0
-    FPV_HORIZONTAL_APERTURE = 28.0
-    OBSERVER_MODE = "TOP"
-    OBSERVER_BACK_DISTANCE_M = 3.2
-    OBSERVER_HEIGHT_M = 5.2
-    OBSERVER_SIDE_OFFSET_M = 2.2
-    OBSERVER_LOOK_AHEAD_M = 2.5
-    OBSERVER_LOOK_AT_HEIGHT_M = -1.2
-    OBSERVER_TOP_HEIGHT_M = 9.0
-    OBSERVER_TOP_LOOK_AT_HEIGHT_M = 0.0
-    OBSERVER_FOCAL_LENGTH = 18.0
-    OBSERVER_HORIZONTAL_APERTURE = 22.0
-
-    # 固定的上視圖影像
-    FORMAL_OBSERVER_EYE = (0.0, 2.5, 15.0)
-    FORMAL_OBSERVER_TARGET = (0.0, 2.5, 0.0)
-    FORMAL_OBSERVER_UP = (0.0, 1.0, 0.0)
-    FORMAL_OBSERVER_COVERAGE_M = (20.0, 11.25)
-    CAMERA_CLIPPING_RANGE = (0.05, 10000.0)
-    CAMERA_SMOOTHING = 0.18
-    GOAL = (0.5, 3.0, 1.5)
-    OBSTACLES = ({
-        "name": "BootstrapObstacle_001",
-        "x": -1.5,
-        "y": 1.5,
-        "z": 1.25,
-        "radius": 0.43,
-        "height": 2.5,
-    },)
-
 
     def _world_pose(stage, prim_path):
         prim = stage.GetPrimAtPath(prim_path)
@@ -1026,6 +1153,18 @@ if ISAAC_RUNTIME_AVAILABLE:
             )
             bind_material(floor, materials["floor"])
             self._create_episode_lighting(scene["lighting"])
+            UsdGeom.Xform.Define(self._stage, f"{SCENE_ROOT}/Walls")
+            for source in scene["walls"]:
+                wall = self._create_box(
+                    f"{SCENE_ROOT}/Walls/{source['name']}",
+                    source["size"],
+                    source["position"],
+                    WALL_COLOR,
+                    collision=True,
+                )
+                bind_material(wall, materials["wall"])
+                wall.SetCustomDataByKey("episode:shape", "box")
+                wall.SetCustomDataByKey("episode:collision", True)
             UsdGeom.Xform.Define(
                 self._stage,
                 f"{SCENE_ROOT}/Obstacles",

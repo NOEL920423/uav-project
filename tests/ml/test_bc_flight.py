@@ -21,6 +21,7 @@ from uav_ml.inference.bc_flight import (
     resolve_checkpoint,
     validate_live_image,
 )
+from uav_ml.inference.bc_flight_contract import LIVE_IMAGE_SIZES
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -434,12 +435,15 @@ class BcFlightContractTests(unittest.TestCase):
 
     def test_live_top_resolution_is_exact(self) -> None:
         """Reject a legacy observer resolution under the TOP RGB label."""
+        width, height = LIVE_IMAGE_SIZES["top_rgb"]
         stream = BytesIO()
-        Image.new("RGB", (320, 180)).save(stream, format="JPEG")
-        with self.assertRaisesRegex(ValueError, "must be 640x360"):
+        Image.new("RGB", (width + 1, height + 1)).save(stream, format="JPEG")
+        with self.assertRaisesRegex(
+            ValueError, f"must be {width}x{height}"
+        ):
             validate_live_image(stream.getvalue(), "top_rgb")
         stream = BytesIO()
-        Image.new("RGB", (640, 360)).save(stream, format="JPEG")
+        Image.new("RGB", (width, height)).save(stream, format="JPEG")
         validate_live_image(stream.getvalue(), "top_rgb")
 
     def test_live_fpv_rgb_and_depth_contracts_are_exact(self) -> None:

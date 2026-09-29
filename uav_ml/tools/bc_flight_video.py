@@ -125,6 +125,7 @@ def _annotate_frame(
 
 def render_policy_input_video(
     spool_dir: Path, output_path: Path, *, fps: float = 20.0,
+    metadata_path: Path | None = None,
 ) -> dict:
     """Render annotated policy inputs into an H.264 MP4 on local storage."""
     if fps <= 0.0:
@@ -185,7 +186,10 @@ def render_policy_input_video(
         "fps": fps,
         "timing": "source timestamps; one annotated image per successful inference",
     }
-    metadata_path = output_path.with_name("policy_input_video.json")
+    metadata_path = metadata_path or output_path.with_name(
+        "policy_input_video.json"
+    )
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

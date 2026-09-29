@@ -36,9 +36,11 @@ from uav_data_recorder.expert_dataset_contract import (
     nearest,
     ned_to_body,
     normalize_action,
+    perceptual_hash_jpeg,
     previous,
     recording_window_rejection,
     timestamp_seconds,
+    update_visual_run,
     update_recording_window,
     yaw_from_quaternion,
 )
@@ -65,6 +67,14 @@ AUXILIARY_FIELDS = (
     "fpv_depth_status",
 )
 OBSERVER_SYNCHRONIZATION_TOLERANCE_S = 0.35
+# 是否啟用連續近似 FPV 影像去重。
+ENABLE_IMAGE_DEDUPLICATION = True
+# 感知雜湊的寬與高；8 表示使用 8 x 8 灰階影像比較。
+PERCEPTUAL_HASH_SIZE = 8
+# 兩張影像的感知雜湊 Hamming 距離不大於此值時視為近似。
+PERCEPTUAL_HASH_HAMMING_THRESHOLD = 4
+# 同一段連續近似 FPV 影像最多保留的 sample 數量。
+MAX_CONSECUTIVE_SIMILAR_IMAGES = 3
 RUNTIME_TO_DATASET_STATUS_FIELDS = {
     "fpv_rgb_enabled": "fpv_rgb_enabled",
     "fpv_rgb_ready": "fpv_rgb_ready",
@@ -107,6 +117,20 @@ class ExpertDatasetRecorderNode(Node):
         self.declare_parameter(
             "synchronization_tolerance_s", SYNCHRONIZATION_TOLERANCE_S
         )
+        self.declare_parameter(
+            "enable_image_deduplication", ENABLE_IMAGE_DEDUPLICATION
+        )
+        self.declare_parameter(
+            "perceptual_hash_size", PERCEPTUAL_HASH_SIZE
+        )
+        self.declare_parameter(
+            "perceptual_hash_hamming_threshold",
+            PERCEPTUAL_HASH_HAMMING_THRESHOLD,
+        )
+        self.declare_parameter(
+            "max_consecutive_similar_images",
+            MAX_CONSECUTIVE_SIMILAR_IMAGES,
+        )
         self.dataset_root = Path(
             str(self.get_parameter("dataset_root").value)
         ).expanduser().resolve()
@@ -135,6 +159,20 @@ class ExpertDatasetRecorderNode(Node):
         self.tolerance_s = float(
             self.get_parameter("synchronization_tolerance_s").value
         )
+        self.enable_image_deduplication = bool(
+            self.get_parameter("enable_image_deduplication").value
+        )
+        self.perceptual_hash_size = int(
+            self.get_parameter("perceptual_hash_size").value
+        )
+        self.perceptual_hash_hamming_threshold = int(
+            self.get_parameter(
+                "perceptual_hash_hamming_threshold"
+            ).value
+        )
+        self.max_consecutive_similar_images = int(
+            self.get_parameter("max_consecutive_similar_images").value
+        )
         if not re.fullmatch(r"episode_[0-9]{6,}", self.episode_id):
             raise ValueError(
                 "episode_id must use episode_ followed by at least six digits"
@@ -149,6 +187,14 @@ class ExpertDatasetRecorderNode(Node):
             raise ValueError(
                 "single-episode synchronization tolerance is fixed at 0.100 s"
             )
+        if self.perceptual_hash_size <= 0:
+            raise ValueError("perceptual hash size must be positive")
+        if not 0 <= self.perceptual_hash_hamming_threshold <= (
+            self.perceptual_hash_size * self.perceptual_hash_size
+        ):
+            raise ValueError("perceptual hash threshold is out of range")
+        if self.max_consecutive_similar_images <= 0:
+            raise ValueError("maximum similar image count must be positive")
 
         self.episode_dir = self.dataset_root / self.episode_id
         if self.episode_dir.exists():
@@ -173,6 +219,8 @@ class ExpertDatasetRecorderNode(Node):
         self._rows: list[dict] = []
         self._auxiliary_rows: list[dict] = []
         self._rejections: Counter[str] = Counter()
+        self._last_accepted_image_hash: int | None = None
+        self._consecutive_similar_image_count = 0
         self._timeline: list[dict] = []
         self._last_phase = ""
         self._last_status: Px4FlightStatus | None = None
@@ -280,7 +328,20 @@ class ExpertDatasetRecorderNode(Node):
             "status": "recording",
             "success": False,
             "failure": "episode not finalized",
+            "image_deduplication": self._image_deduplication_metadata(),
         })
+
+    def _image_deduplication_metadata(self) -> dict:
+        """Return the configured visual duplicate filter for provenance."""
+        return {
+            "enabled": self.enable_image_deduplication,
+            "method": "average_perceptual_hash",
+            "hash_size": self.perceptual_hash_size,
+            "hamming_threshold": self.perceptual_hash_hamming_threshold,
+            "max_consecutive_similar_images": (
+                self.max_consecutive_similar_images
+            ),
+        }
 
     @staticmethod
     def _timed(message) -> TimedValue | None:
@@ -510,6 +571,22 @@ class ExpertDatasetRecorderNode(Node):
     def _reject(self, reason: str) -> None:
         self._rejections[reason] += 1
 
+    def _accept_image_for_dataset(self, data: bytes) -> bool:
+        """Enforce the configured cap for one visually similar image run."""
+        if not self.enable_image_deduplication:
+            return True
+        image_hash = perceptual_hash_jpeg(data, self.perceptual_hash_size)
+        accepted, next_hash, next_count = update_visual_run(
+            self._last_accepted_image_hash,
+            self._consecutive_similar_image_count,
+            image_hash,
+            self.perceptual_hash_hamming_threshold,
+            self.max_consecutive_similar_images,
+        )
+        self._last_accepted_image_hash = next_hash
+        self._consecutive_similar_image_count = next_count
+        return accepted
+
     def _process_image(self, image: TimedValue) -> None:
         window_rejection = recording_window_rejection(
             self._recording_start_timestamp_s,
@@ -582,6 +659,14 @@ class ExpertDatasetRecorderNode(Node):
             return
         if not image.value.startswith(b"\xff\xd8"):
             self._reject("image_not_jpeg")
+            return
+        try:
+            accepted_image = self._accept_image_for_dataset(image.value)
+        except ValueError:
+            self._reject("image_perceptual_hash_failed")
+            return
+        if not accepted_image:
+            self._reject("consecutive_similar_image_limit")
             return
         sample_id = len(self._rows) + 1
         relative = (
@@ -819,6 +904,7 @@ class ExpertDatasetRecorderNode(Node):
         episode = {
             "dataset_version": DATASET_VERSION,
             "episode_id": self.episode_id,
+            "image_deduplication": self._image_deduplication_metadata(),
             "random_seed": self.random_seed,
             "scene_configuration": self._scene_configuration,
             "started_utc": self.started_utc,

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from io import BytesIO
+
+from PIL import Image, UnidentifiedImageError
 
 
 DATASET_VERSION = "bc_expert_v1.0"
@@ -41,6 +44,59 @@ class TimedValue:
 
     timestamp_s: float
     value: object
+
+
+def perceptual_hash_jpeg(data: bytes, hash_size: int) -> int:
+    """Return an average perceptual hash for one valid JPEG image."""
+    if not isinstance(hash_size, int) or hash_size <= 0:
+        raise ValueError("perceptual hash size must be a positive integer")
+    try:
+        with Image.open(BytesIO(data)) as image:
+            grayscale = image.convert("L").resize(
+                (hash_size, hash_size), Image.Resampling.LANCZOS
+            )
+            pixels = tuple(
+                grayscale.getpixel((x, y))
+                for y in range(hash_size)
+                for x in range(hash_size)
+            )
+    except (OSError, UnidentifiedImageError) as error:
+        raise ValueError("image is not decodable JPEG data") from error
+    mean = sum(pixels) / len(pixels)
+    return sum(
+        int(value >= mean) << index
+        for index, value in enumerate(pixels)
+    )
+
+
+def perceptual_hash_distance(left: int, right: int) -> int:
+    """Return the Hamming distance between two perceptual hashes."""
+    if left < 0 or right < 0:
+        raise ValueError("perceptual hashes must be nonnegative")
+    return (left ^ right).bit_count()
+
+
+def update_visual_run(
+    previous_hash: int | None,
+    consecutive_count: int,
+    current_hash: int,
+    hamming_threshold: int,
+    maximum_count: int,
+) -> tuple[bool, int, int]:
+    """Accept at most ``maximum_count`` consecutive similar images."""
+    if consecutive_count < 0 or current_hash < 0:
+        raise ValueError("visual run values must be nonnegative")
+    if hamming_threshold < 0 or maximum_count <= 0:
+        raise ValueError("visual run thresholds are invalid")
+    if (
+        previous_hash is None
+        or perceptual_hash_distance(previous_hash, current_hash)
+        > hamming_threshold
+    ):
+        return True, current_hash, 1
+    if consecutive_count >= maximum_count:
+        return False, previous_hash, consecutive_count
+    return True, current_hash, consecutive_count + 1
 
 
 def timestamp_seconds(stamp) -> float:

@@ -536,7 +536,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         self.assertEqual(default_max_attempts(3), 5)
         self.assertEqual(default_max_attempts(100), 150)
 
-    def test_image_validation_failure_is_rejectable_episode_outcome(self) -> None:
+    def test_structural_image_failure_rejects_episode_outcome(self) -> None:
         dataset = self.root / "dataset"
         episode = dataset / "episode_000001"
         episode.mkdir(parents=True)
@@ -555,7 +555,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
             return_value=finalized,
         ), mock.patch(
             "uav_ml.tools.expert_collect.validate_collection_episode",
-            side_effect=ValueError("FPV image is blank/dark"),
+            side_effect=ValueError("FPV image resolution mismatch"),
         ):
             outcome = collector._finalize_real_episode(
                 "episode_000001", command_status=0
@@ -680,7 +680,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         )
         self.assertEqual(scene["episode_id"], "episode_1000000")
 
-    def test_success_metadata_requires_paths_and_stream_rates(self) -> None:
+    def test_success_metadata_records_stream_rate_warnings(self) -> None:
         episode_id = "episode_000001"
         scene = generate_episode_scene(episode_id, 103001, 0.0, 0.0)
         episode = {
@@ -722,22 +722,31 @@ class ExpertCollectionToolTest(unittest.TestCase):
             result["stream_rates_hz"]["observer_rgb"],
             FORMAL_RGB_NOMINAL_RATE_HZ,
         )
-        with self.assertRaisesRegex(ValueError, "observer_rgb"):
-            validate_episode_metadata(formal | {
-                "available_sensor_streams": {
-                    **formal["available_sensor_streams"],
-                    "observer_rgb": {
-                        "received": 84,
-                        "observed_rate_hz": 2.0,
-                        "matched": 42,
-                    },
+        low_rate = validate_episode_metadata(formal | {
+            "available_sensor_streams": {
+                **formal["available_sensor_streams"],
+                "observer_rgb": {
+                    "received": 84,
+                    "observed_rate_hz": 2.0,
+                    "matched": 42,
                 },
-            }, validation)
+            },
+        }, validation)
+        self.assertIn(
+            "observer_rgb",
+            [warning.get("stream") for warning in low_rate["quality_warnings"]],
+        )
         episode["available_sensor_streams"]["fpv_depth"][
             "observed_rate_hz"
         ] = 0.0
-        with self.assertRaisesRegex(ValueError, "fpv_depth"):
-            validate_episode_metadata(episode, validation)
+        low_depth_rate = validate_episode_metadata(episode, validation)
+        self.assertIn(
+            "fpv_depth",
+            [
+                warning.get("stream")
+                for warning in low_depth_rate["quality_warnings"]
+            ],
+        )
 
     def test_progress_contains_required_live_fields(self) -> None:
         display = ProgressDisplay(100, started_monotonic=1.0)

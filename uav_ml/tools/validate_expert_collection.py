@@ -194,6 +194,7 @@ def validate_episode_metadata(episode: dict, validation: dict) -> dict:
         raise ValueError(f"{episode_id}: stream statistics missing")
     stream_counts = {}
     stream_rates = {}
+    quality_warnings = []
     for name in ("fpv_rgb", "fpv_depth", "observer_rgb"):
         details = streams.get(name)
         if (
@@ -228,13 +229,19 @@ def validate_episode_metadata(episode: dict, validation: dict) -> dict:
                 stream_counts[name] < 2
                 or not lower <= stream_rates[name] <= upper
             ):
-                raise ValueError(
-                    f"{episode_id}: {name} stream rate/count is unreasonable"
-                )
+                quality_warnings.append({
+                    "code": "sensor_stream_rate_outside_target",
+                    "stream": name,
+                    "received": stream_counts[name],
+                    "observed_hz": stream_rates[name],
+                    "minimum_hz": lower,
+                    "maximum_hz": upper,
+                })
     return {
         "scene": scene_result,
         "stream_counts": stream_counts,
         "stream_rates_hz": stream_rates,
+        "quality_warnings": quality_warnings,
     }
 
 
@@ -263,6 +270,9 @@ def validate_collection_episode(
     validation["formal_metadata"] = validate_episode_metadata(
         episode, validation
     )
+    validation["quality_warnings"].extend(
+        validation["formal_metadata"]["quality_warnings"]
+    )
     validation["auxiliary_availability"] = _validate_auxiliary(
         dataset_root, episode_id
     )
@@ -273,6 +283,11 @@ def validate_collection_episode(
     ):
         raise ValueError(
             f"{episode_id}: successful episode lacks auxiliary stream joins"
+        )
+    if write_result:
+        validation_path = dataset_root / episode_id / "validation.json"
+        validation_path.write_text(
+            json.dumps(validation, indent=2) + "\n", encoding="utf-8"
         )
     return validation
 
@@ -352,6 +367,7 @@ def validate_collection(
 
     validations = []
     rejection_counts = Counter()
+    quality_warning_counts = Counter()
     auxiliary_counts = Counter()
     state_errors: list[float] = []
     action_errors: list[float] = []
@@ -408,6 +424,9 @@ def validate_collection(
                 state_errors.append(float(row["state_image_error_s"]))
                 action_errors.append(float(row["expert_action_image_error_s"]))
         validations.append(result)
+        quality_warning_counts.update(
+            warning["code"] for warning in result.get("quality_warnings", [])
+        )
         if index == 1 or index % 50 == 0 or index == target:
             print(f"Validated {index}/{target} accepted episodes", file=sys.stderr, flush=True)
 
@@ -438,6 +457,9 @@ def validate_collection(
         "unique_scenes": len(scene_keys),
         "accepted_samples_total": sample_count,
         "rejection_breakdown": dict(sorted(rejection_counts.items())),
+        "quality_warning_counts": dict(
+            sorted(quality_warning_counts.items())
+        ),
         "effective_sampling_rate_hz": _statistics(rates),
         "state_image_synchronization_error_s": _statistics(state_errors),
         "action_image_synchronization_error_s": _statistics(action_errors),

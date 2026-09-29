@@ -8,6 +8,12 @@ from io import BytesIO
 import numpy as np
 from PIL import Image
 
+from isaac.runtime.formal_expert_sensor_contract import (
+    FPV_RGB_HEIGHT,
+    FPV_RGB_WIDTH,
+    TOP_RGB_HEIGHT,
+    TOP_RGB_WIDTH,
+)
 from uav_ml.navigation_imports import add_data_recorder_source_path
 
 
@@ -28,9 +34,9 @@ IMAGE_SOURCE_ALIASES = {
 }
 IMPLEMENTED_IMAGE_SOURCES = frozenset({"top_rgb", "fpv_rgb", "fpv_depth"})
 LIVE_IMAGE_SIZES = {
-    "top_rgb": (640, 360),
-    "fpv_rgb": (320, 180),
-    "fpv_depth": (320, 180),
+    "top_rgb": (TOP_RGB_WIDTH, TOP_RGB_HEIGHT),
+    "fpv_rgb": (FPV_RGB_WIDTH, FPV_RGB_HEIGHT),
+    "fpv_depth": (FPV_RGB_WIDTH, FPV_RGB_HEIGHT),
 }
 
 

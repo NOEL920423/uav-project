@@ -158,7 +158,7 @@ def test_formal_observer_is_fixed_orthographic_without_changing_fpv():
     assert "FORMAL_OBSERVER_EYE = (0.0, 2.5, 15.0)" in source
     assert "FORMAL_OBSERVER_TARGET = (0.0, 2.5, 0.0)" in source
     assert "FORMAL_OBSERVER_UP = (0.0, 1.0, 0.0)" in source
-    assert "FORMAL_OBSERVER_COVERAGE_M = (20.0, 11.25)" in source
+    assert "FORMAL_OBSERVER_COVERAGE_M = TOP_RGB_COVERAGE_M" in source
     assert "UsdGeom.GetStageMetersPerUnit(stage)" in source
     assert "Gf.Camera.APERTURE_UNIT" in source
     assert "UsdGeom.Tokens.orthographic" in setup

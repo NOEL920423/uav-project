@@ -21,6 +21,7 @@ class TerminationConfig:
     east_max_m: float = 5.0
     north_min_m: float = -2.0
     north_max_m: float = 7.0
+    bounds_are_collision_walls: bool = False
 
     def __post_init__(self) -> None:
         """Reject non-finite and contradictory evaluation settings."""
@@ -45,6 +46,8 @@ class TerminationConfig:
             raise ValueError("east bounds are invalid")
         if self.north_min_m >= self.north_max_m:
             raise ValueError("north bounds are invalid")
+        if not isinstance(self.bounds_are_collision_walls, bool):
+            raise ValueError("bounds_are_collision_walls must be bool")
 
 
 def cylinder_clearance_m(
@@ -99,7 +102,11 @@ def select_terminal_reason(
         config.north_min_m <= north_m <= config.north_max_m
         and config.east_min_m <= east_m <= config.east_max_m
     ):
-        return "out_of_bounds"
+        return (
+            "collision"
+            if config.bounds_are_collision_walls
+            else "out_of_bounds"
+        )
     if goal_distance_m <= config.goal_tolerance_m:
         return "success"
     if bc_duration_s >= config.timeout_s:

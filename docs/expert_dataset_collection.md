@@ -73,8 +73,9 @@ canonical sensor runtime with:
 
 - FPV RGB: 320×180 JPEG, quality 85, approximately 5 Hz primary stream.
 - FPV Depth: raw uint16-millimetre PNG, approximately 5 Hz auxiliary stream.
-- Observer RGB: existing Observer geometry, approximately 2 Hz auxiliary
-  stream.
+- Observer RGB: formal TOP resolution and physical coverage are configured
+  together in `isaac/runtime/formal_expert_sensor_contract.py`, approximately
+  5 Hz auxiliary stream.
 
 The BC V1 sample remains unchanged: current FPV preprocessing and frozen
 encoder produce 64 latent values; body velocity (2), body-frame goal direction
@@ -91,13 +92,20 @@ lands, attaches safe terminal evidence, validates the episode, cleans all owned
 process groups, and advances automatically.
 
 Normal mission failures (collision/tracking, blocked scene, safe A*/goal
-failure, image QA failure, or episode dataset validation failure) are finalized,
-recorded as rejected attempts, and do not stop later seeds. Their episode
+failure, structural episode validation failure, or scheduled visual QA artifact
+failure) are finalized, recorded as rejected attempts, and do not stop later seeds. Their episode
 directories remain in place and `rejected_attempts/attempt_XXXXXX.json` indexes
 the seed, category, reason, episode/flight/validation evidence, and runtime log.
 Missing recorder/evidence, unsafe terminal state, corrupt filesystem output,
 runtime readiness failure, internal exception, or loss of process ownership is
 an infrastructure failure; the batch aborts and leaves a resumable manifest.
+
+Image luminance, image dynamic range, and observed sample/sensor rates are
+currently recorded as quality warnings rather than collection rejection gates.
+Episodes still need a successful, safely landed flight and structurally valid,
+synchronized samples with decodable images and finite observations/actions.
+Per-episode warnings are saved in `validation.json`; aggregate warning counts
+are saved in `collection_validation.json` for later threshold review.
 
 Planner readiness accepts both a separately validated B-spline and the
 planner's collision-checked `ASTAR_FALLBACK` final path. A rejected B-spline

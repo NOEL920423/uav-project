@@ -263,6 +263,7 @@ def train(
     early_stopping_patience: int = 1000,
     min_epochs: int = 0,
     latest_index_path: Path | None = None,
+    initialize_from: str | Path | None = None,
 ) -> dict:
     """Train, select on validation MSE, then evaluate the held-out test split."""
     if SummaryWriter is None:
@@ -345,6 +346,32 @@ def train(
     model = RgbAutoencoderV0(
         RgbAutoencoderConfig(latent_dimension=latent_dimension)
     ).to(device)
+    if initialize_from is not None:
+        initial_checkpoint = Path(initialize_from).expanduser().resolve()
+        payload = torch.load(
+            initial_checkpoint, map_location="cpu", weights_only=False
+        )
+        if payload.get("model_class") != "RgbAutoencoderV0":
+            raise ValueError("initial checkpoint model class is not RgbAutoencoderV0")
+        initial_config = RgbAutoencoderConfig(**payload["model_config"])
+        initial_metadata = payload.get("metadata", {})
+        initial_source = initial_metadata.get("image_source")
+        initial_preprocessing = initial_metadata.get("image_preprocessing")
+        if initial_source != image_source:
+            raise ValueError(
+                "initial checkpoint image source does not match training source"
+            )
+        if initial_preprocessing != IMAGE_PREPROCESSING[image_source]:
+            raise ValueError(
+                "initial checkpoint preprocessing does not match training source"
+            )
+        if initial_config != model.config:
+            raise ValueError(
+                "initial checkpoint architecture does not match requested model"
+            )
+        model.load_state_dict(payload["model_state"])
+        model.to(device)
+        print(f"Initialized Autoencoder weights from {initial_checkpoint}", flush=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     fixed_validation = _fixed_validation_images(datasets["validation"])
     metadata = {
@@ -382,6 +409,10 @@ def train(
         "tensorboard_port": tensorboard_port,
         "early_stopping_patience": early_stopping_patience,
         "min_epochs": min_epochs,
+        "initialized_from": (
+            str(Path(initialize_from).expanduser().resolve())
+            if initialize_from is not None else None
+        ),
     }
     training_config = {
         "dataset_name": resolved_dataset_name,
@@ -396,6 +427,10 @@ def train(
         "tensorboard_port": tensorboard_port,
         "early_stopping_patience": early_stopping_patience,
         "min_epochs": min_epochs,
+        "initialized_from": (
+            str(Path(initialize_from).expanduser().resolve())
+            if initialize_from is not None else None
+        ),
     }
     with (output / "training_config.json").open("w", encoding="utf-8") as stream:
         json.dump(training_config, stream, indent=2, sort_keys=True)
@@ -601,6 +636,14 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
     )
     parser.add_argument("--output-dir")
+    parser.add_argument(
+        "--initialize-from",
+        type=Path,
+        help=(
+            "initialize weights from a source-compatible Autoencoder checkpoint; "
+            "optimizer and epoch count start fresh"
+        ),
+    )
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
@@ -684,6 +727,7 @@ def main() -> int:
                 early_stopping_patience=args.patience,
                 min_epochs=args.min_epochs,
                 latest_index_path=latest_index,
+                initialize_from=args.initialize_from,
             )
             print(
                 "=========================================\n"
