@@ -84,6 +84,7 @@ class BcEpisodeMonitorNode(Node):
         self.declare_parameter("episode", 1)
         self.declare_parameter("seed", 0)
         self.declare_parameter("image_source", "top_rgb")
+        self.declare_parameter("start_goal_disk_radius_m", 0.5)
         defaults = TerminationConfig()
         for name in defaults.__dataclass_fields__:
             self.declare_parameter(name, getattr(defaults, name))
@@ -116,6 +117,11 @@ class BcEpisodeMonitorNode(Node):
         self._result_written = False
         self._last_error = ""
         self._trace_samples: list[dict] = []
+        self._last_trace_inference_count = 0
+        self._pending_inference_samples: list[tuple[float, dict]] = []
+        self._start_goal_disk_radius_m = float(
+            self.get_parameter("start_goal_disk_radius_m").value
+        )
 
         qos = control_qos()
         self._termination_publisher = self.create_publisher(
@@ -170,6 +176,30 @@ class BcEpisodeMonitorNode(Node):
             payload = json.loads(message.data)
             if payload.get("schema") == POLICY_STATUS_SCHEMA:
                 self._policy = payload
+                inference_count = int(payload.get("inference_count", 0))
+                inference_position = payload.get("inference_position")
+                north = (
+                    float(inference_position.get("north_m", math.nan))
+                    if isinstance(inference_position, dict) else math.nan
+                )
+                east = (
+                    float(inference_position.get("east_m", math.nan))
+                    if isinstance(inference_position, dict) else math.nan
+                )
+                if (
+                    inference_count > self._last_trace_inference_count
+                    and math.isfinite(north)
+                    and math.isfinite(east)
+                ):
+                    self._pending_inference_samples.append((
+                        self._now_seconds(),
+                        {
+                            "inference_step": inference_count,
+                            "north_m": north,
+                            "east_m": east,
+                        },
+                    ))
+                    self._last_trace_inference_count = inference_count
         except (TypeError, ValueError, json.JSONDecodeError):
             return
 
@@ -249,17 +279,16 @@ class BcEpisodeMonitorNode(Node):
         }
 
     def _record_trace_sample(
-        self, now: float, goal_distance: float, clearance: float
+        self, now: float, position: dict, goal_distance: float,
+        clearance: float,
     ) -> None:
-        if self._odometry is None or self._bc_started_s is None:
+        if self._bc_started_s is None:
             return
-        pose = self._odometry.pose.pose
+        pose = self._odometry.pose.pose if self._odometry is not None else None
         yaw = yaw_from_quaternion(
-            pose.orientation.x,
-            pose.orientation.y,
-            pose.orientation.z,
-            pose.orientation.w,
-        )
+            pose.orientation.x, pose.orientation.y,
+            pose.orientation.z, pose.orientation.w,
+        ) if pose is not None else 0.0
         action_forward = None
         action_right = None
         action_yaw_rate = None
@@ -280,10 +309,10 @@ class BcEpisodeMonitorNode(Node):
         self._trace_samples.append({
             "sample": len(self._trace_samples),
             "time_s": max(0.0, now - self._bc_started_s),
-            "inference_step": self._policy.get("inference_count"),
-            "north_m": float(pose.position.x),
-            "east_m": float(pose.position.y),
-            "down_m": float(pose.position.z),
+            "inference_step": position["inference_step"],
+            "north_m": position["north_m"],
+            "east_m": position["east_m"],
+            "down_m": float(pose.position.z) if pose is not None else None,
             "yaw_rad": yaw,
             "goal_distance_m": self._optional(goal_distance),
             "obstacle_clearance_m": self._optional(clearance),
@@ -314,6 +343,7 @@ class BcEpisodeMonitorNode(Node):
             ),
             "start": self._scene_point(self._start),
             "goal": self._scene_point(self._goal),
+            "start_goal_disk_radius_m": self._start_goal_disk_radius_m,
             "obstacles": obstacles,
             "uav_radius_m": self.config.uav_radius_m,
             "collision_clearance_threshold_m": (
@@ -429,9 +459,35 @@ class BcEpisodeMonitorNode(Node):
     def _tick(self) -> None:
         now = self._now_seconds()
         state = str(self._supervisor.get("state", ""))
+        if (
+            state == BcFlightState.NAVIGATING.value
+            and self._bc_started_s is None
+        ):
+            self._bc_started_s = now
+        if self._bc_started_s is not None and self._pending_inference_samples:
+            pending = self._pending_inference_samples
+            self._pending_inference_samples = []
+            for sample_time, position in pending:
+                sample_goal_distance = self._goal_distance()
+                if self._goal is not None:
+                    sample_goal_distance = math.hypot(
+                        float(self._goal.pose.position.y) - position["north_m"],
+                        float(self._goal.pose.position.x) - position["east_m"],
+                    )
+                sample_clearance = self._clearance()
+                if self._obstacles is not None:
+                    sample_clearance = min((
+                        cylinder_clearance_m(
+                            position["north_m"], position["east_m"],
+                            float(item.center.y), float(item.center.x),
+                            float(item.radius), self.config.uav_radius_m,
+                        ) for item in self._obstacles.obstacles
+                    ), default=math.inf)
+                self._record_trace_sample(
+                    sample_time, position,
+                    sample_goal_distance, sample_clearance,
+                )
         if state == BcFlightState.NAVIGATING.value:
-            if self._bc_started_s is None:
-                self._bc_started_s = now
             goal_distance = self._goal_distance()
             clearance = self._clearance()
             if math.isfinite(goal_distance):
@@ -442,7 +498,6 @@ class BcEpisodeMonitorNode(Node):
                 self._minimum_clearance_m = min(
                     self._minimum_clearance_m, clearance
                 )
-            self._record_trace_sample(now, goal_distance, clearance)
             if (
                 not self._terminal_reason
                 and self._odometry is not None

@@ -177,6 +177,7 @@ class BcPolicyNode(Node):
         self._last_error = "disabled"
         self._image_contract_error = ""
         self._inference_count = 0
+        self._inference_position: dict[str, float] | None = None
         video_spool_value = str(
             self.get_parameter("video_spool_dir").value
         ).strip()
@@ -351,6 +352,10 @@ class BcPolicyNode(Node):
         self._last_command = body_action_to_ned(action, yaw)
         self._previous_action = tuple(float(value) for value in action)
         self._inference_count += 1
+        self._inference_position = {
+            "north_m": float(pose.position.x),
+            "east_m": float(pose.position.y),
+        }
         self._inferred_image_sequence = self._image_sequence
         completed_ns = time.monotonic_ns()
         self._action_origin = {
@@ -416,6 +421,7 @@ class BcPolicyNode(Node):
             "encoder_path": self._identity["encoder_path"],
             "encoder_sha256": self._identity["encoder_sha256"],
             "inference_count": self._inference_count,
+            "inference_position": self._inference_position,
             "image_sequence": self._image_sequence,
         }
         message = String()

@@ -21,7 +21,9 @@ COMMAND_TOPIC = "/uav/isaac/runtime_smoke/command"
 STATUS_TOPIC = "/uav/isaac/runtime_smoke/status"
 SCHEMA = "uav_persistent_runtime_smoke/v1"
 CANONICAL_POSITION = np.array([0.0, 0.0, 0.1], dtype=np.float32)
-CANONICAL_ORIENTATION = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+CANONICAL_ORIENTATION = np.array(
+    [0.70710678, 0.0, 0.0, 0.70710678], dtype=np.float32
+)
 ZERO3 = np.zeros(3, dtype=np.float32)
 ZERO6 = np.zeros(6, dtype=np.float32)
 PUBLISH_PERIOD_S = 0.10

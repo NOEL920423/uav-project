@@ -43,6 +43,7 @@ bc_episode_monitor:
     timeout_s: 45.0
     uav_radius_m: 0.25
     collision_clearance_threshold_m: 0.0
+    start_goal_disk_radius_m: 0.5
     # Inner wall faces are x=[-5, 5], y=[-2, 7].  These limits account
     # for the configured 0.25 m UAV radius, so a wall contact is collision.
     east_min_m: -4.75

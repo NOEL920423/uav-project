@@ -51,19 +51,25 @@ def test_seed_reproduces_configured_obstacle_scene():
     assert "fill" not in left["lighting"]
 
 
-def test_three_qa_seeds_are_distinct_and_obey_canonical_constraints():
-    """QA seeds preserve obstacles, blockers, bounds, disks, and spacing."""
+def test_three_qa_seeds_share_fixed_geometry_and_obey_constraints():
+    """QA seeds keep geometry fixed while preserving scene constraints."""
     scenes = [
         MODULE.generate_episode_scene(
             f"episode_{index:06d}", 102000 + index, 0.0, 0.0
         )
         for index in range(1, 4)
     ]
-    layouts = {
-        tuple((item["x"], item["y"]) for item in scene["obstacles"])
-        for scene in scenes
-    }
-    assert len(layouts) == 3
+    geometry = lambda scene: tuple(
+        tuple(
+            item[key]
+            for key in (
+                "x", "y", "z", "radius_basis_width",
+                "radius_basis_depth", "height", "yaw_deg",
+            )
+        )
+        for item in scene["obstacles"]
+    )
+    assert geometry(scenes[0]) == geometry(scenes[1]) == geometry(scenes[2])
     for scene in scenes:
         obstacles = scene["obstacles"]
         area = scene["placement_contract"]["area"]

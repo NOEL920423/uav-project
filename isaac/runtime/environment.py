@@ -152,6 +152,30 @@ SPECIAL_BLOCKER_RADIUS_BASIS_WIDTH = 0.72
 SPECIAL_BLOCKER_RADIUS_BASIS_DEPTH = 0.72
 # 特大型 blocker 的高度（公尺）。
 SPECIAL_BLOCKER_HEIGHT = 5.20
+# 正式 episode 使用固定障礙物；episode seed 不影響障礙物幾何或外觀。
+FIXED_OBSTACLE_DECORATION_SEED = 0
+FIXED_OBSTACLE_LAYOUT = (
+    {
+        "x": 1.08,
+        "y": 1.80,
+        "radius_basis_width": 0.72,
+        "radius_basis_depth": 0.72,
+        "height": 5.20,
+        "yaw_deg": 0.0,
+        "placement_mode": "guaranteed_direct_path_blocker",
+        "variant": "special_large",
+    },
+    {
+        "x": 1.92,
+        "y": 3.20,
+        "radius_basis_width": 0.64,
+        "radius_basis_depth": 0.64,
+        "height": 4.00,
+        "yaw_deg": 0.0,
+        "placement_mode": "guaranteed_direct_path_blocker",
+        "variant": "standard",
+    },
+)
 
 # 可飛行區域與牆壁內側面的 X 座標範圍（公尺）。
 X_MIN = -5.0
@@ -440,95 +464,48 @@ def _window_contract(spec: dict, rng: random.Random) -> dict:
 
 # 強制生成有擋住的障礙物(blocked)
 def _generate_obstacles(rng: random.Random) -> list[dict]:
-    """Run the canonical obstacle rejection sampler and random call order."""
+    """Build the fixed obstacle geometry and seed-specific building details."""
     placed: list[dict] = []
-    blocker_count = 0
-    if GUARANTEE_DIRECT_PATH_BLOCKERS:
-        blocker_count = min(
-            DIRECT_PATH_BLOCKER_COUNT,
-            NUM_OBSTACLES,
-            len(DIRECT_PATH_BLOCKER_T_RANGES),
+    if len(FIXED_OBSTACLE_LAYOUT) != NUM_OBSTACLES:
+        raise RuntimeError(
+            "fixed obstacle layout must define every configured obstacle"
         )
 
-    start_x, start_y = START_POS[:2]
-    target_x, target_y = TARGET_POS[:2]
-    line_dx = target_x - start_x
-    line_dy = target_y - start_y
-    line_length = math.hypot(line_dx, line_dy)
-    if blocker_count and line_length < 1e-6:
-        raise RuntimeError("cannot place blockers when start and target coincide")
-    normal_x = -line_dy / max(line_length, 1e-6)
-    normal_y = line_dx / max(line_length, 1e-6)
-
-    for blocker_index in range(blocker_count):
-        t_min, t_max = DIRECT_PATH_BLOCKER_T_RANGES[blocker_index]
-        for _attempt in range(MAX_PLACEMENT_ATTEMPTS):
-            spec = _random_cylinder_spec(
-                rng,
-                blocker=True,
-                special=blocker_index == SPECIAL_BLOCKER_INDEX,
-            )
-            radius = spec["radius"]
-            t = rng.uniform(t_min, t_max)
-            lateral_limit = min(
-                DIRECT_PATH_BLOCKER_LATERAL_JITTER_M,
-                spec["blocker_half_extent"] * 0.70,
-            )
-            lateral = rng.uniform(-lateral_limit, lateral_limit)
-            x = start_x + t * line_dx + lateral * normal_x
-            y = start_y + t * line_dy + lateral * normal_y
-            inside_bounds = (
-                X_MIN + radius <= x <= X_MAX - radius
-                and Y_MIN + radius <= y <= Y_MAX - radius
-            )
-            blocks_direct_path = (
-                _point_to_direct_path_distance(x, y)
-                <= spec["blocker_half_extent"]
-            )
-            if not (
-                inside_bounds
-                and blocks_direct_path
-                and _is_valid_obstacle_position(x, y, radius, placed)
-            ):
-                continue
-            spec.update({
-                "x": x,
-                "y": y,
-                "z": 0.5 * spec["height"],
-                "placement_mode": "guaranteed_direct_path_blocker",
-                "variant": (
-                    "special_large"
-                    if blocker_index == SPECIAL_BLOCKER_INDEX
-                    else "standard"
-                ),
-            })
-            placed.append(spec)
-            break
-        else:
-            raise RuntimeError(
-                "could not place a canonical guaranteed direct-path blocker"
-            )
-
-    for _index in range(NUM_OBSTACLES - blocker_count):
-        for _attempt in range(MAX_PLACEMENT_ATTEMPTS):
-            spec = _random_cylinder_spec(rng)
-            radius = spec["radius"]
-            x = rng.uniform(X_MIN + radius, X_MAX - radius)
-            y = rng.uniform(Y_MIN + radius, Y_MAX - radius)
-            if not _is_valid_obstacle_position(x, y, radius, placed):
-                continue
-            spec.update({
-                "x": x,
-                "y": y,
-                "z": 0.5 * spec["height"],
-                "placement_mode": "random",
-            })
-            placed.append(spec)
-            break
-        else:
-            raise RuntimeError(
-                f"could not place canonical obstacle {len(placed) + 1}"
-            )
+    for index, layout in enumerate(FIXED_OBSTACLE_LAYOUT):
+        spec = _random_cylinder_spec(
+            rng,
+            blocker=True,
+            special=index == SPECIAL_BLOCKER_INDEX,
+        )
+        width = float(layout["radius_basis_width"])
+        depth = float(layout["radius_basis_depth"])
+        height = float(layout["height"])
+        radius = 0.5 * math.hypot(width, depth)
+        half_extent = 0.5 * min(width, depth)
+        x = float(layout["x"])
+        y = float(layout["y"])
+        if not (
+            X_MIN + radius <= x <= X_MAX - radius
+            and Y_MIN + radius <= y <= Y_MAX - radius
+            and _is_valid_obstacle_position(x, y, radius, placed)
+            and _point_to_direct_path_distance(x, y) <= half_extent
+            and height >= DIRECT_PATH_BLOCKER_HEIGHT_MIN
+        ):
+            raise RuntimeError(f"invalid fixed obstacle layout entry {index}")
+        spec.update({
+            "x": x,
+            "y": y,
+            "z": 0.5 * height,
+            "radius_basis_width": width,
+            "radius_basis_depth": depth,
+            "height": height,
+            "radius": radius,
+            "blocker_half_extent": half_extent,
+            "yaw_deg": float(layout["yaw_deg"]),
+            "placement_mode": layout["placement_mode"],
+            "variant": layout["variant"],
+        })
+        placed.append(spec)
 
     physical_blockers = [
         item for item in placed
@@ -536,7 +513,7 @@ def _generate_obstacles(rng: random.Random) -> list[dict]:
         <= item["blocker_half_extent"]
         and item["height"] >= DIRECT_PATH_BLOCKER_HEIGHT_MIN
     ]
-    if len(physical_blockers) < blocker_count:
+    if len(physical_blockers) < DIRECT_PATH_BLOCKER_COUNT:
         raise RuntimeError("canonical direct-path blocker validation failed")
 
     for index, spec in enumerate(placed, start=1):
@@ -629,7 +606,9 @@ def generate_episode_scene(
     if _distance_2d(*reset, *START_POS[:2]) > RESET_POSITION_TOLERANCE_M:
         raise ValueError("vehicle reset pose is outside the canonical start margin")
 
-    obstacles = _generate_obstacles(random.Random(int(seed)))
+    obstacles = _generate_obstacles(
+        random.Random(FIXED_OBSTACLE_DECORATION_SEED)
+    )
     direct_blocker_count = sum(
         item["placement_mode"] == "guaranteed_direct_path_blocker"
         for item in obstacles
