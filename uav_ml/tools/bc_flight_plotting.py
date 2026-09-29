@@ -21,6 +21,10 @@ SERIES_FIGURE_SIZE = (9.0, 5.0)
 SUMMARY_FIGURE_SIZE = (9.0, 5.0)
 LINE_WIDTH = 1.8
 MARKER_SIZE = 28
+TRAJECTORY_TITLE_FONT_SIZE = 12
+TRAJECTORY_LABEL_FONT_SIZE = 11
+TRAJECTORY_TICK_FONT_SIZE = 9
+TRAJECTORY_LEGEND_FONT_SIZE = 8
 SHOW_OBSTACLE_LABELS = False
 SHOW_START_GOAL_TEXT = True
 ENABLE_EXTRA_PLOTS = False
@@ -93,19 +97,21 @@ def _trajectory_plot(
     plot_dir: Path, trace: dict, result: dict
 ) -> str | None:
     samples = trace.get("samples", [])
-    points = [
-        (float(item["east_m"]), float(item["north_m"]),
-         float(item["time_s"]))
-        for item in samples
-        if all(_finite(item.get(key)) for key in (
-            "east_m", "north_m", "time_s"
-        ))
-    ]
+    points = []
+    seen_inference_steps = set()
+    for item in samples:
+        if not all(_finite(item.get(key)) for key in ("east_m", "north_m")):
+            continue
+        inference_step = item.get("inference_step")
+        if _finite(inference_step):
+            if inference_step in seen_inference_steps:
+                continue
+            seen_inference_steps.add(inference_step)
+        points.append((float(item["east_m"]), float(item["north_m"])))
     if not points:
         return None
     east = [item[0] for item in points]
     north = [item[1] for item in points]
-    elapsed = [item[2] for item in points]
     figure, axis = plt.subplots(figsize=EPISODE_FIGURE_SIZE)
     for obstacle_index, obstacle in enumerate(trace.get("obstacles", [])):
         if not all(_finite(obstacle.get(key)) for key in (
@@ -146,35 +152,51 @@ def _trajectory_plot(
                 ha="center",
             )
     axis.plot(east, north, color="#264653", linewidth=LINE_WIDTH)
-    colored = axis.scatter(
+    axis.scatter(
         east,
         north,
-        c=elapsed,
-        cmap="viridis",
+        color="#264653",
         s=MARKER_SIZE,
         zorder=3,
+        label="UAV center (one dot per decision)",
     )
-    figure.colorbar(colored, ax=axis, label="BC control time (s)")
     start = trace.get("start") or {
         "east_m": east[0], "north_m": north[0]
     }
     goal = trace.get("goal")
+    disk_radius = float(trace.get("start_goal_disk_radius_m", 0.5))
     if all(_finite(start.get(key)) for key in ("east_m", "north_m")):
-        axis.scatter(
-            [start["east_m"]], [start["north_m"]],
-            marker="o", s=90, color="#2a9d8f", label="Start", zorder=4,
+        axis.add_patch(
+            Circle(
+                (float(start["east_m"]), float(start["north_m"])),
+                disk_radius,
+                facecolor="#2a9d8f", edgecolor="#16756f", alpha=0.24,
+                linewidth=1.8,
+                label=f"Start disk (r={disk_radius:g} m)", zorder=2,
+            )
         )
         if SHOW_START_GOAL_TEXT:
-            axis.annotate("Start", (start["east_m"], start["north_m"]))
+            axis.annotate(
+                "Start", (start["east_m"], start["north_m"]),
+                fontsize=TRAJECTORY_TICK_FONT_SIZE,
+            )
     if goal and all(_finite(goal.get(key)) for key in (
         "east_m", "north_m"
     )):
-        axis.scatter(
-            [goal["east_m"]], [goal["north_m"]],
-            marker="*", s=180, color="#f4a261", label="Goal", zorder=4,
+        axis.add_patch(
+            Circle(
+                (float(goal["east_m"]), float(goal["north_m"])),
+                disk_radius,
+                facecolor="#f4a261", edgecolor="#d97706", alpha=0.28,
+                linewidth=1.8,
+                label=f"Goal disk (r={disk_radius:g} m)", zorder=2,
+            )
         )
         if SHOW_START_GOAL_TEXT:
-            axis.annotate("Goal", (goal["east_m"], goal["north_m"]))
+            axis.annotate(
+                "Goal", (goal["east_m"], goal["north_m"]),
+                fontsize=TRAJECTORY_TICK_FONT_SIZE,
+            )
     axis.scatter(
         [east[-1]], [north[-1]], marker="x", s=110,
         linewidths=2.2, color="black", label="Final BC position", zorder=5,
@@ -185,13 +207,17 @@ def _trajectory_plot(
             color="#d62828", label="Collision", zorder=6,
         )
     axis.set(
-        xlabel="East (m)",
-        ylabel="North (m)",
+        xlabel="x (m)",
+        ylabel="y (m)",
         title=_episode_title(result, "TOP RGB trajectory"),
     )
+    axis.xaxis.label.set_size(TRAJECTORY_LABEL_FONT_SIZE)
+    axis.yaxis.label.set_size(TRAJECTORY_LABEL_FONT_SIZE)
+    axis.title.set_size(TRAJECTORY_TITLE_FONT_SIZE)
+    axis.tick_params(axis="both", labelsize=TRAJECTORY_TICK_FONT_SIZE)
     axis.set_aspect("equal", adjustable="datalim")
     axis.grid(alpha=0.25)
-    axis.legend(loc="best")
+    axis.legend(loc="best", fontsize=TRAJECTORY_LEGEND_FONT_SIZE)
     return _save(figure, plot_dir / f"trajectory_xy_{int(result['episode'])}.png")
 
 
