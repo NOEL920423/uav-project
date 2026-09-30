@@ -33,11 +33,11 @@ STATUS_MARKER_SIZE = 130
 STATUS_BAND_ALPHA = 0.085
 
 PLOT_FILENAMES = {
-    "trajectory": "trajectory_xy.png",
+    "trajectory": "trajectory.png",
     "goal_distance": "goal_distance_vs_time.png",
     "action": "bc_action_vs_time.png",
     "clearance": "obstacle_clearance_vs_time.png",
-    "outcomes": "outcome_summary.png",
+    "outcomes": "summary.png",
     "status": "flight_status_by_episode.png",
     "final_goal": "final_goal_distance_by_episode.png",
     "minimum_goal": "minimum_goal_distance_by_episode.png",
@@ -46,7 +46,7 @@ PLOT_FILENAMES = {
     "path_goal_scatter": "path_length_vs_final_goal_distance.png",
 }
 
-OUTCOME_ORDER = ("success", "collision", "runtime_failure", "out_of_bounds", "timeout")
+OUTCOME_ORDER = ("success", "timeout", "out_of_bounds", "collision", "runtime_failure")
 OUTCOME_LABELS = {
     "runtime_failure": "Control issue",
     "success": "Success",
@@ -419,7 +419,7 @@ def create_summary_plots(run_dir: Path, records: list[dict]) -> list[str]:
             ha="center",
             va="bottom",
         )
-    axis.set(ylabel="Episodes", title="Formal BC closed-loop outcomes")
+    axis.set(ylabel="Episodes", title="Closed-loop outcomes")
     axis.set_ylim(0, max(max(counts), 1) * 1.25)
     axis.grid(axis="y", alpha=0.3)
     paths = [_save(
