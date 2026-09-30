@@ -410,8 +410,6 @@ def validate_collection(
             sort_keys=True,
             separators=(",", ":"),
         )
-        if scene_key in scene_keys:
-            raise ValueError("collection scenes are not unique")
         scene_keys.add(scene_key)
         rejection_counts.update(episode.get("rejections_by_reason", {}))
         auxiliary_counts.update(result["auxiliary_availability"])

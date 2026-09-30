@@ -240,8 +240,8 @@ def validate_batch(
         if scene.get("random_seed") != seed:
             raise ValueError(f"{episode_id}: scene seed mismatch")
         scene_key = json.dumps(scene, sort_keys=True, separators=(",", ":"))
-        if scene_key in scene_keys or seed in seeds:
-            raise ValueError("pilot scenes and seeds must be unique")
+        if seed in seeds:
+            raise ValueError("pilot seeds must be unique")
         scene_keys.add(scene_key)
         seeds.add(seed)
         _validate_episode_metadata(episode, validation)

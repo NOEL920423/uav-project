@@ -1,73 +1,65 @@
-# Phase 5 offline tracking regression contract
+# Phase 5 離線 tracking 回歸規約
 
-## Invariants
+## 不變條件
 
-Every accepted trajectory has frame `px4_ned`, at least two finite points,
-strictly increasing relative timestamps, and a matching fresh true validity
-sample. Receipt time plus configured delay defines the epoch. Duplicate
-identical trajectories do not reset it.
+每個 accepted trajectory 都必須使用 `px4_ned` frame、至少有兩個有限 points、relative
+timestamps 嚴格遞增，且有相符的新鮮 true validity sample。接收時間加上設定延遲定義 epoch。
+完全相同的重複 trajectories 不會重設 epoch。
 
-Every normal command is finite, uses `px4_ned`, has zero `angular.x/y`, obeys
-total, horizontal, vertical, acceleration, yaw-rate, and yaw-acceleration
-limits, and passes the independent validator. Every non-normal output is an
-exact zero HOLD with a nonempty reason. No Phase 5 graph contains a publisher
-whose topic begins `/fmu/in/`.
+每個一般 command 都必須是有限值、使用 `px4_ned`、`angular.x/y` 為零、符合 total、horizontal、
+vertical、acceleration、yaw-rate 和 yaw-acceleration limits，並通過獨立 validator。所有非
+一般輸出都必須是精確零值 HOLD，且附有非空原因。Phase 5 graph 不得包含 topic 以 `/fmu/in/`
+開頭的 publisher。
 
-Terminal success requires final reference time and continuously satisfied
-position, measured-speed, and wrapped-yaw tolerances for the complete settle
-interval. Timeout without settling is a deterministic rejection/HOLD, not a
-success.
+Terminal success 要求抵達 final reference time，且 position、measured speed 和 wrapped yaw
+tolerances 在整段 settle interval 中持續符合。未能穩定即 timeout 時，必須確定性地拒絕並進入
+HOLD，不得回報成功。
 
-## Deterministic fixtures
+## 確定性 fixtures
 
-| # | Fixture | Expected result |
+| # | 測試案例 | 預期結果 |
 |---:|---|---|
-| 1 | straight trajectory | tracking success and `GOAL_HOLD` |
-| 2 | accepted Phase 3 B-spline trajectory | tracking success and `GOAL_HOLD` |
-| 3 | A* fallback trajectory | tracking success and `GOAL_HOLD` |
-| 4 | sharp but dynamically valid trajectory | bounded tracking success |
-| 5 | start-position offset | feedback convergence and success |
-| 6 | constant horizontal disturbance | bounded tracking success with measured error |
-| 7 | duplicate trajectory message | accepted once; epoch unchanged |
-| 8 | stale odometry | `HOLD_STALE_ODOMETRY` within configured timeout |
-| 9 | stale trajectory validity | `HOLD_STALE_TRAJECTORY` within configured timeout |
-| 10 | invalid validity flag | HOLD/rejection with invalid-validity reason |
-| 11 | wrong odometry frame | `HOLD_INVALID_FRAME` |
-| 12 | non-finite odometry | `HOLD_INVALID_COMMAND` with state diagnostic |
-| 13 | backward time jump | `HOLD_TIME_JUMP`; history cleared; fresh sync required |
-| 14 | command speed saturation | valid bounded command and speed saturation flag |
-| 15 | command acceleration saturation | valid bounded command and acceleration flag |
-| 16 | excessive tracking error | `HOLD_TRACKING_ERROR` |
-| 17 | successful goal settling | full settle interval then `GOAL_HOLD` |
-| 18 | terminal not reached | `TERMINAL_NOT_REACHED` and HOLD |
-| 19 | yaw wrap crossing | shortest wrapped yaw feedback and bounded success |
-| 20 | invalid command rejection | independent validator rejects and selects `HOLD_INVALID_COMMAND` |
+| 1 | 直線 trajectory | tracking 成功並進入 `GOAL_HOLD` |
+| 2 | 接受的 Phase 3 B-spline trajectory | tracking 成功並進入 `GOAL_HOLD` |
+| 3 | A* fallback trajectory | tracking 成功並進入 `GOAL_HOLD` |
+| 4 | 尖銳但動態上有效的 trajectory | 有界 tracking 成功 |
+| 5 | 起始位置偏移 | feedback 收斂並成功 |
+| 6 | 固定水平擾動 | tracking 有界成功，並量測誤差 |
+| 7 | 重複 trajectory 訊息 | 只接受一次；epoch 不變 |
+| 8 | 過期 odometry | 在設定的 timeout 內進入 `HOLD_STALE_ODOMETRY` |
+| 9 | trajectory validity 過期 | 在設定的 timeout 內進入 `HOLD_STALE_TRAJECTORY` |
+| 10 | validity flag 無效 | HOLD／拒絕，並提供 validity 無效原因 |
+| 11 | odometry frame 錯誤 | `HOLD_INVALID_FRAME` |
+| 12 | odometry 含非有限值 | `HOLD_INVALID_COMMAND`，並附上 state diagnostic |
+| 13 | 時間倒退 | `HOLD_TIME_JUMP`；清除歷史資料並要求重新同步 |
+| 14 | command 速度飽和 | command 有效且有界，並標示速度飽和 |
+| 15 | command 加速度飽和 | command 有效且有界，並標示加速度飽和 |
+| 16 | tracking 誤差過大 | `HOLD_TRACKING_ERROR` |
+| 17 | 成功抵達目標並穩定 | 完成整段穩定時間後進入 `GOAL_HOLD` |
+| 18 | 未抵達終點 | `TERMINAL_NOT_REACHED` 並進入 HOLD |
+| 19 | yaw 跨越 wrap 邊界 | 使用最短 wrap 方向回授，且有界成功 |
+| 20 | 拒絕無效 command | 獨立 validator 拒絕並選擇 `HOLD_INVALID_COMMAND` |
 
-## Required pure coverage
+## 必要的 pure coverage
 
-- sampler exact endpoints, before/inside/after behavior, every interpolated
-  field, unwrapped-yaw interpolation, invalid timestamps, and non-finite data
-- feedback sign and feedforward composition in NED
-- each bound independently, combined ordered bounds, saturation reporting,
-  HOLD construction, invalid command rejection, and validator independence
-- missing/false/stale inputs, wrong frames, non-finite state, excessive error,
-  backward time, equal time, and fresh synchronization after a jump
-- terminal settling, tolerance break/reset, and terminal timeout
-- fixed-step plant determinism, first-order response, acceleration limiting,
-  disturbance, and default-disabled deterministic noise
-- independent RMSE/max/rate/saturation/HOLD/stale/settling/completion metrics
+- sampler 的精確端點、區間前／內／後行為、每個插值欄位、未 wrap yaw 插值、無效 timestamps
+  與非有限資料
+- NED 中 feedback 符號與 feedforward 組合
+- 各項限制的個別與合併順序套用、飽和回報、HOLD 建立、無效 command 拒絕及 validator 獨立性
+- 輸入缺漏／false／過期、frame 錯誤、state 非有限、誤差過大、時間倒退或相等，以及時間跳變後重新同步
+- 終點穩定、容差中斷／重設與終點 timeout
+- 固定步長 plant 的確定性、一階響應、加速度限制、擾動，以及預設停用的確定性雜訊
+- 獨立的 RMSE／最大值／頻率／飽和／HOLD／過期／穩定／完成度 metrics
 
-## Required ROS graph coverage
+## 必要的 ROS graph coverage
 
-The direct graph consists only of a fixed trajectory publisher, follower,
-offline plant, and finite monitor. It verifies the four output topics, exact
-frames, candidate Twist semantics, continuous bounded commands, state
-progression, metrics, and absence of `/fmu/in/*`. Safety graph fixtures cover
-at least stale odometry and invalid trajectory handling. The full graph adds
-the fixed scene, A*, selected B-spline-or-fallback path, Phase 4
-parameterizer, follower, plant, and monitor, and must end in `GOAL_HOLD`.
+直接 graph 只包含固定 trajectory publisher、follower、offline plant 和有限 monitor。它會驗證
+四個 output topics、精確 frames、candidate Twist semantics、連續有界 commands、state progression、
+metrics，以及不存在 `/fmu/in/*`。Safety graph fixtures 至少涵蓋過期 odometry 與無效
+trajectory。完整 graph 加入固定場景、A*、選定的 B-spline 或 fallback path、Phase 4
+parameterizer、follower、plant 和 monitor，最後必須進入 `GOAL_HOLD`。
 
-Required wrapper gates are:
+必要的 wrapper gates：
 
 ```bash
 ./uav tracking-check
@@ -75,6 +67,5 @@ Required wrapper gates are:
 ./uav full-pipeline-check
 ```
 
-All existing Phase 2-4 unit, launch, wrapper, interface, import, and legacy
-hash regressions remain mandatory. Generated outputs, logs, caches, and model
-artifacts remain untracked.
+既有 Phase 2–4 的 unit、launch、wrapper、interface、import 和 legacy hash regressions 仍是
+必要項目。產生的 outputs、logs、caches 和 model artifacts 不納入版本控制。

@@ -1,12 +1,12 @@
-# Architecture Map
+# 架構導覽
 
-This map covers the formal workflow only:
+本文件只介紹正式工作流程：
 
 ```text
 expert-collect -> ae-train -> bc-train -> bc-eval
 ```
 
-## Formal training flow
+## 正式訓練流程
 
 ```text
 ./uav expert-collect
@@ -28,9 +28,9 @@ expert-collect -> ae-train -> bc-train -> bc-eval
   -> frozen AE + expert dataset -> LatentBcPolicy checkpoint
 ```
 
-`ae-train` and `bc-train` are ROS-, Isaac-, and PX4-independent.
+`ae-train` 和 `bc-train` 不依賴 ROS、Isaac 或 PX4。
 
-## Formal BC closed-loop flow
+## 正式 BC closed-loop 流程
 
 ```text
 ./uav bc-eval
@@ -52,57 +52,58 @@ bc_flight_supervisor + bc_episode_monitor
   -> lifecycle, termination, result JSON, traces, plots
 ```
 
-`bc-eval` is the formal Isaac/Pegasus/PX4 path.
+`bc-eval` 是正式的 Isaac/Pegasus/PX4 飛行評估流程。
 
-## Main ROS 2 nodes
+## 主要 ROS 2 nodes
 
-| Node | Formal use | Role |
+| Node | 正式用途 | 職責 |
 |---|---|---|
-| `scene_bridge` | collection, BC eval | Isaac pose/status -> validated scene obstacles, start, goal |
-| `astar_planner` | collection | Scene -> A* path |
-| `trajectory_parameterizer` | collection | Path -> timed trajectory |
-| `trajectory_follower` | collection | Trajectory -> `ASTAR_EXPERT` command candidate |
-| `expert_dataset_recorder` | collection | Synchronizes images, odometry, expert command and flight evidence into episodes |
-| `px4_odometry_bridge` | collection, BC eval | PX4 vehicle odometry -> ROS odometry |
-| `control_mux` | collection, BC eval | Selects exactly one command source |
-| `px4_live_telemetry_adapter` | collection, BC eval | PX4 status/control/odometry/failsafe -> gate-facing telemetry |
-| `px4_mapping_gate` | collection, BC eval | Fail-closed command validation and PX4 candidate mapping |
-| `px4_setpoint_streamer` | collection, BC eval | Sole trajectory-setpoint/offboard-mode publisher to PX4 |
-| `px4_vehicle_command_owner` | collection, BC eval | Sole vehicle-command publisher to PX4 |
-| `px4_sitl_flight_supervisor`, `px4_sitl_flight_monitor` | collection | Expert mission lifecycle and evidence |
-| `bc_policy` | BC eval | TOP RGB AE+BC inference -> BC command candidate |
-| `bc_flight_supervisor` | BC eval | Arm/takeoff/enable/landing lifecycle |
-| `bc_episode_monitor` | BC eval | Goal/collision/timeout decision and result artifact |
+| `scene_bridge` | 資料收集、BC 評估 | Isaac pose/status -> 經驗證的場景障礙物、起點與終點 |
+| `astar_planner` | 資料收集 | Scene -> A* 路徑 |
+| `trajectory_parameterizer` | 資料收集 | Path -> timed trajectory |
+| `trajectory_follower` | 資料收集 | Trajectory -> `ASTAR_EXPERT` command candidate |
+| `expert_dataset_recorder` | 資料收集 | 將影像、odometry、expert command 和飛行證據同步記錄成 episodes |
+| `px4_odometry_bridge` | 資料收集、BC 評估 | PX4 vehicle odometry -> ROS odometry |
+| `control_mux` | 資料收集、BC 評估 | 唯一選取一個 command source |
+| `px4_live_telemetry_adapter` | 資料收集、BC 評估 | 將 PX4 status/control/odometry/failsafe 轉為 gate 使用的 telemetry |
+| `px4_mapping_gate` | 資料收集、BC 評估 | Fail-closed command 驗證與 PX4 candidate mapping |
+| `px4_setpoint_streamer` | 資料收集、BC 評估 | 唯一向 PX4 發布 trajectory-setpoint/offboard-mode 的 node |
+| `px4_vehicle_command_owner` | 資料收集、BC 評估 | 唯一向 PX4 發布 vehicle command 的 node |
+| `px4_sitl_flight_supervisor`, `px4_sitl_flight_monitor` | 資料收集 | Expert 任務生命週期與飛行證據 |
+| `bc_policy` | BC 評估 | TOP RGB AE+BC 推論 -> BC command candidate |
+| `bc_flight_supervisor` | BC 評估 | Arm/takeoff/enable/landing 生命週期 |
+| `bc_episode_monitor` | BC 評估 | 判定 goal/collision/timeout 並產生結果 artifact |
 
-## Launch graphs
+## Launch graph 對照
 
-| Launch file | Used by | Nodes unique to the graph |
+| Launch file | 使用者 | 該 graph 專屬的 nodes |
 |---|---|---|
-| `uav_px4_control/launch/px4_sitl_flight.launch.py` | `expert-collect` | A* planner, parameterizer, follower, expert recorder, expert supervisor/monitor |
-| `uav_px4_control/launch/bc_flight.launch.py` | `bc-eval` | BC policy, BC supervisor, BC episode monitor; intentionally no planner/follower |
+| `uav_px4_control/launch/px4_sitl_flight.launch.py` | `expert-collect` | A* planner、parameterizer、follower、expert recorder、expert supervisor/monitor |
+| `uav_px4_control/launch/bc_flight.launch.py` | `bc-eval` | BC policy、BC supervisor、BC episode monitor；刻意不包含 planner/follower |
 
-## Classification
+## 分類
 
-### ACTIVE
+### 主要元件
 
 - `uav`
 - `uav_ml/tools/{expert_collect,persistent_runtime,bc_baseline,bc_flight_evaluation,training_cli}.py`
 - `uav_ml/train_autoencoder.py`, `uav_ml/train_bc.py`
-- Formal dataset, AE/BC model, and BC inference modules
+- 正式 dataset、AE/BC model 與 BC inference modules
 - `isaac/runtime/{bootstrap,environment,formal_expert_sensor_contract}.py`
-- Active nodes and launch/config files named above from `uav_navigation`, `uav_scene_bridge`, `uav_data_recorder`, and `uav_px4_control`
+- 上述來自 `uav_navigation`、`uav_scene_bridge`、`uav_data_recorder` 和 `uav_px4_control` 的
+  active nodes 與 launch/config files
 
-### SUPPORT
+### 支援元件
 
-- Expert collection validation/finalization/visual-QA helpers
-- BC flight plotting helper
-- Formal navigation and PX4 configuration YAML files
+- Expert 資料收集驗證、finalization 與 visual-QA helpers
+- BC 飛行繪圖 helper
+- 正式 navigation 與 PX4 設定 YAML files
 
-### DIAGNOSTIC
+### 診斷工具
 
 - `scripts/diagnostics/summarize_bc_startup.py`
-- Offline harnesses, comparison tools, smoke checks, and PX4 diagnostic launch paths
+- Offline harnesses、比較工具、smoke checks 與 PX4 診斷 launch paths
 
-### Outside the formal flow
+### 不屬於正式流程
 
-- `uav_camera_bridge` and `uav_bringup/uav_system_scaffold.launch.py`: scaffold nodes, not launched by the formal graphs.
+- `uav_camera_bridge` 和 `uav_bringup/uav_system_scaffold.launch.py` 是 scaffold nodes，不會由正式 graph 啟動。

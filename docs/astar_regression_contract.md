@@ -1,12 +1,11 @@
-# A* deterministic regression contract
+# A* 確定性回歸規約
 
-## Purpose
+## 目的
 
-These tests lock safety and externally meaningful behavior without depending on
-fragile full grid-cell sequences. All fixtures are pure Python unless marked as
-the offline ROS integration fixture.
+這些測試固定安全性與外部可觀察的重要行為，不依賴脆弱的完整 grid-cell
+序列。除非特別標示為離線 ROS 整合 fixture，否則所有 fixture 都是純 Python。
 
-## Coordinate fixtures
+## 座標 fixture
 
 - Origin and `+X/+Y/+Z` basis mapping.
 - Exact inverse and fixed-seed finite-point round trips.
@@ -15,7 +14,7 @@ the offline ROS integration fixture.
 - Planar heading and yaw conversions use explicit conventions.
 - Non-finite values fail; quaternion conversion remains unsupported.
 
-## Safety-envelope fixtures
+## 安全範圍 fixture
 
 - Planning radius equals obstacle radius plus 0.18 m physical radius plus
   0.13 m static margin by default.
@@ -26,54 +25,49 @@ the offline ROS integration fixture.
 - Overflight tests cover clearly short, exact threshold, slightly tall,
   disabled mode, and negative/non-finite height rejection.
 
-## Planner fixtures
+## Planner 測試案例
 
-1. No obstacles yields a safe direct final path.
-2. One direct blocker yields a path around the validation envelope.
-3. A gap wider than two validation radii remains passable.
-4. A narrower gap is rejected or routed around, never crossed.
-5. A near-obstacle start outside the validation envelope is valid.
-6. A start inside the planning/validation forbidden region fails structurally.
-7. A forbidden goal fails structurally.
-8. A short obstacle is filtered and the direct path remains available.
-9. A tall obstacle is retained and avoided.
-10. A complete barrier within explicit allowed bounds yields `no path`.
-11. Successful raw, simplified, and final paths preserve exact endpoints.
-12. An unsafe RDP shortcut is rejected in favor of a safe fallback.
-13. The fallback selector accepts a validated raw path when supplied
-    simplification candidates are unsafe.
-14. Repeated identical inputs and configuration produce identical results.
+1. 沒有障礙物時，應產生安全的直接最終路徑。
+2. 單一直接阻擋物會使路徑繞過 validation envelope。
+3. 寬度大於兩倍 validation radius 的通道仍可通行。
+4. 較窄的通道會被拒絕或繞行，不得穿越。
+5. 起點靠近障礙物但位於 validation envelope 外時，仍視為有效。
+6. 起點位於 planning/validation 禁止區域內時，應以結構化錯誤結束。
+7. 目標位於禁止區域時，應以結構化錯誤結束。
+8. 矮障礙物會被篩除，並保留直接路徑。
+9. 高障礙物會保留並由路徑避開。
+10. 完全阻擋且位於明確允許範圍內的障礙牆，結果應為 `no path`。
+11. 成功時，raw、simplified 和 final paths 都必須保留精確端點。
+12. 不安全的 RDP shortcut 或 simplification candidate 會被拒絕，並改採安全 fallback。
+13. 提供經驗證的 raw path 時，fallback selector 會接受該路徑。
+14. 輸入和設定完全相同時，重複執行必須得到相同結果。
 
-Assertions target success/failure, endpoint equality, continuous clearance,
-side/route properties, bounded path length, deterministic equality, fallback
-reason, and structured diagnostics. Exact full grid sequences are asserted only
-for repeated identical runs.
+斷言涵蓋成功/失敗、端點相等、連續淨空距離、路徑側向/路線特性、路徑長度上限、
+確定性結果、fallback 原因與結構化診斷。只有重複執行相同輸入時，才會斷言完整
+grid 序列完全相同。
 
-## Validation and metrics contract
+## 驗證與 metrics 規約
 
-- Every input point must be finite and a path must contain two distinct
-  endpoints.
-- Expected start and goal must match exactly within the configured numerical
-  tolerance.
-- Every segment is checked against every validation radius.
-- An error names both segment index and obstacle when collision occurs.
-- Optional planning bounds and maximum waypoint spacing are validated.
-- Metrics include point counts, 2D path length, physical obstacle clearance,
-  mean/max segment length, and mean/max/variance of absolute heading changes.
-- Geometric metrics must not be labeled as flight smoothness, acceleration,
-  jerk, or tracking performance.
+- 每個輸入點都必須是有限值，且路徑至少包含兩個不同的端點。
+- 預期起點和終點必須在設定的數值容差內完全相符。
+- 每一條線段都必須依所有 validation radii 逐一檢查。
+- 發生碰撞時，錯誤訊息必須指出線段索引和障礙物。
+- 同時驗證選用的 planning bounds 與 waypoint 最大間距。
+- Metrics 包含點數、2D 路徑長度、實際障礙物淨空距離、線段長度平均值／最大值，以及絕對
+  heading 變化的平均值／最大值／變異數。
+- Geometric metrics 不得標示為飛行平順度、加速度、jerk 或 tracking performance。
 
-## ROS offline fixture
+## ROS 離線測試案例
 
-The offline harness publishes a fixed `isaac_world` obstacle/start/goal scene,
-waits for raw/simplified/final paths and success status, then verifies:
+離線 harness 發布固定的 `isaac_world` 障礙物/起點/終點場景，等待 raw、simplified、
+final paths 與 success status，接著驗證：
 
-- all three paths were received;
-- final frame is `px4_ned`;
-- exact converted start/goal are preserved;
-- continuous validation succeeds;
-- no `/fmu/in/*` topic exists.
+- 收到三種 paths；
+- final frame 為 `px4_ned`；
+- 轉換後的起點和終點精確保留；
+- continuous validation 通過；
+- 不存在 `/fmu/in/*` topic。
 
-It uses no Isaac, Pegasus, PX4, XRCE-DDS, camera, recorder, or controller
-process. A launch timeout may stop the persistent planner after the harness
-exits and must be reported as an expected timeout rather than a test failure.
+此流程不會啟動 Isaac、Pegasus、PX4、XRCE-DDS、camera、recorder 或 controller
+process。Harness 結束後，launch timeout 可能停止持續執行的 planner；應將此情況
+回報為預期 timeout，而不是測試失敗。
