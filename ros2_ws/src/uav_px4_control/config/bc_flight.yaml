@@ -5,6 +5,8 @@ bc_policy:
     odometry_freshness_timeout_s: 0.25
     command_publish_rate_hz: 20.0
     inference_timeout_s: 0.50
+    # Keep aligned with px4_mapping_gate.selected_command_timeout_s.
+    action_freshness_timeout_s: 0.25
 
 # 飛行與終止參數
 bc_flight_supervisor:
@@ -24,6 +26,7 @@ bc_flight_supervisor:
 
 px4_mapping_gate:
   ros__parameters:
+    selected_command_timeout_s: 0.25
     telemetry_timeout_s: 0.75
     lock_vehicle_state_signature: false
     allow_controlled_mux_handoff: true

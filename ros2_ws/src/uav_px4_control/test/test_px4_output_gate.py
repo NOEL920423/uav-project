@@ -277,6 +277,40 @@ def test_explicit_flight_config_allows_healthy_vehicle_state_transition():
     assert not changed.fault_latched
 
 
+def test_armed_vehicle_does_not_require_arm_checks_to_remain_true():
+    """PX4 pre-flight checks describe arm eligibility, not in-flight health."""
+    gate = Px4OutputSafetyGate(Px4MappingConfig(
+        lock_vehicle_state_signature=False
+    ))
+    enable_healthy(gate)
+    result = step(
+        gate,
+        1.02,
+        vehicle=telemetry(
+            1.02,
+            timestamp_us=1_020_000,
+            arming_state=2,
+            nav_state=14,
+            offboard_active=True,
+            pre_flight_checks_pass=False,
+        ),
+    )
+    assert result.state == Px4OutputGateState.SAFE_TO_FORWARD
+    assert result.safe_to_forward
+    assert not result.fault_latched
+
+
+def test_disarmed_vehicle_still_requires_preflight_checks():
+    """Arm eligibility remains required before PX4 has armed the vehicle."""
+    gate = Px4OutputSafetyGate()
+    result = step(
+        gate,
+        vehicle=telemetry(pre_flight_checks_pass=False),
+    )
+    assert result.state == Px4OutputGateState.WAITING_VEHICLE_STATE
+    assert not result.safe_to_forward
+
+
 def test_waiting_inputs_are_explicit_while_disabled() -> None:
     """Missing startup evidence uses an explicit waiting state."""
     gate = Px4OutputSafetyGate()

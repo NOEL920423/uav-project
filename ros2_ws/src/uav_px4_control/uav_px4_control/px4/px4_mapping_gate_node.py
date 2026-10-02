@@ -10,7 +10,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool
 
 from uav_interfaces.msg import (
     ControlMuxStatus,
@@ -24,7 +24,6 @@ from uav_px4_control.diagnostics import TimingRecorder, timed_callback
 from uav_px4_control.control.control_mux_node import (
     MUX_STATUS_TOPIC,
     SELECTED_COMMAND_TOPIC,
-    SOURCE_TOPIC,
     control_qos,
 )
 from uav_px4_control.control.control_source_models import (
@@ -77,9 +76,14 @@ class Px4MappingGateNode(Node):
         self.gate = Px4OutputSafetyGate(self.config)
         self._selected_message: TwistStamped | None = None
         self._selected_receipt_time_s: float | None = None
-        self._source = ""
         self._mux_status: ControlMuxStatus | None = None
         self._mux_receipt_time_s: float | None = None
+        self._coherent_selected_message: TwistStamped | None = None
+        self._coherent_selected_receipt_time_s: float | None = None
+        self._coherent_mux_status: ControlMuxStatus | None = None
+        self._coherent_mux_receipt_time_s: float | None = None
+        self._coherent_pair_stamp: tuple[int, int] | None = None
+        self._pair_mismatch_started_s: float | None = None
         self._telemetry: Px4TelemetryState | None = None
         self._last_candidate_timestamp_us: int | None = None
         self._last_result: Px4OutputGateResult | None = None
@@ -89,9 +93,6 @@ class Px4MappingGateNode(Node):
             SELECTED_COMMAND_TOPIC,
             self._selected_callback,
             qos,
-        )
-        self.create_subscription(
-            String, SOURCE_TOPIC, self._source_callback, qos
         )
         self.create_subscription(
             ControlMuxStatus,
@@ -132,15 +133,49 @@ class Px4MappingGateNode(Node):
         self._timing.receive(SELECTED_COMMAND_TOPIC, message)
         self._selected_message = message
         self._selected_receipt_time_s = self._now_seconds()
+        self._refresh_coherent_pair()
 
-    @timed_callback
-    def _source_callback(self, message: String) -> None:
-        self._source = message.data
+    @staticmethod
+    def _header_stamp_key(message) -> tuple[int, int]:
+        stamp = message.header.stamp
+        return int(stamp.sec), int(stamp.nanosec)
+
+    def _refresh_coherent_pair(self) -> None:
+        """Join mux status and its selected command by their shared stamp."""
+        selected = self._selected_message
+        mux = self._mux_status
+        if selected is None or mux is None:
+            return
+        selected_stamp = self._header_stamp_key(selected)
+        mux_stamp = self._header_stamp_key(mux)
+        if selected_stamp != mux_stamp:
+            if self._pair_mismatch_started_s is None:
+                self._pair_mismatch_started_s = self._now_seconds()
+            return
+        if selected_stamp != self._coherent_pair_stamp:
+            self._coherent_selected_message = selected
+            self._coherent_selected_receipt_time_s = (
+                self._selected_receipt_time_s
+            )
+            self._coherent_mux_status = mux
+            self._coherent_mux_receipt_time_s = self._mux_receipt_time_s
+            self._coherent_pair_stamp = selected_stamp
+        if self._pair_mismatch_started_s is not None:
+            mismatch_ms = (
+                self._now_seconds() - self._pair_mismatch_started_s
+            ) * 1000.0
+            self._timing.record(
+                "mux_pair_recovered",
+                mismatch_duration_ms=mismatch_ms,
+                stamp=selected_stamp,
+            )
+            self._pair_mismatch_started_s = None
 
     @timed_callback
     def _mux_callback(self, message: ControlMuxStatus) -> None:
         self._mux_status = message
         self._mux_receipt_time_s = self._now_seconds()
+        self._refresh_coherent_pair()
 
     @timed_callback
     def _telemetry_callback(self, message: Px4SyntheticTelemetry) -> None:
@@ -165,8 +200,8 @@ class Px4MappingGateNode(Node):
         )
 
     def _mux_evidence(self) -> MuxHealthEvidence | None:
-        message = self._mux_status
-        receipt = self._mux_receipt_time_s
+        message = self._coherent_mux_status
+        receipt = self._coherent_mux_receipt_time_s
         if message is None or receipt is None:
             return None
         return MuxHealthEvidence(
@@ -184,9 +219,10 @@ class Px4MappingGateNode(Node):
         Px4VelocitySetpointCandidate | None,
         CandidateValidation | None,
     ]:
-        message = self._selected_message
-        receipt = self._selected_receipt_time_s
-        if message is None or receipt is None or not self._source:
+        message = self._coherent_selected_message
+        receipt = self._coherent_selected_receipt_time_s
+        mux_message = self._coherent_mux_status
+        if message is None or receipt is None or mux_message is None:
             return None, None
         try:
             timestamp_us = ros_stamp_to_microseconds(
@@ -194,7 +230,7 @@ class Px4MappingGateNode(Node):
                 message.header.stamp.nanosec,
             )
             command = ControlCommand(
-                source=self._source,
+                source=mux_message.active_source,
                 timestamp_s=_stamp_seconds(message.header.stamp),
                 frame_id=message.header.frame_id,
                 linear=Vector3(
@@ -268,6 +304,10 @@ class Px4MappingGateNode(Node):
                 ),
                 "telemetry_timeout_s": self.config.telemetry_timeout_s,
                 "command_timeout_s": self.config.selected_command_timeout_s,
+                "mux_pair_stamp": self._coherent_pair_stamp,
+                "mux_pair_mismatch_active": (
+                    self._pair_mismatch_started_s is not None
+                ),
             }
             self.get_logger().info("BC_STARTUP_DIAG " + json.dumps(payload))
             self._timing.record(

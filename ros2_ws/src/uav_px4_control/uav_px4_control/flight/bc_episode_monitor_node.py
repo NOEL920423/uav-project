@@ -84,6 +84,7 @@ class BcEpisodeMonitorNode(Node):
         self.declare_parameter("episode", 1)
         self.declare_parameter("seed", 0)
         self.declare_parameter("image_source", "top_rgb")
+        self.declare_parameter("record_trajectory_trace", True)
         self.declare_parameter("start_goal_disk_radius_m", 0.5)
         defaults = TerminationConfig()
         for name in defaults.__dataclass_fields__:
@@ -98,6 +99,9 @@ class BcEpisodeMonitorNode(Node):
         self._episode = int(self.get_parameter("episode").value)
         self._seed = int(self.get_parameter("seed").value)
         self._image_source = str(self.get_parameter("image_source").value)
+        self._record_trajectory_trace = bool(
+            self.get_parameter("record_trajectory_trace").value
+        )
         self._start: PoseStamped | None = None
         self._goal: PoseStamped | None = None
         self._obstacles: ObstacleArray | None = None
@@ -187,7 +191,8 @@ class BcEpisodeMonitorNode(Node):
                     if isinstance(inference_position, dict) else math.nan
                 )
                 if (
-                    inference_count > self._last_trace_inference_count
+                    self._record_trajectory_trace
+                    and inference_count > self._last_trace_inference_count
                     and math.isfinite(north)
                     and math.isfinite(east)
                 ):
@@ -433,7 +438,9 @@ class BcEpisodeMonitorNode(Node):
             "final_yaw_rad": yaw,
             "collision_detector": COLLISION_DETECTOR,
             "physics_contact_verified": False,
-            "trace_file": TRACE_FILENAME,
+            "trace_file": (
+                TRACE_FILENAME if self._record_trajectory_trace else None
+            ),
             "completed_utc": time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
             ),
@@ -442,7 +449,8 @@ class BcEpisodeMonitorNode(Node):
     def _write_result(self, now: float) -> None:
         payload = self._result(now)
         self._result_path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_trace()
+        if self._record_trajectory_trace:
+            self._write_trace()
         temporary = self._result_path.with_suffix(
             self._result_path.suffix + ".tmp"
         )

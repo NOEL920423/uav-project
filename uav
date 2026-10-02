@@ -203,6 +203,7 @@ clean_environment_command() {
     for persistent_variable in \
         UAV_TIMING_DIR \
         UAV_TIMING_SCHED_SECONDS \
+        UAV_BC_FLIGHT_DIAGNOSTICS \
         UAV_EXPERT_SCENE_PREPARED \
         UAV_EXPERT_RUNTIME_GENERATION \
         UAV_EXPERT_SCENE_REVISION \
@@ -850,8 +851,10 @@ internal_bc_flight_run() {
     local checkpoint_path="$5"
     local ml_python="$6"
     local device="$7"
-    local video_spool_dir
-    video_spool_dir="$(dirname -- "$result_path")/policy_input_frames"
+    local video_spool_dir=""
+    if [[ "${UAV_BC_FLIGHT_DIAGNOSTICS:-1}" == "1" ]]; then
+        video_spool_dir="$(dirname -- "$result_path")/policy_input_frames"
+    fi
     clean_bootstrap required
     require_px4_msgs
     local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-180}"

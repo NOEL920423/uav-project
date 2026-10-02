@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import math
 from pathlib import Path
+from collections.abc import Sequence
 
 import numpy as np
 from PIL import Image
@@ -23,6 +24,19 @@ IMAGE_PREPROCESSING = {
         "linear [0,1] -> repeat 3 channels -> bilinear 128x72"
     ),
 }
+
+
+def normalize_image_sources(image_sources: Sequence[str]) -> tuple[str, ...]:
+    """Validate and preserve the requested image-source order."""
+    sources = tuple(str(source).strip().lower() for source in image_sources)
+    if not sources:
+        raise ValueError("at least one image source is required")
+    if len(set(sources)) != len(sources):
+        raise ValueError("image sources must not contain duplicates")
+    unsupported = [source for source in sources if source not in IMAGE_SOURCES]
+    if unsupported:
+        raise ValueError(f"unsupported image sources: {', '.join(unsupported)}")
+    return sources
 
 
 def _read_rows(path: Path) -> list[dict[str, str]]:
@@ -138,6 +152,55 @@ def select_episode_images(
     return selected
 
 
+def select_episode_image_sets(
+    dataset_root: Path, episode_id: str, image_sources: Sequence[str]
+) -> list[dict[str, object]]:
+    """Resolve a timestamp-matched image bundle for each primary sample."""
+    sources = normalize_image_sources(image_sources)
+    selected_by_source = {
+        source: select_episode_images(dataset_root, episode_id, source)
+        for source in sources
+    }
+    primary = selected_by_source[sources[0]]
+    for source in sources[1:]:
+        rows = selected_by_source[source]
+        if len(rows) != len(primary):
+            raise ValueError(f"{episode_id}: {source} row count mismatch")
+        for index, (primary_row, row) in enumerate(zip(primary, rows)):
+            if row["sample_id"] != primary_row["sample_id"]:
+                raise ValueError(
+                    f"{episode_id}: {source} sample identity mismatch at row {index}"
+                )
+    for source in sources:
+        if source == "fpv_rgb":
+            continue
+        tolerance = 0.001 if source == "top" else 0.10
+        for row in selected_by_source[source]:
+            if float(row["source_error_s"]) > tolerance + 1e-9:
+                raise ValueError(
+                    f"{episode_id}: {source} is not synchronized closely enough "
+                    f"for multi-image input at sample {row['sample_id']}"
+                )
+    return [
+        {
+            **primary_row,
+            "images": {
+                source: selected_by_source[source][index]["image_path"]
+                for source in sources
+            },
+            "source_timestamps_s": {
+                source: selected_by_source[source][index]["source_timestamp_s"]
+                for source in sources
+            },
+            "source_errors_s": {
+                source: selected_by_source[source][index]["source_error_s"]
+                for source in sources
+            },
+        }
+        for index, primary_row in enumerate(primary)
+    ]
+
+
 def preprocess_expert_image(
     path: Path, image_source: str, image_width: int = 128, image_height: int = 72
 ) -> torch.Tensor:
@@ -182,7 +245,8 @@ class ExpertImageDataset(Dataset):
         dataset_root: str | Path,
         split_manifest: dict,
         split: str,
-        image_source: str,
+        image_source: str | None = None,
+        image_sources: Sequence[str] | None = None,
         image_width: int = 128,
         image_height: int = 72,
     ) -> None:
@@ -190,7 +254,16 @@ class ExpertImageDataset(Dataset):
             raise ValueError("split must be train, validation, or test")
         self.dataset_root = Path(dataset_root).resolve()
         self.split = split
-        self.image_source = image_source
+        if image_sources is None:
+            if image_source is None:
+                raise ValueError("image_source or image_sources must be provided")
+            sources = normalize_image_sources((image_source,))
+        else:
+            if image_source is not None:
+                raise ValueError("provide image_source or image_sources, not both")
+            sources = normalize_image_sources(image_sources)
+        self.image_sources = sources
+        self.image_source = sources[0] if len(sources) == 1 else None
         self.image_width = image_width
         self.image_height = image_height
         self.split_metadata = split_manifest
@@ -202,22 +275,43 @@ class ExpertImageDataset(Dataset):
             raise ValueError(f"split {split!r} is empty")
         self.samples = []
         for episode_id in self.episode_ids:
-            self.samples.extend(select_episode_images(
-                self.dataset_root, str(episode_id), image_source
-            ))
+            if len(sources) == 1:
+                self.samples.extend(select_episode_images(
+                    self.dataset_root, str(episode_id), sources[0]
+                ))
+            else:
+                self.samples.extend(select_episode_image_sets(
+                    self.dataset_root, str(episode_id), sources
+                ))
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> dict[str, object]:
         sample = self.samples[index]
-        return {
+        result = {
             **sample,
             "image_path": str(sample["image_path"]),
-            "image": preprocess_expert_image(
+        }
+        if len(self.image_sources) == 1:
+            result["image"] = preprocess_expert_image(
                 sample["image_path"],
-                self.image_source,
+                self.image_sources[0],
                 self.image_width,
                 self.image_height,
-            ),
-        }
+            )
+        else:
+            result["image_paths"] = {
+                source: str(sample["images"][source])
+                for source in self.image_sources
+            }
+            result["images"] = {
+                source: preprocess_expert_image(
+                    sample["images"][source],
+                    source,
+                    self.image_width,
+                    self.image_height,
+                )
+                for source in self.image_sources
+            }
+        return result

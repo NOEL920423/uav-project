@@ -2,6 +2,8 @@
 
 from uav_ml.models.bc_policy_v0 import BcPolicyConfig, BcPolicyV0
 from uav_ml.models.rgb_autoencoder_v0 import (
+    MultiImageAutoencoderConfig,
+    MultiImageAutoencoderV0,
     RgbAutoencoderConfig,
     RgbAutoencoderV0,
 )
@@ -13,6 +15,8 @@ __all__ = [
     "BcPolicyV0",
     "RgbAutoencoderConfig",
     "RgbAutoencoderV0",
+    "MultiImageAutoencoderConfig",
+    "MultiImageAutoencoderV0",
     "LatentBcPolicy",
     "LatentBcPolicyConfig",
     "LatentActorCritic",

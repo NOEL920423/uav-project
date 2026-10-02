@@ -28,6 +28,10 @@ MATERIAL_SPECULAR_COLOR = (0.0, 0.0, 0.0)
 MATERIAL_OPACITY = 1.0
 MATERIAL_EMISSIVE_COLOR = (0.0, 0.0, 0.0)
 
+FLOOR_SIZE = (100.0, 100.0, 0.01)
+FLOOR_POSITION = (0.0, 0.0, 0.01)
+MARKER_HEIGHT_M = 0.05
+
 # The Pegasus default environment contains a local 100000-intensity
 # SphereLight.  Disable environment lights and replace them with one neutral,
 # direction-independent DomeLight for the formal ML scene.
@@ -586,6 +590,87 @@ def _collision_walls() -> list[dict]:
     ]
 
 
+def build_environment_parameters(obstacles: list[dict]) -> dict:
+    """Return the explicit, reproducible scene parameter record."""
+    random_obstacle_count = sum(
+        obstacle.get("placement_mode") == "random"
+        for obstacle in obstacles
+    )
+    walls = _collision_walls()
+    return {
+        "schema_version": 1,
+        "obstacle_generation": {
+            "random_obstacles_enabled": random_obstacle_count > 0,
+            "random_obstacle_count": random_obstacle_count,
+            "fixed_obstacle_count": len(obstacles) - random_obstacle_count,
+            "decoration_seed": FIXED_OBSTACLE_DECORATION_SEED,
+        },
+        "arena": {
+            "bounds_m": {
+                "x": [X_MIN, X_MAX],
+                "y": [Y_MIN, Y_MAX],
+            },
+            "flight_altitude_m": FLIGHT_ALTITUDE_M,
+            "floor": {
+                "shape": "box",
+                "position_m": list(FLOOR_POSITION),
+                "size_m": list(FLOOR_SIZE),
+                "collision": False,
+                "color_linear_rgb": list(FLOOR_COLOR),
+            },
+            "walls": {
+                "count": len(walls),
+                "thickness_m": WALL_THICKNESS_M,
+                "height_m": WALL_HEIGHT_M,
+                "collision": True,
+                "color_linear_rgb": list(WALL_COLOR),
+                "geometry": walls,
+            },
+        },
+        "markers": {
+            "shape": "cylinder",
+            "radius_m": DISK_RADIUS,
+            "height_m": MARKER_HEIGHT_M,
+            "start": {
+                "position_m": [
+                    START_POS[0], START_POS[1], MARKER_HEIGHT_M / 2.0
+                ],
+                "color_linear_rgb": list(START_MARKER_COLOR),
+            },
+            "target": {
+                "position_m": [
+                    TARGET_POS[0], TARGET_POS[1], MARKER_HEIGHT_M / 2.0
+                ],
+                "color_linear_rgb": list(GOAL_MARKER_COLOR),
+            },
+        },
+        "lighting": {
+            **LIGHTING_CONTRACT,
+            "environment_lights_disabled": DISABLE_ENVIRONMENT_LIGHTS,
+            "renderer": {
+                "rtx_shadows_enabled": RTX_SHADOWS_ENABLED,
+                "rtx_ambient_occlusion_enabled": (
+                    RTX_AMBIENT_OCCLUSION_ENABLED
+                ),
+            },
+            "brightness": {
+                "dome_intensity": DOME_LIGHT_INTENSITY,
+                "exposure_stops": 0.0,
+            },
+        },
+        "materials": {
+            "roughness": MATERIAL_ROUGHNESS,
+            "metallic": MATERIAL_METALLIC,
+            "specular_color_linear_rgb": list(MATERIAL_SPECULAR_COLOR),
+            "opacity": MATERIAL_OPACITY,
+            "emissive_color_linear_rgb": list(MATERIAL_EMISSIVE_COLOR),
+            "obstacle_color_linear_rgb": list(OBSTACLE_COLOR),
+            "start_marker_color_linear_rgb": list(START_MARKER_COLOR),
+            "target_marker_color_linear_rgb": list(GOAL_MARKER_COLOR),
+        },
+    }
+
+
 def generate_episode_scene(
     episode_id: str,
     seed: int,
@@ -616,7 +701,7 @@ def generate_episode_scene(
     if mode == "blocked_goal":
         obstacles.append(_blocked_goal_fixture())
 
-    return {
+    scene = {
         "episode_id": episode_id,
         "random_seed": int(seed),
         "generator": "canonical_cylinder_scene_generator_v1",
@@ -634,6 +719,7 @@ def generate_episode_scene(
         "direct_path_blocker_count": direct_blocker_count,
         "obstacles": obstacles,
         "walls": _collision_walls(),
+        "environment_parameters": build_environment_parameters(obstacles),
         "wall_collision_bounds": {
             "east": [X_MIN, X_MAX],
             "north": [Y_MIN, Y_MAX],
@@ -669,6 +755,7 @@ def generate_episode_scene(
             ),
         },
     }
+    return scene
 
 
 # Isaac Sim and ROS 2 are optional for offline scene generation and validation.
@@ -1125,8 +1212,8 @@ if ISAAC_RUNTIME_AVAILABLE:
             # 地板方形墊子的參數(僅外型，沒有碰撞)
             floor = self._create_box(
                 f"{SCENE_ROOT}/PlainFloor",
-                (100.0, 100.0, 0.01), # 地板尺寸
-                (0.0, 0.0, 0.01), # 位置
+                FLOOR_SIZE,
+                FLOOR_POSITION,
                 FLOOR_COLOR,
                 collision=False,
             )
@@ -1174,20 +1261,22 @@ if ISAAC_RUNTIME_AVAILABLE:
             start = UsdGeom.Cylinder.Define(
                 self._stage, f"{SCENE_ROOT}/Start/StartDisk"
             )
-            start.CreateRadiusAttr(0.5)
-            start.CreateHeightAttr(0.05)
+            start.CreateRadiusAttr(DISK_RADIUS)
+            start.CreateHeightAttr(MARKER_HEIGHT_M)
             start.AddTranslateOp().Set(Gf.Vec3d(
-                scene["start"][0], scene["start"][1], 0.025
+                scene["start"][0], scene["start"][1],
+                MARKER_HEIGHT_M / 2.0,
             ))
             start.CreateDisplayColorAttr([Gf.Vec3f(*START_MARKER_COLOR)])
             bind_material(start.GetPrim(), materials["start_marker"])
             goal = UsdGeom.Cylinder.Define(
                 self._stage, f"{SCENE_ROOT}/Target/TargetDisk"
             )
-            goal.CreateRadiusAttr(0.5)
-            goal.CreateHeightAttr(0.05)
+            goal.CreateRadiusAttr(DISK_RADIUS)
+            goal.CreateHeightAttr(MARKER_HEIGHT_M)
             goal.AddTranslateOp().Set(Gf.Vec3d(
-                scene["target_marker"][0], scene["target_marker"][1], 0.025
+                scene["target_marker"][0], scene["target_marker"][1],
+                MARKER_HEIGHT_M / 2.0,
             ))
             goal.CreateDisplayColorAttr([Gf.Vec3f(*GOAL_MARKER_COLOR)])
             bind_material(goal.GetPrim(), materials["goal_marker"])

@@ -1,5 +1,7 @@
 """Launch one source-matched BC flight without planner or follower nodes."""
 
+import os
+
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -130,6 +132,9 @@ def generate_launch_description() -> LaunchDescription:
                 "episode": episode,
                 "seed": seed,
                 "image_source": image_source,
+                "record_trajectory_trace": (
+                    os.environ.get("UAV_BC_FLIGHT_DIAGNOSTICS", "1") == "1"
+                ),
             }],
             output="screen",
             on_exit=Shutdown(reason="BC flight result saved"),

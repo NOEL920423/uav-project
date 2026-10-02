@@ -142,6 +142,9 @@ def publish_autoencoder_latest(index_path: Path, summary: dict) -> None:
         "dataset_name": summary["dataset_name"],
         "dataset_path": summary["dataset_root"],
         "image_source": summary["image_source"],
+        "image_sources": summary.get(
+            "image_sources", [summary["image_source"]]
+        ),
         "encoder_architecture": summary["encoder_architecture"],
         "image_preprocessing": summary["image_preprocessing"],
         "latent_dimension": summary["latent_dimension"],
@@ -275,6 +278,91 @@ def select_autoencoder_checkpoint(
         automatic=True,
         index=index,
     )
+
+
+def select_multi_autoencoder_checkpoint(
+    dataset: DatasetLocation,
+    image_sources: tuple[str, ...] | list[str],
+    image_preprocessing: dict[str, str],
+    *,
+    explicit: Path | None,
+    project_root: Path = PROJECT_ROOT,
+) -> EncoderSelection:
+    """Select a multi-image AE whose ordered source contract matches BC."""
+    sources = tuple(image_sources)
+    if len(sources) < 2:
+        raise ValueError("multi-image encoder selection requires at least two sources")
+    label = "+".join(sources)
+    index_path = autoencoder_latest_path(
+        dataset, label, project_root=project_root
+    )
+    index = None
+    if explicit is None:
+        if not index_path.is_file():
+            raise FileNotFoundError(
+                "No compatible multi-image AutoEncoder checkpoint found for:\n"
+                f"dataset={dataset.name}\nimage_sources={', '.join(sources)}\n\n"
+                "Run AE training first with the same --image-sources list."
+            )
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        checkpoint = Path(index.get("best_checkpoint", ""))
+        automatic = True
+    else:
+        checkpoint = explicit
+        automatic = False
+    checkpoint = checkpoint.expanduser().resolve()
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"AutoEncoder checkpoint is missing: {checkpoint}")
+    summary_path = checkpoint.parent / "summary.json"
+    if not summary_path.is_file():
+        raise FileNotFoundError(
+            f"AutoEncoder summary.json is missing beside checkpoint: {checkpoint}"
+        )
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    metadata = payload.get("metadata", {})
+    config = payload.get("model_config", {})
+    checks = {
+        "model class": payload.get("model_class") == "MultiImageAutoencoderV0",
+        "source order": tuple(metadata.get("image_sources", ())) == sources,
+        "model source order": tuple(config.get("image_sources", ())) == sources,
+        "source preprocessing": metadata.get("image_preprocessing") == image_preprocessing,
+        "summary source order": tuple(summary.get("image_sources", ())) == sources,
+        "summary preprocessing": summary.get("image_preprocessing") == image_preprocessing,
+        "dataset": Path(summary.get("dataset_root", "")).resolve()
+        == dataset.path.resolve(),
+        "latent dimension": int(config.get("latent_dimension", -1)) == 64,
+        "model state": isinstance(payload.get("model_state"), dict),
+        "completed run": summary.get("run_status") == "completed",
+    }
+    failed = [name for name, passed in checks.items() if not passed]
+    if failed:
+        raise ValueError(
+            "Multi-image AutoEncoder checkpoint provenance mismatch: "
+            + ", ".join(failed)
+        )
+    if index is not None:
+        expected = {
+            "run_status": "completed",
+            "dataset_name": dataset.name,
+            "dataset_path": str(dataset.path.resolve()),
+            "image_source": label,
+            "image_sources": list(sources),
+            "image_preprocessing": image_preprocessing,
+            "encoder_architecture": "MultiImageAutoencoderV0",
+            "latent_dimension": 64,
+            "best_checkpoint_sha256": _sha256(checkpoint),
+        }
+        mismatches = [key for key, value in expected.items() if index.get(key) != value]
+        if (
+            mismatches
+            or Path(index.get("summary", "")).resolve() != summary_path.resolve()
+        ):
+            raise ValueError(
+                "AutoEncoder latest index is stale or inconsistent: "
+                + ", ".join(mismatches or ["summary"])
+            )
+    return EncoderSelection(checkpoint, automatic, summary)
 
 
 def add_tensorboard_arguments(parser: argparse.ArgumentParser) -> None:

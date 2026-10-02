@@ -28,12 +28,15 @@ except ModuleNotFoundError:  # Keep --help usable before optional install.
 from uav_ml.datasets.expert_image_dataset import (
     IMAGE_PREPROCESSING,
     IMAGE_SOURCES,
+    normalize_image_sources,
     preprocess_expert_image,
+    select_episode_image_sets,
     select_episode_images,
 )
 from uav_ml.models import (
     LatentBcPolicy,
     LatentBcPolicyConfig,
+    MultiImageAutoencoderV0,
     RgbAutoencoderV0,
 )
 from uav_ml.inference.rgb_encoder import (
@@ -48,6 +51,7 @@ from uav_ml.tools.training_cli import (
     experiment_run_directory,
     resolve_dataset,
     select_autoencoder_checkpoint,
+    select_multi_autoencoder_checkpoint,
 )
 from uav_ml.train_bc import resolve_device, set_seeds
 
@@ -156,12 +160,14 @@ def _validate_sample_row(dataset_root: Path, row: dict) -> None:
 def audit_dataset(
     dataset_root: Path,
     encoder_checkpoint: Path | None = None,
-    image_source: str = "fpv_rgb",
+    image_source: str | tuple[str, ...] | list[str] = "fpv_rgb",
 ) -> dict:
     """Select only complete, validated, readable successful episodes."""
     dataset_root = dataset_root.resolve()
-    if image_source not in IMAGE_SOURCES:
-        raise ValueError(f"unsupported image source: {image_source}")
+    image_sources = normalize_image_sources(
+        (image_source,) if isinstance(image_source, str) else image_source
+    )
+    source_label = image_sources[0] if len(image_sources) == 1 else "+".join(image_sources)
     encoder_checkpoint = (
         encoder_checkpoint.resolve() if encoder_checkpoint is not None else None
     )
@@ -236,15 +242,24 @@ def audit_dataset(
                     raise ValueError("accepted sample count is inconsistent")
                 for row in rows:
                     _validate_sample_row(dataset_root, row)
-                # Validate every selected input. Formal TOP cohort membership
-                # above makes each image-source run share the same episodes.
-                selected = select_episode_images(dataset_root, episode_id, image_source)
-                if len(selected) != len(rows):
-                    raise ValueError("selected image count differs from samples")
+                # Require every selected stream on every sample; multi-image
+                # training never falls back to a different camera or modality.
+                if len(image_sources) == 1:
+                    selected = select_episode_images(
+                        dataset_root, episode_id, image_sources[0]
+                    )
+                    if len(selected) != len(rows):
+                        raise ValueError("selected image count differs from samples")
+                else:
+                    selected = select_episode_image_sets(
+                        dataset_root, episode_id, image_sources
+                    )
+                    if len(selected) != len(rows):
+                        raise ValueError("selected image bundle count differs from samples")
             except (OSError, KeyError, TypeError, ValueError) as error:
-                if image_source != "fpv_rgb":
+                if image_sources != ("fpv_rgb",):
                     raise ValueError(
-                        f"{image_source} association failed loudly for "
+                        f"{source_label} association failed loudly for "
                         f"{episode_id}: {error}"
                     ) from error
                 reason = f"invalid_or_corrupt:{error}"
@@ -271,8 +286,12 @@ def audit_dataset(
         "format_version": FORMAT_VERSION,
         "created_utc": _utc_now(),
         "dataset_root": str(dataset_root),
-        "image_source": image_source,
-        "image_preprocessing": IMAGE_PREPROCESSING[image_source],
+        "image_source": source_label,
+        "image_sources": list(image_sources),
+        "image_preprocessing": (
+            IMAGE_PREPROCESSING[image_sources[0]] if len(image_sources) == 1 else
+            {source: IMAGE_PREPROCESSING[source] for source in image_sources}
+        ),
         "comparison_cohort": (
             "fixed_global_top_complete" if comparison_cohort_enabled else
             "legacy_dataset_eligibility"
@@ -333,17 +352,18 @@ def create_episode_split(audit: dict, seed: int) -> dict:
 
 def _load_frozen_encoder(
     path: Path, device: torch.device
-) -> tuple[RgbAutoencoderV0 | ResNet18Encoder, dict]:
+) -> tuple[RgbAutoencoderV0 | MultiImageAutoencoderV0 | ResNet18Encoder, dict]:
     return load_frozen_encoder(path, device)
 
 
 def _episode_arrays(
     dataset_root: Path,
     episode_id: str,
-    encoder: RgbAutoencoderV0 | ResNet18Encoder,
+    encoder: RgbAutoencoderV0 | MultiImageAutoencoderV0 | ResNet18Encoder,
     device: torch.device,
     encode_batch_size: int,
     image_source: str = "fpv_rgb",
+    image_sources: tuple[str, ...] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     with (dataset_root / episode_id / "samples.csv").open(
         newline="", encoding="utf-8"
@@ -357,21 +377,41 @@ def _episode_arrays(
         [[float(row[name]) for name in TARGET_FIELDS] for row in rows],
         dtype=np.float32,
     )
-    selected = select_episode_images(dataset_root, episode_id, image_source)
+    sources = normalize_image_sources(
+        image_sources if image_sources is not None else (image_source,)
+    )
+    selected = (
+        select_episode_images(dataset_root, episode_id, sources[0])
+        if len(sources) == 1 else
+        select_episode_image_sets(dataset_root, episode_id, sources)
+    )
     if len(selected) != len(rows):
         raise ValueError(f"{episode_id}: selected image/sample count mismatch")
     latents = []
     for start in range(0, len(rows), encode_batch_size):
-        images = [
-            preprocess_expert_image(
-                item["image_path"],
-                image_source,
-                image_width=encoder.config.image_width,
-                image_height=encoder.config.image_height,
-            )
-            for item in selected[start:start + encode_batch_size]
-        ]
-        batch = torch.stack(images).to(device)
+        if len(sources) > 1:
+            batch = {
+                source: torch.stack([
+                    preprocess_expert_image(
+                        item["images"][source],
+                        source,
+                        image_width=encoder.config.image_width,
+                        image_height=encoder.config.image_height,
+                    )
+                    for item in selected[start:start + encode_batch_size]
+                ]).to(device)
+                for source in sources
+            }
+        else:
+            batch = torch.stack([
+                preprocess_expert_image(
+                    item["image_path"],
+                    sources[0],
+                    image_width=encoder.config.image_width,
+                    image_height=encoder.config.image_height,
+                )
+                for item in selected[start:start + encode_batch_size]
+            ]).to(device)
         with torch.inference_mode():
             latents.append(encoder.encode(batch).cpu().numpy())
     latent = np.concatenate(latents).astype(np.float32)
@@ -384,10 +424,11 @@ def _episode_arrays(
 def encode_splits(
     dataset_root: Path,
     split_manifest: dict,
-    encoder: RgbAutoencoderV0 | ResNet18Encoder,
+    encoder: RgbAutoencoderV0 | MultiImageAutoencoderV0 | ResNet18Encoder,
     device: torch.device,
     encode_batch_size: int,
     image_source: str = "fpv_rgb",
+    image_sources: tuple[str, ...] | None = None,
 ) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
     """Encode selected images once and return tensors by episode split."""
     result = {}
@@ -402,6 +443,7 @@ def encode_splits(
                 device,
                 encode_batch_size,
                 image_source,
+                image_sources,
             )
             observations.append(observation)
             targets.append(target)
@@ -471,8 +513,17 @@ def _checkpoint(
     audit: dict,
     split_manifest: dict,
     image_source: str,
-    encoder: RgbAutoencoderV0 | ResNet18Encoder,
+    encoder: RgbAutoencoderV0 | MultiImageAutoencoderV0 | ResNet18Encoder,
 ) -> dict:
+    image_sources = (
+        list(encoder.config.image_sources)
+        if isinstance(encoder, MultiImageAutoencoderV0)
+        else [image_source]
+    )
+    image_preprocessing = (
+        {source: IMAGE_PREPROCESSING[source] for source in image_sources}
+        if len(image_sources) > 1 else IMAGE_PREPROCESSING[image_sources[0]]
+    )
     return {
         "format_version": FORMAT_VERSION,
         "model_class": "LatentBcPolicy",
@@ -495,10 +546,11 @@ def _checkpoint(
         "encoder_architecture": type(encoder).__name__,
         "encoder_frozen": True,
         "image_source": image_source,
-        "image_preprocessing": IMAGE_PREPROCESSING[image_source],
+        "image_sources": image_sources,
+        "image_preprocessing": image_preprocessing,
         "encoder_preprocessing": (
             RESNET_PREPROCESSING if isinstance(encoder, ResNet18Encoder)
-            else IMAGE_PREPROCESSING[image_source]
+            else image_preprocessing
         ),
         "latent_dimension": encoder.config.latent_dimension,
         "observation_contract": f"latent{encoder.config.latent_dimension}_plus_body_state8_v1.0",
@@ -631,6 +683,8 @@ def train_baseline(
     tensorboard_port: int = 6006,
     encoder_selection: str = "explicit",
     encoder_type: str = "autoencoder",
+    image_sources: tuple[str, ...] | None = None,
+    initialize_policy: Path | None = None,
 ) -> dict:
     """Run reproducible BC training and held-out offline evaluation."""
     if SummaryWriter is None:
@@ -649,11 +703,28 @@ def train_baseline(
         raise ValueError("min_epochs must be nonnegative and cannot exceed epochs")
     if encoder_type not in ("autoencoder", "resnet18"):
         raise ValueError("encoder_type must be autoencoder or resnet18")
-    if encoder_type == "resnet18" and (encoder_checkpoint is not None or image_source == "fpv_depth"):
+    sources = normalize_image_sources(
+        image_sources if image_sources is not None else (image_source,)
+    )
+    source_label = sources[0] if len(sources) == 1 else "+".join(sources)
+    multi_image = len(sources) > 1
+    image_preprocessing = (
+        {source: IMAGE_PREPROCESSING[source] for source in sources}
+        if multi_image else IMAGE_PREPROCESSING[sources[0]]
+    )
+    if encoder_type == "resnet18" and (
+        encoder_checkpoint is not None
+        or multi_image
+        or sources[0] == "fpv_depth"
+    ):
         raise ValueError("ResNet18 requires RGB (top or fpv_rgb) and no --encoder override")
     if encoder_type == "autoencoder" and encoder_checkpoint is None:
         raise ValueError("autoencoder requires an encoder checkpoint")
-    audit = audit_dataset(dataset_root, encoder_checkpoint, image_source)
+    audit = audit_dataset(
+        dataset_root,
+        encoder_checkpoint,
+        sources[0] if len(sources) == 1 else sources,
+    )
     resolved_dataset_name = dataset_name or Path(audit["dataset_root"]).name
     audit["dataset_name"] = resolved_dataset_name
     split_manifest = create_episode_split(audit, config.seed)
@@ -675,7 +746,7 @@ def train_baseline(
             "model_config": pretrained.config.to_dict(),
             "model_state": pretrained.state_dict(),
             "preprocessing": RESNET_PREPROCESSING,
-            "metadata": {"image_source": image_source, "weights": "IMAGENET1K_V1"},
+            "metadata": {"image_source": sources[0], "weights": "IMAGENET1K_V1"},
         }, encoder_checkpoint)
         del pretrained
         audit["encoder_checkpoint"] = str(encoder_checkpoint.resolve())
@@ -687,13 +758,18 @@ def train_baseline(
         "maximum_epochs_requested": config.epochs,
         "dataset_name": resolved_dataset_name,
         "dataset_path": audit["dataset_root"],
-        "image_source": image_source,
-        "image_preprocessing": IMAGE_PREPROCESSING[image_source],
+        "image_source": source_label,
+        "image_sources": list(sources),
+        "image_preprocessing": image_preprocessing,
         "tensorboard_enabled": tensorboard_enabled,
         "tensorboard_port": tensorboard_port,
         "encoder_checkpoint": str(encoder_checkpoint.resolve()),
         "encoder_selection": encoder_selection,
         "encoder_type": encoder_type,
+        "initialized_policy": (
+            str(initialize_policy.expanduser().resolve())
+            if initialize_policy is not None else None
+        ),
     }
     _write_json(output_dir / "training_config.json", training_config)
     print(
@@ -717,10 +793,20 @@ def train_baseline(
     )
     if checkpoint_source == "fpv":
         checkpoint_source = "fpv_rgb"
-    if checkpoint_source != image_source:
+    if isinstance(encoder, MultiImageAutoencoderV0):
+        encoder_sources = tuple(encoder.config.image_sources)
+        metadata_sources = tuple(
+            encoder_payload.get("metadata", {}).get("image_sources", ())
+        )
+        if encoder_sources != sources or metadata_sources != sources:
+            raise ValueError(
+                f"encoder image_sources={encoder_sources!r} do not match "
+                f"requested {sources!r}"
+            )
+    elif checkpoint_source != sources[0]:
         raise ValueError(
             f"encoder image_source={checkpoint_source!r} does not match "
-            f"requested {image_source!r}"
+            f"requested {sources[0]!r}"
         )
     if encoder.config.latent_dimension != (512 if encoder_type == "resnet18" else 64):
         raise ValueError("encoder latent dimension does not match selected encoder type")
@@ -728,7 +814,7 @@ def train_baseline(
         "========== BC Training ==========\n\n"
         f"Dataset:\n{resolved_dataset_name}\n\n"
         f"Resolved path:\n{audit['dataset_root']}\n\n"
-        f"Image source:\n{image_source}\n\n"
+        f"Image sources:\n{', '.join(sources)}\n\n"
         f"Usable episodes:\n{audit['usable_episodes']}\n\n"
         "Train / Validation / Test:\n"
         f"{split_manifest['episode_counts']['train']} / "
@@ -744,7 +830,7 @@ def train_baseline(
         f"TensorBoard port:\n{tensorboard_port}\n\n"
         f"Encoder:\n{encoder_checkpoint.resolve()}\n\n"
         f"Encoder selection:\n{encoder_selection}\n\n"
-        f"Encoder image source:\n{checkpoint_source}\n\n"
+        f"Encoder image sources:\n{', '.join(sources)}\n\n"
         f"Output:\n{output_dir.resolve()}\n\n"
         "Action:\n[v_forward, v_right, yaw_rate]\n\n"
         "=================================",
@@ -756,7 +842,8 @@ def train_baseline(
         encoder,
         device,
         encode_batch_size,
-        image_source,
+        source_label,
+        image_sources=sources if multi_image else None,
     )
     if any(parameter.requires_grad for parameter in encoder.parameters()):
         raise RuntimeError("encoder freeze contract was violated")
@@ -784,6 +871,28 @@ def train_baseline(
     model = LatentBcPolicy(LatentBcPolicyConfig(
         observation_dimension=encoder.config.latent_dimension + 8
     )).to(device)
+    if initialize_policy is not None:
+        initial_path = initialize_policy.expanduser().resolve()
+        initial = torch.load(initial_path, map_location=device, weights_only=False)
+        initial_sources = tuple(initial.get(
+            "image_sources", [initial.get("image_source", "")]
+        ))
+        if (
+            not initial_sources
+            or initial_sources[0] != sources[0]
+            or int(initial.get("latent_dimension", -1))
+            != encoder.config.latent_dimension
+            or initial.get("model_class") != "LatentBcPolicy"
+        ):
+            raise ValueError(
+                "initial BC policy must use the same primary image source, "
+                "latent dimension, and LatentBcPolicy architecture"
+            )
+        initial_config = LatentBcPolicyConfig(**initial["model_config"])
+        if initial_config != model.config:
+            raise ValueError("initial BC policy observation architecture mismatch")
+        model.load_state_dict(initial["model_state"])
+        print(f"Initialized BC actor from {initial_path}", flush=True)
     optimizer = torch.optim.Adam(
         model.parameters(), lr=config.learning_rate
     )
@@ -899,8 +1008,9 @@ def train_baseline(
         "sample_counts": split_manifest["sample_counts"],
         "episode_counts": split_manifest["episode_counts"],
         "checkpoint_reload_verified": True,
-        "image_source": image_source,
-        "image_preprocessing": IMAGE_PREPROCESSING[image_source],
+        "image_source": source_label,
+        "image_sources": list(sources),
+        "image_preprocessing": image_preprocessing,
         "tensorboard_dir": str((output_dir / "tensorboard").resolve()),
         "dataset_name": resolved_dataset_name,
         "dataset_path": audit["dataset_root"],
@@ -921,8 +1031,9 @@ def train_baseline(
         "last_checkpoint": str((output_dir / "last.pt").resolve()),
         "encoder": {
             "architecture": type(encoder).__name__,
-            "image_source": image_source,
-            "image_preprocessing": IMAGE_PREPROCESSING[image_source],
+            "image_source": source_label,
+            "image_sources": list(sources),
+            "image_preprocessing": image_preprocessing,
             "latent_dimension": encoder.config.latent_dimension,
             "checkpoint": str(encoder_checkpoint.resolve()),
             "sha256": audit["encoder_sha256"],
@@ -985,8 +1096,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--encode-batch-size", type=int, default=128)
-    parser.add_argument(
+    source_group = parser.add_mutually_exclusive_group()
+    source_group.add_argument(
         "--image-source", choices=IMAGE_SOURCES, default="top"
+    )
+    source_group.add_argument(
+        "--image-sources", choices=IMAGE_SOURCES, nargs="+",
+        help="one or more aligned image streams for joint BC training",
+    )
+    parser.add_argument(
+        "--initialize-policy", type=Path,
+        help="initialize the BC actor from a checkpoint with the same primary source and latent size",
     )
     add_tensorboard_arguments(parser)
     return parser
@@ -1005,15 +1125,35 @@ def main() -> int:
         print(f"ERROR: BC baseline training stopped: {error}")
         return 1
     try:
-        if args.encoder_type == "resnet18" and (args.encoder or args.image_source == "fpv_depth"):
-            raise ValueError("ResNet18 requires RGB (top or fpv_rgb) and no --encoder override")
-        encoder = select_autoencoder_checkpoint(
-            dataset_location,
-            args.image_source,
-            IMAGE_PREPROCESSING[args.image_source],
-            explicit=Path(args.encoder) if args.encoder else None,
-            project_root=repository_root,
-        ) if args.encoder_type == "autoencoder" else None
+        sources = normalize_image_sources(
+            args.image_sources if args.image_sources else (args.image_source,)
+        )
+        source_label = sources[0] if len(sources) == 1 else "+".join(sources)
+        if args.encoder_type == "resnet18" and (
+            args.encoder or len(sources) > 1 or sources[0] == "fpv_depth"
+        ):
+            raise ValueError(
+                "ResNet18 currently supports one RGB source only and no --encoder override"
+            )
+        if args.encoder_type == "autoencoder":
+            if len(sources) > 1:
+                encoder = select_multi_autoencoder_checkpoint(
+                    dataset_location,
+                    sources,
+                    {source: IMAGE_PREPROCESSING[source] for source in sources},
+                    explicit=Path(args.encoder) if args.encoder else None,
+                    project_root=repository_root,
+                )
+            else:
+                encoder = select_autoencoder_checkpoint(
+                    dataset_location,
+                    sources[0],
+                    IMAGE_PREPROCESSING[sources[0]],
+                    explicit=Path(args.encoder) if args.encoder else None,
+                    project_root=repository_root,
+                )
+        else:
+            encoder = None
     except Exception as error:  # noqa: BLE001 - CLI boundary
         print(f"ERROR: BC baseline training stopped: {error}")
         return 1
@@ -1021,7 +1161,7 @@ def main() -> int:
         f"Encoder type: {args.encoder_type}\n"
         f"Encoder: {encoder.checkpoint if encoder else 'ImageNet IMAGENET1K_V1 (frozen)'}\n\n"
         f"Dataset:\n{dataset_location.name}\n\n"
-        f"Image source:\n{args.image_source}\n\n"
+        f"Image sources:\n{', '.join(sources)}\n\n"
         + ("Encoder provenance:\nmatched" if encoder else
          "Encoder weights:\nImageNet pretrained; saved with this BC run"),
         flush=True,
@@ -1032,7 +1172,7 @@ def main() -> int:
         output = experiment_run_directory(
             "bc",
             dataset_location,
-            args.image_source,
+            source_label,
             _stamp(),
             project_root=repository_root,
         )
@@ -1058,7 +1198,7 @@ def main() -> int:
                 ),
                 args.device,
                 args.encode_batch_size,
-                args.image_source,
+                source_label,
                 dataset_name=dataset_location.name,
                 tensorboard_enabled=args.tensorboard,
                 tensorboard_port=args.tensorboard_port,
@@ -1067,13 +1207,15 @@ def main() -> int:
                     if encoder else "imagenet_pretrained"
                 ),
                 encoder_type=args.encoder_type,
+                image_sources=sources if len(sources) > 1 else None,
+                initialize_policy=args.initialize_policy,
             )
             test = summary["test"]["per_action"]
             print(
                 "=========================================\n"
                 "BC training completed successfully\n\n"
                 f"Dataset:\n{dataset_location.name}\n\n"
-                f"Image source:\n{args.image_source}\n\n"
+                f"Image sources:\n{', '.join(sources)}\n\n"
                 f"Maximum epochs requested:\n"
                 f"{summary['maximum_epochs_requested']}\n\n"
                 f"Actual epochs trained:\n"

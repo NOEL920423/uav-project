@@ -41,6 +41,7 @@ MSG_PLOT_WARNING = "[BC Flight] Plot generation failed: {error}"
 MSG_ERROR = "[BC Flight] Error: {error}"
 _LAST_ARTIFACT_PATH: Path | None = None
 _ERROR_MARKERS = ("ERROR", "FATAL", "TRACEBACK", "EXCEPTION", "UNEXPECTED EXIT")
+ENABLE_BC_FLIGHT_DIAGNOSTICS = True
 
 
 def _stamp() -> str:
@@ -122,6 +123,7 @@ class ManagedFlightRuntime:
         image_source: str,
         timeout_s: float,
         verbose: bool = False,
+        diagnostics_enabled: bool = True,
     ) -> None:
         self.repository_root = repository_root
         self.isaac_release = isaac_release
@@ -131,6 +133,7 @@ class ManagedFlightRuntime:
         self.image_source = image_source
         self.timeout_s = timeout_s
         self.verbose = verbose
+        self.diagnostics_enabled = diagnostics_enabled
         self._agent: subprocess.Popen | None = None
         self._isaac: subprocess.Popen | None = None
         self._streams = []
@@ -176,15 +179,29 @@ class ManagedFlightRuntime:
         self._episode_start_time_s = time.time()
         self._runtime_dir = runtime_dir
         environment = os.environ.copy()
-        environment["UAV_TIMING_DIR"] = str((runtime_dir / "timing").resolve())
-        # PX4 rcS sources px4-rc.params from PATH before starting its logger.
-        px4_params = runtime_dir / "px4-rc.params"
-        original_params = Path.home() / "PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/px4-rc.params"
-        px4_params.write_text(
-            f". {shlex.quote(str(original_params))}\nparam set SDLOG_MODE -1\n",
-            encoding="utf-8",
+        environment["UAV_BC_FLIGHT_DIAGNOSTICS"] = (
+            "1" if self.diagnostics_enabled else "0"
         )
-        environment["PATH"] = f"{runtime_dir.resolve()}{os.pathsep}{environment.get('PATH', '')}"
+        if self.diagnostics_enabled:
+            environment["UAV_TIMING_DIR"] = str(
+                (runtime_dir / "timing").resolve()
+            )
+            # PX4 rcS sources this override before starting its diagnostic logger.
+            px4_params = runtime_dir / "px4-rc.params"
+            original_params = Path.home() / (
+                "PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/px4-rc.params"
+            )
+            px4_params.write_text(
+                f". {shlex.quote(str(original_params))}\nparam set SDLOG_MODE -1\n",
+                encoding="utf-8",
+            )
+            environment["PATH"] = (
+                f"{runtime_dir.resolve()}{os.pathsep}"
+                f"{environment.get('PATH', '')}"
+            )
+        else:
+            environment.pop("UAV_TIMING_DIR", None)
+            environment.pop("UAV_TIMING_SCHED_SECONDS", None)
         environment["UAV_EXPERT_SENSORS"] = "1"
         environment["UAV_OBSERVER_VIEWPORT"] = "1" if self.visible else "0"
         environment["UAV_VIEWPORT_SOURCE"] = self.image_source
@@ -216,8 +233,11 @@ class ManagedFlightRuntime:
             start_new_session=True,
         )
         self._attach_streams(self._isaac, runtime_dir / "isaac.log", "Isaac Sim/Pegasus/PX4")
-        self._capture_thread = threading.Thread(target=self._capture_ulog, daemon=True)
-        self._capture_thread.start()
+        if self.diagnostics_enabled:
+            self._capture_thread = threading.Thread(
+                target=self._capture_ulog, daemon=True
+            )
+            self._capture_thread.start()
 
     def _owns_px4_process(self, pid: int) -> bool:
         """Restrict logger commands to descendants of this episode's Isaac."""
@@ -310,7 +330,16 @@ class ManagedFlightRuntime:
 
     def _uav(self, arguments: list[str], log_path: Path) -> int:
         environment = os.environ.copy()
-        environment["UAV_TIMING_DIR"] = str((log_path.parent / "timing").resolve())
+        environment["UAV_BC_FLIGHT_DIAGNOSTICS"] = (
+            "1" if self.diagnostics_enabled else "0"
+        )
+        if self.diagnostics_enabled:
+            environment["UAV_TIMING_DIR"] = str(
+                (log_path.parent / "timing").resolve()
+            )
+        else:
+            environment.pop("UAV_TIMING_DIR", None)
+            environment.pop("UAV_TIMING_SCHED_SECONDS", None)
         environment["UAV_OFFLINE_TIMEOUT_SECONDS"] = str(int(self.timeout_s))
         process = subprocess.Popen(
                 [str(self.repository_root / "uav"), *arguments],
@@ -465,7 +494,7 @@ class ManagedFlightRuntime:
         for stream in self._streams:
             stream.close()
         self._streams.clear()
-        if self._runtime_dir is not None:
+        if self._runtime_dir is not None and self.diagnostics_enabled:
             try:
                 from scripts.diagnostics.summarize_bc_startup import write_timing_report
                 write_timing_report(self._runtime_dir)
@@ -586,6 +615,7 @@ def _finalize_evaluation(
     *,
     image_source: str,
     identity,
+    diagnostics_enabled: bool = True,
 ) -> None:
     """Persist available evidence even if a later runtime startup fails."""
     records = _saved_result_records(output_root, results)
@@ -602,6 +632,7 @@ def _finalize_evaluation(
     summary = {
         "schema": "uav_bc_flight_evaluation/v1",
         "image_source": image_source,
+        "image_sources": list(getattr(identity, "image_sources", (image_source,))),
         "checkpoint": identity.checkpoint_path,
         "checkpoint_sha256": identity.checkpoint_sha256,
         "episodes": records,
@@ -614,17 +645,18 @@ def _finalize_evaluation(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    try:
-        from scripts.diagnostics.summarize_bc_startup import write_run_reader_summary
-        write_run_reader_summary(output_root)
-        print(
-            f"[BC Flight] Control summary: "
-            f"{output_root / 'closed_loop_control_summary.md'}",
-            flush=True,
-        )
-    except Exception:
-        import traceback
-        traceback.print_exc()
+    if diagnostics_enabled:
+        try:
+            from scripts.diagnostics.summarize_bc_startup import write_run_reader_summary
+            write_run_reader_summary(output_root)
+            print(
+                f"[BC Flight] Control summary: "
+                f"{output_root / 'closed_loop_control_summary.md'}",
+                flush=True,
+            )
+        except Exception:
+            import traceback
+            traceback.print_exc()
     print(MSG_FINISHED.format(path=summary_path), flush=True)
 
 
@@ -643,9 +675,9 @@ def main(argv: list[str] | None = None) -> int:
         return _replay_trace(args, repository_root)
     image_source = canonical_image_source(args.image_source)
     checkpoint = resolve_checkpoint(repository_root, args.checkpoint)
-    if shutil.which("ffmpeg") is None:
+    if ENABLE_BC_FLIGHT_DIAGNOSTICS and shutil.which("ffmpeg") is None:
         raise FileNotFoundError(
-            "ffmpeg is required for mandatory BC policy-input video recording"
+            "ffmpeg is required for BC policy-input diagnostic video recording"
         )
     print(MSG_PREFLIGHT, flush=True)
     policy = BcFlightPolicy(
@@ -675,6 +707,7 @@ def main(argv: list[str] | None = None) -> int:
             runtime = ManagedFlightRuntime(
                 repository_root, isaac_release, bool(args.visible), args.device,
                 checkpoint, image_source, args.timeout, args.verbose,
+                ENABLE_BC_FLIGHT_DIAGNOSTICS,
             )
             runtime.preflight()
             print(MSG_STARTING, flush=True)
@@ -685,7 +718,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(MSG_PREPARING.format(episode=episode, seed=seed), flush=True)
                 print(MSG_RUNNING, flush=True)
                 result = runtime.run_episode(episode, seed, result_path, episode_root)
-                result = _finalize_episode_video(result_path)
+                if ENABLE_BC_FLIGHT_DIAGNOSTICS:
+                    result = _finalize_episode_video(result_path)
                 results.append(result)
                 print(MSG_RESULT.format(episode=episode, reason=result.get("terminal_reason", "unknown")), flush=True)
             finally:
@@ -697,6 +731,7 @@ def main(argv: list[str] | None = None) -> int:
             results,
             image_source=image_source,
             identity=identity,
+            diagnostics_enabled=ENABLE_BC_FLIGHT_DIAGNOSTICS,
         )
     if args.nas_root is not None:
         from uav_ml.tools.artifact_publish import publish_artifact_tree
@@ -737,7 +772,7 @@ def _replay_trace(args: argparse.Namespace, repository_root: Path) -> int:
     runtime = ManagedFlightRuntime(
         repository_root, isaac_release, bool(args.visible), args.device,
         trace_path, str(trace.get("image_source", "top_rgb")), args.timeout,
-        args.verbose,
+        args.verbose, ENABLE_BC_FLIGHT_DIAGNOSTICS,
     )
     print(MSG_PREFLIGHT, flush=True)
     runtime.preflight()

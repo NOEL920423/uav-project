@@ -27,6 +27,27 @@ depth/state input 和四軸 action contract，若用於此處會違反正式資�
 
 ## 訓練
 
+### 可選影像來源組合
+
+使用 `--image-sources` 指定一個以上的已登記來源；其清單必須與對應 AE checkpoint 完全
+相同且順序一致：
+
+```bash
+./uav bc-train --dataset bc_expert_cube \
+  --image-sources fpv_rgb fpv_depth --epochs 100
+
+./uav bc-train --dataset bc_expert_cube \
+  --image-sources fpv_rgb fpv_depth top --epochs 100
+```
+
+多影像 AE 將各來源 latent 融合為 64D 表示，所以 BC 仍使用既有 72D latent+state8 actor。
+可以用 `--initialize-policy <single-source-best.pt>` 從相同 primary source 的單影像 BC
+checkpoint 初始化 actor，再由所選影像組合續訓。BC checkpoint 固定記錄來源、順序和
+preprocessing；飛行端依 checkpoint 訂閱所有來源，並在任一路影像缺失、過期或未同步時
+停止送出新 policy action。多影像 TOP 要符合 1 ms 同步門檻；FPV RGB/depth 使用 100 ms。
+
+舊有 `--image-source` 單來源指令仍可使用。
+
 ### 選用的 frozen ResNet18
 
 預設仍使用 AE；既有 `ae-train`、`bc-train --encoder <path>` 和 AE checkpoints 均維持可用。
@@ -161,7 +182,8 @@ BC output 會自動寫入 `artifacts/experiments/bc/<dataset>/<source>/run_<time
 `tensorboard --logdir <run-directory>/tensorboard`.
 
 遠端 server 可使用 SSH tunnel，例如 `ssh -L 6006:localhost:6006 user@server`，再於本機
-開啟 `http://localhost:6006`。正式 closed-loop runtime 接受 TOP RGB checkpoint contract。
+開啟 `http://localhost:6006`。Closed-loop runtime 依 checkpoint 記錄的來源組合訂閱影像；
+啟動時 `--image-source` 指定 checkpoint 的 primary source，其餘必需來源會由 checkpoint 載入。
 
 ## Closed-loop 評估
 

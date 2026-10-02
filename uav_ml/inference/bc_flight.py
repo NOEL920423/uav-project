@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import time
 
 import numpy as np
 from PIL import Image
@@ -32,6 +33,7 @@ from uav_ml.inference.bc_flight_contract import (
 from uav_ml.models import (
     LatentBcPolicy,
     LatentBcPolicyConfig,
+    MultiImageAutoencoderV0,
 )
 
 
@@ -107,22 +109,64 @@ def _numpy_compatibility_aliases() -> None:
 
 def load_checkpoint_payload(
     checkpoint_path: Path,
-    requested_image_source: str,
+    requested_image_source: str | tuple[str, ...] | list[str],
     device: torch.device,
 ) -> dict:
     """Load and fail closed on every training/runtime contract mismatch."""
-    requested = canonical_image_source(requested_image_source)
+    requested_single_source = isinstance(requested_image_source, str)
+    requested_sources = tuple(
+        canonical_image_source(source)
+        for source in (
+            (requested_image_source,)
+            if isinstance(requested_image_source, str)
+            else requested_image_source
+        )
+    )
+    if not requested_sources or len(set(requested_sources)) != len(requested_sources):
+        raise ValueError("requested image sources must be nonempty and unique")
     _numpy_compatibility_aliases()
     payload = torch.load(
         checkpoint_path.resolve(), map_location=device, weights_only=False
     )
     architecture = payload.get("encoder_architecture")
-    dimensions = {"RgbAutoencoderV0": 64, "ResNet18Encoder": 512}
+    dimensions = {
+        "RgbAutoencoderV0": 64,
+        "MultiImageAutoencoderV0": 64,
+        "ResNet18Encoder": 512,
+    }
     if architecture not in dimensions:
         raise ValueError(f"checkpoint encoder_architecture mismatch: {architecture!r}")
     dimension = dimensions[architecture]
     if architecture == "ResNet18Encoder" and payload.get("encoder_preprocessing") != RESNET_PREPROCESSING:
         raise ValueError("checkpoint encoder_preprocessing mismatch")
+    checkpoint_sources = tuple(
+        canonical_image_source(source)
+        for source in payload.get(
+            "image_sources", [payload.get("image_source", "")]
+        )
+    )
+    if requested_single_source:
+        if not checkpoint_sources or requested_sources[0] != checkpoint_sources[0]:
+            raise ValueError(
+                "requested primary image source does not match checkpoint: "
+                f"requested {requested_sources!r}, checkpoint starts with "
+                f"{checkpoint_sources!r}"
+            )
+        effective_sources = checkpoint_sources
+    else:
+        effective_sources = requested_sources
+    expected_preprocessing = (
+        {
+            ("top" if source == "top_rgb" else source): IMAGE_PREPROCESSING[
+                "top" if source == "top_rgb" else source
+            ]
+            for source in effective_sources
+        }
+        if len(effective_sources) > 1 else
+        IMAGE_PREPROCESSING[
+            "top" if effective_sources[0] == "top_rgb" else effective_sources[0]
+        ]
+    )
     checks = {
         "format_version": BC_CHECKPOINT_FORMAT,
         "model_class": BC_MODEL_CLASS,
@@ -131,9 +175,7 @@ def load_checkpoint_payload(
         "latent_dimension": dimension,
         "encoder_architecture": architecture,
         "encoder_frozen": True,
-        "image_preprocessing": IMAGE_PREPROCESSING[
-            "top" if canonical_image_source(requested) == "top_rgb" else requested
-        ],
+        "image_preprocessing": expected_preprocessing,
         "physical_action_limits": BC_ACTION_LIMITS,
     }
     for key, expected in checks.items():
@@ -142,19 +184,21 @@ def load_checkpoint_payload(
                 f"checkpoint {key} mismatch: expected {expected!r}, "
                 f"got {payload.get(key)!r}"
             )
-    checkpoint_source = canonical_image_source(
-        payload.get("image_source", "")
-    )
-    if checkpoint_source != requested:
+    if checkpoint_sources != effective_sources:
         raise ValueError(
-            "checkpoint image source mismatch: "
-            f"requested {requested!r}, checkpoint requires "
-            f"{checkpoint_source!r}"
+            "checkpoint image sources mismatch: "
+            f"requested {effective_sources!r}, checkpoint requires "
+            f"{checkpoint_sources!r}"
         )
-    if requested not in IMPLEMENTED_IMAGE_SOURCES:
+    unsupported = [
+        source for source in effective_sources
+        if source not in IMPLEMENTED_IMAGE_SOURCES
+    ]
+    if unsupported:
         raise ValueError(
-            f"image source {requested!r} is not implemented for live BC flight"
+            f"image sources are not implemented for live BC flight: {unsupported}"
         )
+    payload["_runtime_image_sources"] = list(effective_sources)
     return payload
 
 
@@ -167,6 +211,7 @@ class PolicyIdentity:
     encoder_path: str
     encoder_sha256: str
     image_source: str
+    image_sources: tuple[str, ...]
 
 
 class BcFlightPolicy:
@@ -175,14 +220,23 @@ class BcFlightPolicy:
     def __init__(
         self,
         checkpoint_path: Path,
-        requested_image_source: str,
+        requested_image_source: str | tuple[str, ...] | list[str],
         device: torch.device,
         encoder_override: Path | None = None,
     ) -> None:
         checkpoint_path = checkpoint_path.resolve()
+        requested_sources = tuple(
+            canonical_image_source(source)
+            for source in (
+                (requested_image_source,)
+                if isinstance(requested_image_source, str)
+                else requested_image_source
+            )
+        )
         payload = load_checkpoint_payload(
             checkpoint_path, requested_image_source, device
         )
+        requested_sources = tuple(payload["_runtime_image_sources"])
         encoder_path = (
             encoder_override.expanduser().resolve()
             if encoder_override is not None
@@ -201,6 +255,14 @@ class BcFlightPolicy:
         if (encoder_payload["model_class"] != payload["encoder_architecture"]
                 or self.encoder.config.latent_dimension != payload["latent_dimension"]):
             raise ValueError("encoder architecture or latent dimension mismatch")
+        if isinstance(self.encoder, MultiImageAutoencoderV0):
+            if tuple(self.encoder.config.image_sources) != tuple(
+                "top" if source == "top_rgb" else source
+                for source in requested_sources
+            ):
+                raise ValueError("multi-image encoder source order mismatch")
+        elif len(requested_sources) != 1:
+            raise ValueError("single-image encoder cannot accept multiple sources")
         observation_dimension = self.encoder.config.latent_dimension + 8
         if payload["model_config"]["observation_dimension"] != observation_dimension:
             raise ValueError("policy observation dimension does not match encoder")
@@ -227,40 +289,111 @@ class BcFlightPolicy:
             checkpoint_sha256=sha256_file(checkpoint_path),
             encoder_path=str(encoder_path),
             encoder_sha256=encoder_sha256,
-            image_source=canonical_image_source(requested_image_source),
+            image_source=requested_sources[0],
+            image_sources=requested_sources,
         )
 
     @torch.inference_mode()
-    def act(self, image_bytes: bytes, state8: np.ndarray) -> np.ndarray:
-        """Infer one normalized action from one source-matched live image."""
+    def act(
+        self, image_bytes: bytes | dict[str, bytes], state8: np.ndarray
+    ) -> np.ndarray:
+        """Infer one action from the checkpoint's selected image sources."""
+        action, _ = self._act(image_bytes, state8, profile=False)
+        return action
+
+    @torch.inference_mode()
+    def act_profiled(
+        self, image_bytes: bytes | dict[str, bytes], state8: np.ndarray
+    ) -> tuple[np.ndarray, dict[str, float]]:
+        """Infer an action and measure its local processing stages."""
+        return self._act(image_bytes, state8, profile=True)
+
+    def _act(
+        self, image_bytes: bytes | dict[str, bytes], state8: np.ndarray, *, profile: bool
+    ) -> tuple[np.ndarray, dict[str, float]]:
+        """Run policy stages with optional synchronized accelerator timing."""
+        timings: dict[str, float] = {}
+
+        def start_stage() -> int:
+            if profile and self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            return time.perf_counter_ns()
+
+        def finish_stage(name: str, started_ns: int) -> None:
+            if profile and self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            if profile:
+                timings[name] = (time.perf_counter_ns() - started_ns) / 1e6
+
         state = np.asarray(state8, dtype=np.float32)
         if state.shape != (8,) or not np.isfinite(state).all():
             raise ValueError("state8 must be a finite 8-vector")
-        validate_live_image(image_bytes, self.identity.image_source)
-        try:
-            with Image.open(BytesIO(image_bytes)) as source:
-                if self.identity.image_source == "fpv_depth":
-                    tensor = preprocess_depth_image(
-                        source,
-                        self.encoder.config.image_width,
-                        self.encoder.config.image_height,
-                    )
-                else:
-                    tensor = preprocess_rgb_image(
-                        source.convert("RGB"),
-                        image_width=self.encoder.config.image_width,
-                        image_height=self.encoder.config.image_height,
-                    )
-        except Exception as error:
+        if isinstance(image_bytes, bytes):
+            images = {self.identity.image_source: image_bytes}
+        elif isinstance(image_bytes, dict):
+            images = {
+                canonical_image_source(source): data
+                for source, data in image_bytes.items()
+            }
+        else:
+            raise TypeError("image_bytes must be bytes or a source-to-bytes mapping")
+        if set(images) != set(self.identity.image_sources):
             raise ValueError(
-                f"{self.identity.image_source} image decode failed: {error}"
-            ) from error
-        image_tensor = tensor.unsqueeze(0).to(self.device)
-        latent = self.encoder.encode(image_tensor)
+                f"image inputs must contain exactly {self.identity.image_sources}"
+            )
+        started_ns = start_stage()
+        tensors = {}
+        for image_source, encoded in images.items():
+            validate_live_image(encoded, image_source)
+            try:
+                with Image.open(BytesIO(encoded)) as source:
+                    if image_source == "fpv_depth":
+                        tensor = preprocess_depth_image(
+                            source,
+                            self.encoder.config.image_width,
+                            self.encoder.config.image_height,
+                        )
+                    else:
+                        tensor = preprocess_rgb_image(
+                            source.convert("RGB"),
+                            image_width=self.encoder.config.image_width,
+                            image_height=self.encoder.config.image_height,
+                        )
+            except Exception as error:
+                raise ValueError(
+                    f"{image_source} image decode failed: {error}"
+                ) from error
+            tensors[image_source] = tensor
+        finish_stage("image_decode_preprocess_ms", started_ns)
+
+        started_ns = start_stage()
+        if isinstance(self.encoder, MultiImageAutoencoderV0):
+            image_tensor = {
+                "top" if source == "top_rgb" else source:
+                tensor.unsqueeze(0).to(self.device)
+                for source, tensor in tensors.items()
+            }
+        else:
+            image_tensor = tensors[self.identity.image_source].unsqueeze(0).to(
+                self.device
+            )
         state_tensor = torch.from_numpy(state).unsqueeze(0).to(self.device)
+        finish_stage("host_to_device_ms", started_ns)
+
+        started_ns = start_stage()
+        latent = self.encoder.encode(image_tensor)
+        finish_stage("encoder_ms", started_ns)
+
+        started_ns = start_stage()
         combined = torch.cat((latent, state_tensor), dim=1)
         normalized = (combined - self.mean) / self.std
-        return self.policy(normalized)[0].cpu().numpy().astype(np.float32)
+        action_tensor = self.policy(normalized)[0]
+        finish_stage("policy_ms", started_ns)
+
+        started_ns = start_stage()
+        action = action_tensor.cpu().numpy().astype(np.float32)
+        finish_stage("output_transfer_ms", started_ns)
+        return action, timings
 
 
 # Kept as a compatibility alias for existing imports and checkpoints.

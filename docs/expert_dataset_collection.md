@@ -101,6 +101,13 @@ attempts。`dataset_manifest.json` 是提供給 BC 的 accepted manifest，只�
 episode IDs。`collection_summary.json` 記錄 requested、attempted、accepted、rejected、
 rejection 類別、infrastructure failures 與完成狀態。
 
+每個 episode 的 `episode.json` 會在 `scene_configuration.environment_parameters` 保存
+環境參數快照，包含隨機/固定障礙物數量、場地邊界、地板與牆壁尺寸和顏色、起點與終點標記
+尺寸、光源強度與曝光、Pegasus 環境光與 RTX 陰影/AO 開關，以及材質參數。每個障礙物的
+實際形狀、位置、半徑、寬度/深度基準、高度、朝向和放置方式則保存在同一份
+`scene_configuration.obstacles` 清單。`validation.json` 另記錄收集影像的亮度與動態範圍，
+用來區分場景光照設定和實際影像亮度。
+
 ## 進度與 Visual QA
 
 進度輸出由 recorder 每秒只寫入一次的 `progress.json` snapshot 驅動，再由 orchestration

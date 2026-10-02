@@ -9,7 +9,12 @@ import torch
 from PIL import Image
 
 from uav_ml.datasets.rgb_episode_dataset import preprocess_rgb_image
-from uav_ml.models import RgbAutoencoderConfig, RgbAutoencoderV0
+from uav_ml.models import (
+    MultiImageAutoencoderConfig,
+    MultiImageAutoencoderV0,
+    RgbAutoencoderConfig,
+    RgbAutoencoderV0,
+)
 from uav_ml.train_bc import resolve_device
 
 
@@ -45,12 +50,16 @@ class ResNet18Encoder(torch.nn.Module):
 
 def load_frozen_encoder(
     path: Path, device: torch.device,
-) -> tuple[RgbAutoencoderV0 | ResNet18Encoder, dict]:
+) -> tuple[RgbAutoencoderV0 | MultiImageAutoencoderV0 | ResNet18Encoder, dict]:
     """Load recorded weights without downloading anything at inference time."""
     payload = torch.load(path, map_location=device, weights_only=False)
     architecture = payload.get("model_class")
     if architecture == "RgbAutoencoderV0":
         model = RgbAutoencoderV0(RgbAutoencoderConfig(**payload["model_config"]))
+    elif architecture == "MultiImageAutoencoderV0":
+        model = MultiImageAutoencoderV0(
+            MultiImageAutoencoderConfig.from_dict(payload["model_config"])
+        )
     elif architecture == "ResNet18Encoder":
         model = ResNet18Encoder()
         if payload["model_config"] != model.config.to_dict():

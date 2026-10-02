@@ -27,6 +27,7 @@ from isaac.runtime.environment import (
     RADIUS_BASIS_WIDTH_MIN,
     START_POS,
     TARGET_POS,
+    build_environment_parameters,
 )
 from isaac.runtime.formal_expert_sensor_contract import (
     FORMAL_RGB_EXPECTED_RATE_RANGE_HZ,
@@ -145,6 +146,14 @@ def validate_cylinder_scene(
                 )
     if scene.get("lighting") != LIGHTING_CONTRACT:
         raise ValueError(f"{episode_id}: canonical lighting changed")
+    recorded_environment = scene.get("environment_parameters")
+    if (
+        recorded_environment is not None
+        and recorded_environment != build_environment_parameters(obstacles)
+    ):
+        raise ValueError(
+            f"{episode_id}: environment parameter record does not match scene"
+        )
     return {
         "obstacle_count": len(obstacles),
         "direct_path_blocker_count": blockers,

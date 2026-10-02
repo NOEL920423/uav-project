@@ -44,6 +44,28 @@ pretraining 和視覺診斷。
 四個 stride-2 convolutions 將影像縮小至 128x5x8。Linear layer 產生 64D latent；對稱的
 linear/transposed-convolution decoder 負責重建影像。模型共有 891,811 個可訓練參數。
 
+## 多影像訓練
+
+正式資料集可在同一個 run 指定任意已登記來源組合；來源清單的順序會寫入
+checkpoint，並決定融合分支順序：
+
+```bash
+./uav ae-train --dataset bc_expert_cube \
+  --image-sources fpv_rgb fpv_depth --epochs 100
+
+./uav ae-train --dataset bc_expert_cube \
+  --image-sources fpv_rgb fpv_depth top --epochs 100
+```
+
+多影像 AE 為每個來源保留 encoder/decoder 分支，將各來源 latent 融合成共同的 64D
+表示，再分別重建所選影像。每種來源的 reconstruction MSE 等權平均。資料載入會驗證
+每筆樣本都有完整影像組合與時間配對；多來源 TOP 要符合 1 ms 配對，FPV depth 要符合
+100 ms 配對。來源缺漏或不符合配對規格時會停止該次訓練。
+
+可用重複的 `--initialize-source SOURCE=PATH` 從既有單來源 AE 初始化對應分支；也可用
+`--initialize-from PATH` 接續訓練相同來源順序的多影像 AE。單一來源的既有
+`--image-source` 流程和 checkpoint 格式維持不變。
+
 ## 已記錄的基準結果
 
 Command:

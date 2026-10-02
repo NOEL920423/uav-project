@@ -16,6 +16,7 @@ from uav_px4_control.px4.px4_boundary_models import (
 
 
 _ACCEPTABLE_ARMING_STATES = frozenset((1, 2))
+_ARMING_STATE_ARMED = 2
 _NAVIGATION_STATE_MAX = 22
 _NAVIGATION_STATE_TERMINATION = 13
 
@@ -317,7 +318,10 @@ class Px4OutputSafetyGate:
             telemetry.connected
             and telemetry.arming_state in _ACCEPTABLE_ARMING_STATES
             and nav_valid
-            and telemetry.pre_flight_checks_pass
+            and (
+                telemetry.arming_state == _ARMING_STATE_ARMED
+                or telemetry.pre_flight_checks_pass
+            )
             and telemetry.local_position_valid
             and telemetry.local_velocity_valid
             and telemetry.odometry_valid

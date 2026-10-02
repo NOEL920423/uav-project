@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 
 VIDEO_METADATA_SCHEMA = "uav_bc_policy_input_video/v1"
@@ -91,35 +91,50 @@ def _load_frames(spool_dir: Path) -> tuple[str, list[PolicyInputFrame]]:
     return source, frames
 
 
-def _intent_lines(action: tuple[float, float, float]) -> list[str]:
-    forward, right, yaw = action
-    longitudinal = "FORWARD" if forward >= 0.0 else "BACK"
-    lateral = "RIGHT" if right >= 0.0 else "LEFT"
-    turn = "TURN RIGHT" if yaw >= 0.0 else "TURN LEFT"
-    return [
-        f"{longitudinal} {abs(forward):.2f}",
-        f"{lateral} {abs(right):.2f}",
-        f"{turn} {abs(yaw):.2f}",
-    ]
-
-
 def _annotate_frame(
-    source: Path, target: Path, frame: PolicyInputFrame, image_source: str,
+    source: Path, target: Path, frame: PolicyInputFrame,
 ) -> None:
     with Image.open(source) as image:
         canvas = image.convert("RGB")
     draw = ImageDraw.Draw(canvas)
-    font = ImageFont.load_default()
-    lines = [
-        f"{image_source} | inference {frame.inference_count}",
-        *_intent_lines(frame.action_body),
-    ]
-    y = 6
-    for line in lines:
-        box = draw.textbbox((6, y), line, font=font)
-        draw.rectangle((2, y - 2, box[2] + 4, box[3] + 2), fill=(0, 0, 0))
-        draw.text((6, y), line, fill=(255, 255, 0), font=font)
-        y = box[3] + 6
+    forward, right, _ = frame.action_body
+    center_x = 46
+    center_y = 46
+    draw.rounded_rectangle(
+        (6, 6, 86, 86), radius=12, fill=(0, 0, 0), outline=(90, 90, 90)
+    )
+
+    magnitude = max(abs(forward), abs(right))
+    if magnitude > 0.01:
+        scale = 28.0 / magnitude
+        end_x = center_x + right * scale
+        end_y = center_y - forward * scale
+        draw.line(
+            (center_x, center_y, end_x, end_y),
+            fill=(255, 220, 0),
+            width=6,
+        )
+        angle_x = end_x - center_x
+        angle_y = end_y - center_y
+        length = (angle_x**2 + angle_y**2) ** 0.5
+        head_length = 11.0
+        base_x = end_x - head_length * angle_x / length
+        base_y = end_y - head_length * angle_y / length
+        wing_x = 5.0 * -angle_y / length
+        wing_y = 5.0 * angle_x / length
+        draw.polygon(
+            [
+                (end_x, end_y),
+                (base_x + wing_x, base_y + wing_y),
+                (base_x - wing_x, base_y - wing_y),
+            ],
+            fill=(255, 220, 0),
+        )
+    else:
+        draw.ellipse(
+            (center_x - 4, center_y - 4, center_x + 4, center_y + 4),
+            fill=(180, 180, 180),
+        )
     canvas.save(target, format="PNG")
 
 
@@ -143,7 +158,7 @@ def render_policy_input_video(
         for index, frame in enumerate(frames):
             _annotate_frame(
                 spool_dir / "frames" / frame.image_filename,
-                rendered / f"{index:06d}.png", frame, image_source,
+                rendered / f"{index:06d}.png", frame,
             )
         concat = rendered / "frames.txt"
         lines = []
