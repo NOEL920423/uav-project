@@ -31,9 +31,9 @@ from uav_ml.datasets.expert_image_dataset import (
     ExpertImageDataset,
     IMAGE_PREPROCESSING,
     IMAGE_SOURCES,
+    RgbEpisodeDataset,
     normalize_image_sources,
 )
-from uav_ml.datasets.rgb_episode_dataset import RgbEpisodeDataset
 from uav_ml.models import (
     MultiImageAutoencoderConfig,
     MultiImageAutoencoderV0,

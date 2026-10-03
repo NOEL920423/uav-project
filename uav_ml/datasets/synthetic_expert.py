@@ -14,7 +14,7 @@ from uav_ml.contracts import (
     DEFAULT_CONTRACT,
     OBSERVATION_CONTRACT_VERSION,
 )
-from uav_ml.datasets.split import split_episode_ids
+from uav_ml.datasets.dataset import split_episode_ids
 from uav_ml.navigation_imports import add_navigation_source_path
 
 

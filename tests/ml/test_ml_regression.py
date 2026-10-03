@@ -8,10 +8,12 @@ import numpy as np
 import torch
 
 from uav_ml.contracts import DEFAULT_CONTRACT
-from uav_ml.datasets.dataset import BcEpisodeDataset
-from uav_ml.datasets.split import split_episode_ids
+from uav_ml.datasets.dataset import (
+    BcEpisodeDataset,
+    split_episode_ids,
+    validate_dataset,
+)
 from uav_ml.datasets.synthetic_expert import generate_synthetic_dataset
-from uav_ml.datasets.validation import validate_dataset
 from uav_ml.inference import BcPolicyInference
 from uav_ml.models import BcPolicyV0
 from uav_ml.training.checkpoint import load_checkpoint, save_checkpoint

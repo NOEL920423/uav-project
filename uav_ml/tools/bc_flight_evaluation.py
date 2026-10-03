@@ -124,6 +124,7 @@ class ManagedFlightRuntime:
         timeout_s: float,
         verbose: bool = False,
         diagnostics_enabled: bool = True,
+        image_sources: tuple[str, ...] | None = None,
     ) -> None:
         self.repository_root = repository_root
         self.isaac_release = isaac_release
@@ -131,6 +132,7 @@ class ManagedFlightRuntime:
         self.device = device
         self.checkpoint = checkpoint
         self.image_source = image_source
+        self.image_sources = image_sources or (image_source,)
         self.timeout_s = timeout_s
         self.verbose = verbose
         self.diagnostics_enabled = diagnostics_enabled
@@ -383,6 +385,7 @@ class ManagedFlightRuntime:
             str(self.checkpoint),
             sys.executable,
             self.device,
+            " ".join(self.image_sources),
         ]
         status = self._uav(arguments, runtime_dir / "flight.log")
         if not result_path.is_file():
@@ -707,7 +710,8 @@ def main(argv: list[str] | None = None) -> int:
             runtime = ManagedFlightRuntime(
                 repository_root, isaac_release, bool(args.visible), args.device,
                 checkpoint, image_source, args.timeout, args.verbose,
-                ENABLE_BC_FLIGHT_DIAGNOSTICS,
+                image_sources=tuple(identity.image_sources),
+                diagnostics_enabled=ENABLE_BC_FLIGHT_DIAGNOSTICS,
             )
             runtime.preflight()
             print(MSG_STARTING, flush=True)

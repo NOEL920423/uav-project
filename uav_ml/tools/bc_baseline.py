@@ -40,7 +40,7 @@ from uav_ml.models import (
     RgbAutoencoderV0,
 )
 from uav_ml.inference.rgb_encoder import (
-    RESNET_PREPROCESSING, ResNet18Encoder, load_frozen_encoder,
+    ResNet18Encoder, load_frozen_encoder,
 )
 from uav_ml.tools.validate_expert_collection import (
     DEFAULT_DATASET,
@@ -515,11 +515,7 @@ def _checkpoint(
     image_source: str,
     encoder: RgbAutoencoderV0 | MultiImageAutoencoderV0 | ResNet18Encoder,
 ) -> dict:
-    image_sources = (
-        list(encoder.config.image_sources)
-        if isinstance(encoder, MultiImageAutoencoderV0)
-        else [image_source]
-    )
+    image_sources = list(getattr(encoder.config, "image_sources", (image_source,)))
     image_preprocessing = (
         {source: IMAGE_PREPROCESSING[source] for source in image_sources}
         if len(image_sources) > 1 else IMAGE_PREPROCESSING[image_sources[0]]
@@ -549,7 +545,7 @@ def _checkpoint(
         "image_sources": image_sources,
         "image_preprocessing": image_preprocessing,
         "encoder_preprocessing": (
-            RESNET_PREPROCESSING if isinstance(encoder, ResNet18Encoder)
+            encoder.preprocessing if isinstance(encoder, ResNet18Encoder)
             else image_preprocessing
         ),
         "latent_dimension": encoder.config.latent_dimension,
@@ -712,12 +708,8 @@ def train_baseline(
         {source: IMAGE_PREPROCESSING[source] for source in sources}
         if multi_image else IMAGE_PREPROCESSING[sources[0]]
     )
-    if encoder_type == "resnet18" and (
-        encoder_checkpoint is not None
-        or multi_image
-        or sources[0] == "fpv_depth"
-    ):
-        raise ValueError("ResNet18 requires RGB (top or fpv_rgb) and no --encoder override")
+    if encoder_type == "resnet18" and encoder_checkpoint is not None:
+        raise ValueError("ResNet18 does not accept an --encoder override")
     if encoder_type == "autoencoder" and encoder_checkpoint is None:
         raise ValueError("autoencoder requires an encoder checkpoint")
     audit = audit_dataset(
@@ -739,14 +731,18 @@ def train_baseline(
     else:
         output_dir.mkdir(parents=True)
     if encoder_type == "resnet18":
-        pretrained = ResNet18Encoder(pretrained=True)
+        pretrained = ResNet18Encoder(pretrained=True, image_sources=sources)
         encoder_checkpoint = output_dir / "resnet18_encoder.pt"
         torch.save({
             "model_class": "ResNet18Encoder",
-            "model_config": pretrained.config.to_dict(),
+            "model_config": pretrained.checkpoint_config,
             "model_state": pretrained.state_dict(),
-            "preprocessing": RESNET_PREPROCESSING,
-            "metadata": {"image_source": sources[0], "weights": "IMAGENET1K_V1"},
+            "preprocessing": pretrained.preprocessing,
+            "metadata": {
+                "image_source": source_label,
+                "image_sources": list(sources),
+                "weights": "IMAGENET1K_V1",
+            },
         }, encoder_checkpoint)
         del pretrained
         audit["encoder_checkpoint"] = str(encoder_checkpoint.resolve())
@@ -793,7 +789,7 @@ def train_baseline(
     )
     if checkpoint_source == "fpv":
         checkpoint_source = "fpv_rgb"
-    if isinstance(encoder, MultiImageAutoencoderV0):
+    if hasattr(encoder.config, "image_sources"):
         encoder_sources = tuple(encoder.config.image_sources)
         metadata_sources = tuple(
             encoder_payload.get("metadata", {}).get("image_sources", ())
@@ -1129,12 +1125,8 @@ def main() -> int:
             args.image_sources if args.image_sources else (args.image_source,)
         )
         source_label = sources[0] if len(sources) == 1 else "+".join(sources)
-        if args.encoder_type == "resnet18" and (
-            args.encoder or len(sources) > 1 or sources[0] == "fpv_depth"
-        ):
-            raise ValueError(
-                "ResNet18 currently supports one RGB source only and no --encoder override"
-            )
+        if args.encoder_type == "resnet18" and args.encoder:
+            raise ValueError("ResNet18 does not accept an --encoder override")
         if args.encoder_type == "autoencoder":
             if len(sources) > 1:
                 encoder = select_multi_autoencoder_checkpoint(

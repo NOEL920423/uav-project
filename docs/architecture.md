@@ -30,6 +30,17 @@ expert-collect -> ae-train -> bc-train -> bc-eval
 
 `ae-train` 和 `bc-train` 不依賴 ROS、Isaac 或 PX4。
 
+ML 的小型輔助模組依職責合併於既有檔案：
+
+| 合併前模組 | 現在位置 |
+|---|---|
+| `uav_ml.datasets.split`、`uav_ml.datasets.validation` | `uav_ml.datasets.dataset` |
+| `uav_ml.datasets.rgb_episode_dataset` | `uav_ml.datasets.expert_image_dataset` |
+| `uav_ml.models.latent_actor_critic` | `uav_ml.models.latent_bc_policy` |
+
+專案內的 imports 已同步更新；額外腳本若直接匯入上述舊模組，也需改用現在位置。
+`uav_ml.models` 和 `uav_ml.datasets` 原有公開匯出、CLI、資料格式與 checkpoint 格式保持不變。
+
 ## 正式 BC closed-loop 流程
 
 ```text

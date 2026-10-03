@@ -851,6 +851,7 @@ internal_bc_flight_run() {
     local checkpoint_path="$5"
     local ml_python="$6"
     local device="$7"
+    local image_sources="${8:-$image_source}"
     local video_spool_dir=""
     if [[ "${UAV_BC_FLIGHT_DIAGNOSTICS:-1}" == "1" ]]; then
         video_spool_dir="$(dirname -- "$result_path")/policy_input_frames"
@@ -866,6 +867,7 @@ internal_bc_flight_run() {
         episode:="$episode" \
         seed:="$random_seed" \
         image_source:="$image_source" \
+        image_sources:="$image_sources" \
         video_spool_dir:="$video_spool_dir" \
         checkpoint_path:="$checkpoint_path" \
         ml_python:="$ml_python" \

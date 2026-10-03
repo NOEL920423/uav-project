@@ -17,9 +17,12 @@ import torch
 from uav_ml.datasets.expert_image_dataset import (
     IMAGE_PREPROCESSING,
     preprocess_depth_image,
+    preprocess_rgb_image,
 )
-from uav_ml.datasets.rgb_episode_dataset import preprocess_rgb_image
-from uav_ml.inference.rgb_encoder import RESNET_PREPROCESSING, load_frozen_encoder
+from uav_ml.inference.rgb_encoder import (
+    load_frozen_encoder,
+    resnet_preprocessing_for_sources,
+)
 from uav_ml.inference.bc_flight_contract import (
     ACTION_LIMITS,
     IMPLEMENTED_IMAGE_SOURCES,
@@ -33,7 +36,6 @@ from uav_ml.inference.bc_flight_contract import (
 from uav_ml.models import (
     LatentBcPolicy,
     LatentBcPolicyConfig,
-    MultiImageAutoencoderV0,
 )
 
 
@@ -137,8 +139,6 @@ def load_checkpoint_payload(
     if architecture not in dimensions:
         raise ValueError(f"checkpoint encoder_architecture mismatch: {architecture!r}")
     dimension = dimensions[architecture]
-    if architecture == "ResNet18Encoder" and payload.get("encoder_preprocessing") != RESNET_PREPROCESSING:
-        raise ValueError("checkpoint encoder_preprocessing mismatch")
     checkpoint_sources = tuple(
         canonical_image_source(source)
         for source in payload.get(
@@ -167,6 +167,10 @@ def load_checkpoint_payload(
             "top" if effective_sources[0] == "top_rgb" else effective_sources[0]
         ]
     )
+    expected_encoder_preprocessing = (
+        resnet_preprocessing_for_sources(effective_sources)
+        if architecture == "ResNet18Encoder" else expected_preprocessing
+    )
     checks = {
         "format_version": BC_CHECKPOINT_FORMAT,
         "model_class": BC_MODEL_CLASS,
@@ -176,6 +180,7 @@ def load_checkpoint_payload(
         "encoder_architecture": architecture,
         "encoder_frozen": True,
         "image_preprocessing": expected_preprocessing,
+        "encoder_preprocessing": expected_encoder_preprocessing,
         "physical_action_limits": BC_ACTION_LIMITS,
     }
     for key, expected in checks.items():
@@ -255,8 +260,15 @@ class BcFlightPolicy:
         if (encoder_payload["model_class"] != payload["encoder_architecture"]
                 or self.encoder.config.latent_dimension != payload["latent_dimension"]):
             raise ValueError("encoder architecture or latent dimension mismatch")
-        if isinstance(self.encoder, MultiImageAutoencoderV0):
-            if tuple(self.encoder.config.image_sources) != tuple(
+        encoder_sources = tuple(
+            getattr(
+                self.encoder,
+                "image_sources",
+                getattr(self.encoder.config, "image_sources", ()),
+            )
+        )
+        if len(encoder_sources) > 1:
+            if encoder_sources != tuple(
                 "top" if source == "top_rgb" else source
                 for source in requested_sources
             ):
@@ -367,7 +379,14 @@ class BcFlightPolicy:
         finish_stage("image_decode_preprocess_ms", started_ns)
 
         started_ns = start_stage()
-        if isinstance(self.encoder, MultiImageAutoencoderV0):
+        encoder_sources = tuple(
+            getattr(
+                self.encoder,
+                "image_sources",
+                getattr(self.encoder.config, "image_sources", ()),
+            )
+        )
+        if len(encoder_sources) > 1:
             image_tensor = {
                 "top" if source == "top_rgb" else source:
                 tensor.unsqueeze(0).to(self.device)

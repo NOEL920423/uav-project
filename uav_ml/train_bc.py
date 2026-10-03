@@ -13,8 +13,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from uav_ml.contracts import ACTION_NAMES, DATASET_VERSION
-from uav_ml.datasets.dataset import BcEpisodeDataset
-from uav_ml.datasets.validation import validate_dataset
+from uav_ml.datasets.dataset import BcEpisodeDataset, validate_dataset
 from uav_ml.models import BcPolicyV0
 from uav_ml.training.checkpoint import load_checkpoint, save_checkpoint
 from uav_ml.training.normalization import (
@@ -265,4 +264,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

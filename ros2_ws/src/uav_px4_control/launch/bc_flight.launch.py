@@ -34,6 +34,7 @@ def generate_launch_description() -> LaunchDescription:
     ml_python = LaunchConfiguration("ml_python")
     device = LaunchConfiguration("device")
     image_source = LaunchConfiguration("image_source")
+    image_sources = LaunchConfiguration("image_sources")
     video_spool_dir = LaunchConfiguration("video_spool_dir")
     result_path = LaunchConfiguration("result_path")
     episode = LaunchConfiguration("episode")
@@ -44,6 +45,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("ml_python"),
         DeclareLaunchArgument("device", default_value="cpu"),
         DeclareLaunchArgument("image_source", default_value="top_rgb"),
+        DeclareLaunchArgument("image_sources", default_value=""),
         DeclareLaunchArgument("video_spool_dir", default_value=""),
         DeclareLaunchArgument(
             "result_path", default_value="/tmp/uav_bc_flight_result.json"
@@ -113,6 +115,7 @@ def generate_launch_description() -> LaunchDescription:
                 "checkpoint_path": checkpoint_path,
                 "ml_python": ml_python,
                 "image_source": image_source,
+                "image_sources": image_sources,
                 "device": device,
                 "video_spool_dir": video_spool_dir,
             }],
