@@ -59,6 +59,7 @@ pegasus_test/
 /checkpoints/
 /training_runs/
 /autoencoder_runs/
+/evaluations/
 /tensorboard/
 /wandb/
 

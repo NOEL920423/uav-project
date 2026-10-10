@@ -1,7 +1,14 @@
 """Static guardrails for the embedded Isaac runtime adapter."""
 
 import ast
+from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
+import time
+
+import numpy as np
+from PIL import Image
+import pytest
 
 from isaac.runtime.formal_expert_sensor_contract import (
     FORMAL_RGB_EXPECTED_RATE_RANGE_HZ,
@@ -11,6 +18,9 @@ from isaac.runtime.formal_expert_sensor_contract import (
     TOP_RGB_HEIGHT,
     TOP_RGB_PUBLISH_PERIOD_S,
     TOP_RGB_WIDTH,
+    TOP_VIDEO_JPEG_QUALITY,
+    TOP_VIDEO_RGB_HEIGHT,
+    TOP_VIDEO_RGB_WIDTH,
 )
 
 
@@ -28,6 +38,118 @@ EXPERT_DATASET_RECORDER = (
     ROOT / "ros2_ws" / "src" / "uav_data_recorder" /
     "uav_data_recorder" / "expert_dataset_recorder_node.py"
 )
+
+
+def _bridge_method(name, **scope):
+    """Run an existing runtime method without loading Isaac or ROS."""
+    tree = ast.parse(BRIDGE.read_text(encoding="utf-8"))
+    cls = next(node for node in ast.walk(tree)
+               if isinstance(node, ast.ClassDef) and node.name == "IsaacRuntimeBridge")
+    method = next(node for node in cls.body
+                  if isinstance(node, ast.FunctionDef) and node.name == name)
+    method.decorator_list = []
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(BRIDGE), "exec"), scope)
+    return scope[name]
+
+
+def test_recording_jpeg_preserves_model_bytes_and_adds_high_resolution_top():
+    """The standard camera encoder stays byte-identical to its prior defaults."""
+    message = lambda: SimpleNamespace(header=SimpleNamespace())
+    encode = _bridge_method("_jpeg_message", CAMERA_WIDTH=320, CAMERA_HEIGHT=180,
+                            JPEG_QUALITY=85, BytesIO=BytesIO, CompressedImage=message)
+    for size in ((320, 180), (640, 640)):
+        pixels = np.arange(size[0] * size[1] * 3, dtype=np.uint8).reshape(size[1], size[0], 3)
+        previous = BytesIO()
+        Image.fromarray(pixels).save(previous, format="JPEG", quality=85)
+        actual = encode(pixels, "stamp", "optical", size)
+        assert actual.data == previous.getvalue()
+        assert actual.header.stamp == "stamp"
+    size = (TOP_VIDEO_RGB_WIDTH, TOP_VIDEO_RGB_HEIGHT)
+    video = encode(np.zeros((size[1], size[0], 3), dtype=np.uint8), "stamp", "optical", size,
+                   quality=TOP_VIDEO_JPEG_QUALITY, subsampling=0)
+    from PIL.JpegImagePlugin import get_sampling
+    with Image.open(BytesIO(video.data)) as image:
+        assert image.size == (1024, 1024)
+        assert get_sampling(image) == 0
+
+
+def test_recording_render_product_is_dedicated_and_released_on_stop():
+    """Only the new recording product is destroyed by its lifecycle owner."""
+    source = BRIDGE.read_text(encoding="utf-8")
+    setup = source.split("if self._observer_video_enabled:", 1)[1].split(
+        "if self._observer_viewport_requested:", 1
+    )[0]
+    assert "force_new=True" in setup
+    assert "(TOP_VIDEO_RGB_WIDTH, TOP_VIDEO_RGB_HEIGHT)" in setup
+    calls = []
+    owner = SimpleNamespace(
+        _stopped=False, _subscription=None, _rgb_annotator=None, _observer_rgb_annotator=None,
+        _observer_video_rgb_annotator=SimpleNamespace(detach=lambda: calls.append("detach")),
+        _observer_video_render_product=SimpleNamespace(destroy=lambda: calls.append("destroy")),
+        _depth_annotator=None, _owns_rclpy=False,
+        _timing=SimpleNamespace(close=lambda: calls.append("timing-close")),
+        _node=SimpleNamespace(destroy_node=lambda: calls.append("node-destroy")),
+    )
+    _bridge_method("stop")(owner)
+    assert calls == ["detach", "destroy", "timing-close", "node-destroy"]
+    assert owner._observer_video_render_product is None
+    assert owner._observer_video_rgb_annotator is None
+
+
+@pytest.mark.parametrize("enabled, failed", [(False, False), (True, False), (True, True)])
+def test_recording_top_publishes_on_model_tick_without_changing_model_streams(enabled, failed):
+    """Optional video failures preserve the model frames and original reason."""
+    from isaac.runtime.formal_expert_sensor_contract import TOP_VIDEO_TOPIC
+
+    sent, errors = {}, []
+
+    def publisher(name):
+        sent[name] = []
+        return SimpleNamespace(publish=sent[name].append)
+
+    def encode(data, stamp, frame_id, expected_size=(320, 180), **options):
+        return {"data": data, "stamp": stamp, "size": expected_size, **options}
+
+    def video_data():
+        if failed:
+            raise RuntimeError("video annotator unavailable")
+        return b"video-top"
+
+    owner = SimpleNamespace(
+        _camera_enabled=True, _last_camera_publish_monotonic=0,
+        _camera_frame_count=0, _camera_error="", _expert_sensors_enabled=True,
+        _last_observer_publish_monotonic=0, _observer_publish_period_s=0.2,
+        _observer_resolution=(640, 640), _observer_frame_count=0,
+        _observer_camera_error="", _last_depth_publish_monotonic=1.0,
+        _observer_video_enabled=enabled, _observer_video_error="warming",
+        _observer_video_frame_count=0, _update_camera_pose=lambda: True,
+        _rgb_annotator=SimpleNamespace(get_data=lambda: b"fpv"),
+        _observer_rgb_annotator=SimpleNamespace(get_data=lambda: b"model-top"),
+        _observer_video_rgb_annotator=SimpleNamespace(get_data=video_data),
+        _camera_publisher=publisher("fpv"), _observer_camera_publisher=publisher("model-top"),
+        _observer_video_publisher=publisher("video-top"), _jpeg_message=encode,
+        _timing=SimpleNamespace(record=lambda *args, **kwargs: None,
+                                publish=lambda *args, **kwargs: None),
+        _node=SimpleNamespace(get_logger=lambda: SimpleNamespace(error=errors.append)),
+    )
+    publish = _bridge_method(
+        "_publish_camera", time=time, CAMERA_PUBLISH_PERIOD_S=0.2,
+        CAMERA_TOPIC="fpv", OBSERVER_CAMERA_TOPIC="model-top", DEPTH_PUBLISH_PERIOD_S=0.2,
+        TOP_VIDEO_TOPIC=TOP_VIDEO_TOPIC, TOP_VIDEO_RGB_WIDTH=TOP_VIDEO_RGB_WIDTH,
+        TOP_VIDEO_RGB_HEIGHT=TOP_VIDEO_RGB_HEIGHT, TOP_VIDEO_JPEG_QUALITY=TOP_VIDEO_JPEG_QUALITY,
+    )
+    publish(owner, "same-tick", 1.0)
+    assert [sent[key][0]["size"] for key in ("fpv", "model-top")] == [(320, 180), (640, 640)]
+    assert all(sent[key][0]["stamp"] == "same-tick" for key in ("fpv", "model-top"))
+    assert owner._camera_error == owner._observer_camera_error == ""
+    if enabled and not failed:
+        assert sent["video-top"] == [{"data": b"video-top", "stamp": "same-tick",
+                                      "size": (1024, 1024), "quality": 95, "subsampling": 0}]
+    else:
+        assert not sent["video-top"]
+    if failed:
+        assert owner._observer_video_error == "RuntimeError: video annotator unavailable"
+        assert errors == ["TOP video camera failed: RuntimeError: video annotator unavailable"]
 
 
 def test_embedded_runtime_scripts_parse():

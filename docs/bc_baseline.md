@@ -198,24 +198,101 @@ BC output 會自動寫入 `artifacts/experiments/bc/<dataset>/<source>/run_<time
 其 SHA-256、沿用訓練時的 preprocessing 和 normalization，並啟動受管理的 Isaac Sim、
 Pegasus、PX4 SITL 與 ROS 2 flight stack。
 
+未指定 `--checkpoint` 時，會比較 `artifacts/experiments/bc/` 中各 `latest.json` 的
+`updated_utc`，選取最近完成且 checkpoint 仍存在的 BC 訓練，涵蓋各 dataset、AE、ResNet18
+與影像來源。`./uav bc-train` 成功完成後會原子更新全域的
+`artifacts/experiments/bc/latest.json`，即使訓練使用自訂 `--output` 也能供下次評估選取。
+未完成的訓練不會取代預設模型；不可用的 pointer 會在 terminal 顯示原因。
+未指定 `--image-source` 時，會沿用所選 checkpoint 的主要影像來源與其餘必要來源；
+明確指定來源時仍會驗證是否符合 checkpoint。啟動時 terminal 會顯示 checkpoint 路徑與
+影像來源，方便確認當次使用的模型。
+
 每次 rollout 中，`CONTROL SOURCE = BC_POLICY`。Evaluator 只會呼叫 BC policy 產生 actions；
 不會呼叫環境中的 A* expert、不會混合 expert action，也不會把 privileged information 加入
 policy observation。A* 僅在內部用來產生可到達的隨機場景，不是 control source。Collision
 和越界終止都會回報為 collision failures。
 
-Evaluation output 會寫入以下目錄：
+正式 BC flight evaluation 依 checkpoint 實際載入的特徵擷取模型決定預設目錄，
+使用台北時區的 `月份日期T小時分鐘Y西元年`：
 
 ```text
-artifacts/evaluations/bc_flight/run_<timestamp>/
-  metrics.json
+evaluations/bc/AE_1010T1530Y2026/
+  summary.json
   episode_<index>/result.json
-  plots/
+  trajectory_plots/
+  summary_plots/
+  loss/bc.png
+  loss/ae.png
+  loss/loss_summary.json
 ```
+
+ResNet18 則使用 `evaluations/bc/ResNet18_1010T1530Y2026/`，包含
+`RgbAutoencoderV0`、`MultiImageAutoencoderV0` 的 AE 都使用 `AE_` 前綴。
+`--output PATH` 仍可指定完整輸出目錄；`--nas-root` 發布到 NAS 的 `evaluations/bc/`。
+既有目錄不會自動搬移，同一分鐘同類模型的同名目錄也不會被覆寫。
+專案根目錄的 `evaluations/` 已由 `.gitignore` 忽略，所有評估產物都不會加入 Git。
+
+`loss/loss_summary.json` 記錄所選 BC 與 encoder checkpoint 的絕對路徑、checkpoint epoch、
+各自的最低 training loss／validation loss epoch 與 loss，以及最大 epochs、learning rate、
+batch size、early stopping patience、minimum epochs、seed、實際 epochs 和訓練總時長。
+Train 與 validation 的最佳 epoch 分開從該模型的歷史紀錄計算；驗證最佳 epoch 不代表
+training loss 的最低點。曲線和摘要來源都是所選 checkpoint 同目錄的訓練產物，不使用 latest。
+
+BC／AE 後續訓練的 `summary.json` 和 `training_config.json` 會保存 `training_duration_s`，
+單位為秒，涵蓋資料準備、訓練與訓練產物生成。舊訓練沒有紀錄時，loss 摘要會使用 `null`
+並列入 `missing_fields`；缺少曲線檔時可由 CSV 重新繪圖。
+ResNet18 使用凍結的 `IMAGENET1K_V1` 權重，沒有本專案的 encoder loss 或訓練時長，
+摘要標示 `pretrained_frozen`，不產生 encoder loss 圖；BC 的 `loss/bc.png` 照常輸出。
 
 每個 episode 會記錄 seed、success、collision、timeout、終止原因、最小/最終 goal distance、
 飛行時間、測量 path length、policy ownership、安全中止狀態與 blending 狀態。Aggregate
 metrics 包含數量/比例，以及平均距離、時間和 path length。這些 closed-loop metrics 回答：
 **BC 能否獨立飛到目標？**不可將較低的 offline MSE 解讀為導航成功。
+
+正式 `./uav bc-eval` 的 `summary.json` 會保存 `total_test_duration_s`，單位為秒。
+此欄位使用 monotonic clock，從 checkpoint 驗證前計時，直到最後一回合的 runtime 清理結束；
+包含模擬啟動、飛行、診斷影片產生與清理，不包含最後的統計繪圖和 NAS 傳輸。
+中斷或啟動失敗時，只要已建立本次輸出目錄，仍會保存截至清理結束的實際耗時。
+
+`videos/episode_XXXXXX.mp4` 使用四項資訊同框的 2560×1440 版面：左側為 BC 成功推論
+實際使用的主要來源影像，右上為 Isaac TOP 相機，右下為機體座標方向指針與
+forward/right/yaw rate 動作數值（m/s、m/s、rad/s）。數值與指針沿用 runtime 的動作
+裁切與縮放；指針表示平移命令方向，yaw rate 另外以數值顯示，並非實測飛行速度。
+TOP 依主要輸入影像的時間戳在 1 ms 內配對；缺少同期 TOP 時明確顯示缺圖，不等待或
+影響 policy readiness。錄影 TOP 使用同一 ObserverCamera 的獨立 1024×1024 輸出，JPEG
+quality 95、4:4:4，僅在 BC 錄影時啟用。模型仍使用既有 FPV 320×180／TOP 640×640、
+JPEG quality 85 與既有前處理。指針與文字以 2 倍 supersampling 抗鋸齒，TOP 顯示使用
+Lanczos，H.264 編碼使用 CRF 16。舊 runtime 沒有高解析度 TOP 時，可沿用同期的模型
+TOP；舊影像不會因提高影片解析度而增加原始細節。多影像模型左側顯示
+主要來源；FPV depth 僅在影片中轉為 0–30 m 灰階。影片標示實際來源，不將 TOP 標成 FPV。
+旁邊的 JSON 保存版面、動作單位與具備 TOP 畫面的 frame 數；舊錄影來源缺少 TOP 時
+仍可合成，舊 MP4 不會自動重製。
+
+`trajectory_plots/` 保留每航次的 `trajectory_1.png` 至 `trajectory_20.png`，另外依固定
+航次範圍新增四條軌跡的合併圖：`trajectory_001-004.png`、`trajectory_005-008.png`，
+依此類推。缺少有效 trace 的航次會略過，不會移動其他航次的分組。合併圖中，timeout 為
+藍色實線、success 為綠色實線、collision 為紅色實線、control issue 為紫色虛線；
+同組同結果使用不同深淺，圖例標示航次與結果。越界沿用灰色實線。
+
+`summary_plots/summary.png` 只顯示 Success、Timeout、Collision，Y 軸次數使用整數。
+百分比仍以全部航次為分母；其他終止原因保留在 JSON 與 `flight_status_by_episode.png`。
+自行調整字體時，修改 `uav_ml/tools/bc_flight_plotting.py` 頂端的下列常數，數值單位為 pt：
+
+| Constant | Text | Default |
+| --- | --- | --- |
+| `SUMMARY_TITLE_FONT_SIZE` | 圖表標題 | 14 |
+| `SUMMARY_LABEL_FONT_SIZE` | Y 軸標籤 Episodes | 12 |
+| `SUMMARY_TICK_FONT_SIZE` | X/Y 軸刻度與結果名稱 | 11 |
+| `SUMMARY_COUNT_FONT_SIZE` | 柱上次數與百分比 | 11 |
+
+例如將 `SUMMARY_TITLE_FONT_SIZE = 14` 改成 `18`，再執行以下指令重新產圖：
+
+```bash
+./uav bc-eval-plot evaluations/bc/AE_1010T1530Y2026
+```
+
+重新產圖會更新既有 `summary.json` 的圖表路徑，保留原始測試時長；舊測試沒有實際耗時
+紀錄時，不會由飛行時長推算或補造此欄位。
 
 ## 範圍與目前風險
 
@@ -229,8 +306,13 @@ PX4/Pegasus learned-policy 飛行或硬體驗證。正式 Pegasus dataset 與此
 
 ## Closed-loop 時間紀錄與閱讀方式
 
-`./uav bc-eval` 會在每回合資料夾自動保存以下診斷資料，沿用既有 node 和 evaluator，
-不需要另外啟動 Python 診斷程式：
+`./uav bc-eval` 預設不記錄 timing 或 PX4 ULog，也不產生下列診斷報告。
+結果、軌跡、影片、圖表及原始 terminal logs 仍照常保存；既有 artifacts 不會被刪除。
+需要排錯時加入 `--diagnosis`，沿用既有 node 和 evaluator，不需要另外啟動診斷程式：
+
+```bash
+./uav bc-eval --diagnosis --episodes 1 --checkpoint <same_checkpoint> --seed <same_seed>
+```
 
 - `timing_summary.md`：中文報告。先看回合結果與首次故障，再看各階段的平均、P95、
   最大耗時與事件順序。原始錯誤文字保留英文以方便搜尋。
@@ -245,7 +327,8 @@ PX4/Pegasus learned-policy 飛行或硬體驗證。正式 Pegasus dataset 與此
 
 時間事件包含主機 monotonic、ROS 與 wall clock、來源訊息標記、發布與 callback 時間、
 timer 間隔、判斷時的快取年齡、影像讀取與編碼、BC 推論耗時，以及 gate/streamer 狀態與
-當時有效門檻。診斷不會修改控制、安全門檻或 PX4 參數；ULog 使用 logger 指令啟停。
+當時有效門檻。診斷不會修改控制或安全門檻。評估時會以 `SDLOG_MODE=-1` 關閉 PX4
+自動 logger；只有 `--diagnosis` 會使用 logger 指令啟停並保存 ULog。
 
 **從發布到 callback 的耗時包含傳輸與排程，不能直接稱為 DDS 延遲。**快取年齡也不代表
 傳輸耗時，而且 snapshot 可能包含未選用的控制來源。目前尚未量得影像實際擷取時間、DDS
@@ -255,7 +338,7 @@ timer 間隔、判斷時的快取年齡、影像讀取與編碼、BC 推論耗�
 只重新整理已保存的資料，不啟動模擬：
 
 ```bash
-python scripts/diagnostics/summarize_bc_startup.py artifacts/evaluations/bc_flight/<run_directory>
+python scripts/diagnostics/summarize_bc_startup.py evaluations/bc/<run_directory>
 ```
 
 ### FPV 與 action 時間證據
@@ -291,7 +374,7 @@ Control callbacks 會記錄進入、結束、wall duration、thread CPU duration
 已規劃的 targeted run 中額外擷取每個 node 前 30 秒的 Linux scheduler 和 I/O counters：
 
 ```bash
-UAV_TIMING_SCHED_SECONDS=30 ./uav bc-eval --episodes 1 --checkpoint <same_checkpoint> --seed <same_seed>
+UAV_TIMING_SCHED_SECONDS=30 ./uav bc-eval --diagnosis --episodes 1 --checkpoint <same_checkpoint> --seed <same_seed>
 ```
 
 此環境變數會由 runtime processes 繼承。額外 counter sampling 預設停用，並會自動停止。

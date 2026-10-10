@@ -219,6 +219,7 @@ class Px4SetpointStreamerNode(Node):
             for name in defaults.__dataclass_fields__
         })
         self.machine = Px4StreamStateMachine(self.config)
+        self.declare_parameter("log_startup_diagnostics", True)
         self._candidate: StreamCandidate | None = None
         self._safe_value: bool | None = None
         self._safe_receipt_time_s: float | None = None
@@ -555,11 +556,19 @@ class Px4SetpointStreamerNode(Node):
                     )
                 },
             }
-            self.get_logger().info("BC_STARTUP_DIAG " + json.dumps(payload))
+            diagnostic_json = json.dumps(payload)
+            if self.get_parameter("log_startup_diagnostics").value:
+                self.get_logger().info("BC_STARTUP_DIAG " + diagnostic_json)
+            elif self.machine.fault_latched:
+                self.get_logger().warning(
+                    f"PX4 stream stopped: {result.state.value}: "
+                    f"{result.stop_reason}"
+                )
             self._timing.record(
                 "fault" if self.machine.fault_latched else "state",
                 state=result.state.value, reason=result.stop_reason,
                 thresholds_s=payload["telemetry_thresholds_s"],
+                diagnostic_json=diagnostic_json,
             )
         self._last_result = result
         self._timing.send(

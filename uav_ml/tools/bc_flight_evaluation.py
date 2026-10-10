@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import torch
 
@@ -41,11 +42,23 @@ MSG_PLOT_WARNING = "[BC Flight] Plot generation failed: {error}"
 MSG_ERROR = "[BC Flight] Error: {error}"
 _LAST_ARTIFACT_PATH: Path | None = None
 _ERROR_MARKERS = ("ERROR", "FATAL", "TRACEBACK", "EXCEPTION", "UNEXPECTED EXIT")
-ENABLE_BC_FLIGHT_DIAGNOSTICS = True
+# Keep trajectory and video recording independent of timing/ULog diagnostics.
+ENABLE_BC_FLIGHT_RECORDING = True
+FEATURE_EXTRACTOR_NAMES = {
+    "ResNet18Encoder": "ResNet18",
+    "RgbAutoencoderV0": "AE",
+    "MultiImageAutoencoderV0": "AE",
+}
 
 
 def _stamp() -> str:
     return datetime.now().strftime("%Y%m%dT%H%M")
+
+
+def _evaluation_run_directory(repository_root: Path, encoder_architecture: str) -> Path:
+    feature_extractor = FEATURE_EXTRACTOR_NAMES[encoder_architecture]
+    stamp = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%m%dT%H%MY%Y")
+    return repository_root / "evaluations/bc" / f"{feature_extractor}_{stamp}"
 
 
 def _stop_process(process: subprocess.Popen | None) -> None:
@@ -123,7 +136,7 @@ class ManagedFlightRuntime:
         image_source: str,
         timeout_s: float,
         verbose: bool = False,
-        diagnostics_enabled: bool = True,
+        diagnostics_enabled: bool = False,
         image_sources: tuple[str, ...] | None = None,
     ) -> None:
         self.repository_root = repository_root
@@ -182,28 +195,31 @@ class ManagedFlightRuntime:
         self._runtime_dir = runtime_dir
         environment = os.environ.copy()
         environment["UAV_BC_FLIGHT_DIAGNOSTICS"] = (
-            "1" if self.diagnostics_enabled else "0"
+            "1" if ENABLE_BC_FLIGHT_RECORDING else "0"
+        )
+        environment["UAV_BC_VIDEO_TOP"] = (
+            "1" if ENABLE_BC_FLIGHT_RECORDING else "0"
         )
         if self.diagnostics_enabled:
             environment["UAV_TIMING_DIR"] = str(
                 (runtime_dir / "timing").resolve()
             )
-            # PX4 rcS sources this override before starting its diagnostic logger.
-            px4_params = runtime_dir / "px4-rc.params"
-            original_params = Path.home() / (
-                "PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/px4-rc.params"
-            )
-            px4_params.write_text(
-                f". {shlex.quote(str(original_params))}\nparam set SDLOG_MODE -1\n",
-                encoding="utf-8",
-            )
-            environment["PATH"] = (
-                f"{runtime_dir.resolve()}{os.pathsep}"
-                f"{environment.get('PATH', '')}"
-            )
         else:
             environment.pop("UAV_TIMING_DIR", None)
             environment.pop("UAV_TIMING_SCHED_SECONDS", None)
+        # Disable automatic ULogs; only diagnostic runs explicitly start a logger.
+        px4_params = runtime_dir / "px4-rc.params"
+        original_params = Path.home() / (
+            "PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/px4-rc.params"
+        )
+        px4_params.write_text(
+            f". {shlex.quote(str(original_params))}\nparam set SDLOG_MODE -1\n",
+            encoding="utf-8",
+        )
+        environment["PATH"] = (
+            f"{runtime_dir.resolve()}{os.pathsep}"
+            f"{environment.get('PATH', '')}"
+        )
         environment["UAV_EXPERT_SENSORS"] = "1"
         environment["UAV_OBSERVER_VIEWPORT"] = "1" if self.visible else "0"
         environment["UAV_VIEWPORT_SOURCE"] = self.image_source
@@ -333,7 +349,7 @@ class ManagedFlightRuntime:
     def _uav(self, arguments: list[str], log_path: Path) -> int:
         environment = os.environ.copy()
         environment["UAV_BC_FLIGHT_DIAGNOSTICS"] = (
-            "1" if self.diagnostics_enabled else "0"
+            "1" if ENABLE_BC_FLIGHT_RECORDING else "0"
         )
         if self.diagnostics_enabled:
             environment["UAV_TIMING_DIR"] = str(
@@ -415,7 +431,7 @@ class ManagedFlightRuntime:
 
     def save_ulog(self, runtime_dir: Path, abnormal: bool) -> None:
         """Snapshot PX4 ULog files before stopping managed processes."""
-        if not abnormal:
+        if not self.diagnostics_enabled or not abnormal:
             return
         destination = runtime_dir / "px4_ulog"
         destination.mkdir(exist_ok=True)
@@ -514,7 +530,9 @@ def build_parser() -> argparse.ArgumentParser:
             "Evaluate a source-matched BC checkpoint in Isaac Sim with Pegasus and PX4."
         ),
     )
-    parser.add_argument("--image-source", default="top_rgb")
+    parser.add_argument(
+        "--image-source", help="Override the checkpoint's primary image source.",
+    )
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument(
         "--replay-trace", type=Path,
@@ -532,11 +550,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=(Path(os.environ["UAV_NAS_ROOT"])
                  if os.environ.get("UAV_NAS_ROOT") else None),
         help=(
-            "publish this completed evaluation under NAS/evaluations/bc_flight "
+            "publish this completed evaluation under NAS/evaluations/bc "
             "and delete verified local artifacts"
         ),
     )
     parser.add_argument("--verbose", action="store_true", help="Show all subprocess stdout.")
+    parser.add_argument(
+        "--diagnosis", action="store_true",
+        help="Record node timing and PX4 ULogs, export CSVs, and write diagnostic reports.",
+    )
     display = parser.add_mutually_exclusive_group()
     display.add_argument(
         "--visible", action="store_true", help="Start the WebRTC runtime."
@@ -618,7 +640,9 @@ def _finalize_evaluation(
     *,
     image_source: str,
     identity,
-    diagnostics_enabled: bool = True,
+    diagnostics_enabled: bool = False,
+    total_test_duration_s: float | None = None,
+    encoder_architecture: str | None = None,
 ) -> None:
     """Persist available evidence even if a later runtime startup fails."""
     records = _saved_result_records(output_root, results)
@@ -641,6 +665,24 @@ def _finalize_evaluation(
         "episodes": records,
         "plots": plots,
     }
+    if total_test_duration_s is not None:
+        summary["total_test_duration_s"] = total_test_duration_s
+    if encoder_architecture is not None:
+        summary["feature_extractor"] = FEATURE_EXTRACTOR_NAMES[encoder_architecture]
+        summary["encoder_architecture"] = encoder_architecture
+        summary["encoder_checkpoint"] = identity.encoder_path
+        try:
+            from uav_ml.tools.bc_flight_plotting import create_training_loss_artifacts
+
+            create_training_loss_artifacts(
+                output_root, Path(identity.checkpoint_path),
+                Path(identity.encoder_path), encoder_architecture,
+            )
+            summary["loss_summary_file"] = "loss/loss_summary.json"
+        except Exception as error:
+            import traceback
+            traceback.print_exc()
+            summary["loss_export_error"] = str(error)
     if plot_error:
         summary["plot_error"] = plot_error
     summary_path = output_root / "summary.json"
@@ -676,22 +718,29 @@ def main(argv: list[str] | None = None) -> int:
     repository_root = Path(__file__).resolve().parents[2]
     if args.replay_trace:
         return _replay_trace(args, repository_root)
-    image_source = canonical_image_source(args.image_source)
+    test_started_s = time.monotonic()
+    requested_image_source = (
+        canonical_image_source(args.image_source) if args.image_source is not None else None
+    )
     checkpoint = resolve_checkpoint(repository_root, args.checkpoint)
-    if ENABLE_BC_FLIGHT_DIAGNOSTICS and shutil.which("ffmpeg") is None:
+    if ENABLE_BC_FLIGHT_RECORDING and shutil.which("ffmpeg") is None:
         raise FileNotFoundError(
             "ffmpeg is required for BC policy-input diagnostic video recording"
         )
     print(MSG_PREFLIGHT, flush=True)
     policy = BcFlightPolicy(
-        checkpoint, image_source, torch.device(args.device)
+        checkpoint, requested_image_source, torch.device(args.device)
     )
     identity = policy.identity
+    image_source = identity.image_source
+    print(f"[BC Flight] Checkpoint: {identity.checkpoint_path}", flush=True)
+    print(f"[BC Flight] Image sources: {', '.join(identity.image_sources)}", flush=True)
+    encoder_architecture = type(policy.encoder).__name__
     del policy
     output_root = (
         args.output.expanduser().resolve()
         if args.output
-        else repository_root / "artifacts/evaluations/bc_flight" / f"run_{_stamp()}"
+        else _evaluation_run_directory(repository_root, encoder_architecture)
     )
     output_root.mkdir(parents=True, exist_ok=False)
     global _LAST_ARTIFACT_PATH
@@ -711,7 +760,7 @@ def main(argv: list[str] | None = None) -> int:
                 repository_root, isaac_release, bool(args.visible), args.device,
                 checkpoint, image_source, args.timeout, args.verbose,
                 image_sources=tuple(identity.image_sources),
-                diagnostics_enabled=ENABLE_BC_FLIGHT_DIAGNOSTICS,
+                diagnostics_enabled=args.diagnosis,
             )
             runtime.preflight()
             print(MSG_STARTING, flush=True)
@@ -722,7 +771,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(MSG_PREPARING.format(episode=episode, seed=seed), flush=True)
                 print(MSG_RUNNING, flush=True)
                 result = runtime.run_episode(episode, seed, result_path, episode_root)
-                if ENABLE_BC_FLIGHT_DIAGNOSTICS:
+                if ENABLE_BC_FLIGHT_RECORDING:
                     result = _finalize_episode_video(result_path)
                 results.append(result)
                 print(MSG_RESULT.format(episode=episode, reason=result.get("terminal_reason", "unknown")), flush=True)
@@ -735,7 +784,9 @@ def main(argv: list[str] | None = None) -> int:
             results,
             image_source=image_source,
             identity=identity,
-            diagnostics_enabled=ENABLE_BC_FLIGHT_DIAGNOSTICS,
+            diagnostics_enabled=args.diagnosis,
+            total_test_duration_s=time.monotonic() - test_started_s,
+            encoder_architecture=encoder_architecture,
         )
     if args.nas_root is not None:
         from uav_ml.tools.artifact_publish import publish_artifact_tree
@@ -743,7 +794,7 @@ def main(argv: list[str] | None = None) -> int:
         destination = publish_artifact_tree(
             output_root,
             args.nas_root,
-            "evaluations/bc_flight",
+            "evaluations/bc",
             delete_local=True,
         )
         print(f"[BC Flight] Published verified artifact: {destination}", flush=True)
@@ -764,7 +815,7 @@ def _replay_trace(args: argparse.Namespace, repository_root: Path) -> int:
     output_root = (
         args.output.expanduser().resolve()
         if args.output
-        else repository_root / "artifacts/evaluations/bc_flight" / f"replay_{_stamp()}"
+        else repository_root / "evaluations/bc_flight" / f"replay_{_stamp()}"
     )
     output_root.mkdir(parents=True, exist_ok=False)
     global _LAST_ARTIFACT_PATH
@@ -776,7 +827,7 @@ def _replay_trace(args: argparse.Namespace, repository_root: Path) -> int:
     runtime = ManagedFlightRuntime(
         repository_root, isaac_release, bool(args.visible), args.device,
         trace_path, str(trace.get("image_source", "top_rgb")), args.timeout,
-        args.verbose, ENABLE_BC_FLIGHT_DIAGNOSTICS,
+        args.verbose, args.diagnosis,
     )
     print(MSG_PREFLIGHT, flush=True)
     runtime.preflight()

@@ -11,6 +11,7 @@ import select
 import subprocess
 import sys
 import threading
+from collections import deque
 from pathlib import Path
 
 from geometry_msgs.msg import PoseStamped, TwistStamped
@@ -33,6 +34,10 @@ from std_msgs.msg import String
 
 from std_srvs.srv import SetBool
 
+from isaac.runtime.formal_expert_sensor_contract import (
+    TOP_RGB_ALIGNMENT_TOLERANCE_S,
+    TOP_VIDEO_TOPIC,
+)
 from uav_ml.inference.bc_flight_contract import (
     body_action_to_ned,
     build_state8,
@@ -268,6 +273,7 @@ class BcPolicyNode(Node):
         self._video_capture_queue: queue.Queue | None = None
         self._video_capture_thread: threading.Thread | None = None
         self._video_dropped_count = 0
+        self._video_top_frames: deque[tuple[int, bytes]] = deque(maxlen=16)
         if self._video_spool_dir is not None:
             self._video_capture_queue = queue.Queue(maxsize=16)
         self._action_origin = {}
@@ -303,6 +309,11 @@ class BcPolicyNode(Node):
                     message, selected_source
                 ),
                 QoSProfile(depth=2),
+            )
+        if self._video_spool_dir is not None:
+            self.create_subscription(
+                CompressedImage, TOP_VIDEO_TOPIC,
+                self._video_top_callback, QoSProfile(depth=2),
             )
         self.create_subscription(
             Odometry, ODOMETRY_TOPIC, self._odometry_callback, qos
@@ -355,6 +366,29 @@ class BcPolicyNode(Node):
 
     def _now_seconds(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9
+
+    def _video_top_callback(self, message: CompressedImage) -> None:
+        """Cache high-resolution observer video without adding policy inputs."""
+        stamp_ns = int(message.header.stamp.sec) * 1_000_000_000 + int(
+            message.header.stamp.nanosec
+        )
+        self._video_top_frames.append((stamp_ns, bytes(message.data)))
+
+    def _select_video_top(self, request: dict) -> tuple[bytes | None, int | None]:
+        """Pair TOP with the consumed input, never with a newer inference frame."""
+        primary_stamp = request["image_header_stamp"]
+        stamp_ns = int(primary_stamp[0]) * 1_000_000_000 + int(primary_stamp[1])
+        if self._video_top_frames:
+            top_ns, image = min(self._video_top_frames, key=lambda item: abs(item[0] - stamp_ns))
+            delta_ns = top_ns - stamp_ns
+            if abs(delta_ns) <= int(TOP_RGB_ALIGNMENT_TOLERANCE_S * 1_000_000_000):
+                return image, delta_ns
+        # Older runtimes may only provide the policy's standard TOP stream.
+        if "top_rgb" in request["images"]:
+            top_stamp = request["image_header_stamps"]["top_rgb"]
+            top_ns = int(top_stamp[0]) * 1_000_000_000 + int(top_stamp[1])
+            return request["images"]["top_rgb"], top_ns - stamp_ns
+        return None, None
 
     @timed_callback
     def _image_callback(
@@ -809,10 +843,16 @@ class BcPolicyNode(Node):
             command_ned=list(self._last_command),
         )
         if self._video_spool_dir is not None:
-            video_job = (
-                request["image"], self._inference_count, completed_ns,
-                tuple(action),
-            )
+            top_image, top_delta_ns = self._select_video_top(request)
+            video_job = {
+                "image_bytes": request["image"],
+                "image_source": self._requested_source,
+                "inference_count": self._inference_count,
+                "timestamp_ns": completed_ns,
+                "action_body": tuple(action),
+                "top_image_bytes": top_image,
+                "top_time_delta_ns": top_delta_ns,
+            }
             try:
                 assert self._video_capture_queue is not None
                 self._video_capture_queue.put_nowait(video_job)
@@ -833,16 +873,8 @@ class BcPolicyNode(Node):
             job = self._video_capture_queue.get()
             if job is None:
                 return
-            image, inference_count, timestamp_ns, action = job
             try:
-                capture_policy_input_frame(
-                    self._video_spool_dir,
-                    image_bytes=image,
-                    image_source=self._requested_source,
-                    inference_count=inference_count,
-                    timestamp_ns=timestamp_ns,
-                    action_body=action,
-                )
+                capture_policy_input_frame(self._video_spool_dir, **job)
             except (OSError, ValueError) as error:
                 message = f"video_capture_failed:{error}"
                 print(f"[BC Flight] {message}", file=sys.stderr, flush=True)

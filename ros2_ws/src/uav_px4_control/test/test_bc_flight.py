@@ -1,7 +1,9 @@
 """Pure regression tests for BC handoff and evaluation termination."""
 
 from dataclasses import replace
+from collections import deque
 import io
+import queue
 from types import MethodType, SimpleNamespace
 import threading
 
@@ -291,6 +293,69 @@ def test_completion_publishes_without_timer_and_uses_snapshot(monkeypatch):
     assert node._action_origin["request_id"] == 1
     assert any(event == "inference_result_handled" for event, _ in timing.events)
     assert any(event == "previous_action_updated" for event, _ in timing.events)
+
+
+@pytest.mark.parametrize("top_frames, expected", [
+    ([(4_000_000_000, b"matched"), (4_200_000_000, b"newer")], (b"matched", 0)),
+    ([(3_800_000_000, b"stale")], (None, None)),
+    ([(4_000_500_000, b"aligned")], (b"aligned", 500_000)),
+    ([], (None, None)),
+])
+def test_video_pairs_top_to_consumed_input_without_gating_control(monkeypatch, top_frames, expected):
+    policy, node, timing = _policy_stub(monkeypatch)
+    node._requested_source = "fpv_rgb"
+    node._requested_sources = ("fpv_rgb",)
+    node._video_spool_dir = "video"
+    node._video_top_frames = deque(top_frames, maxlen=16)
+    node._video_capture_queue = queue.Queue(maxsize=16)
+    node._select_video_top = MethodType(policy.BcPolicyNode._select_video_top, node)
+    request = node._completed_inference["request"]
+    request.update(image=b"consumed", images={"fpv_rgb": b"consumed"},
+                   image_header_stamp=(4, 0), image_header_stamps={"fpv_rgb": (4, 0)})
+    policy.BcPolicyNode._inference_ready_callback(node)
+    job = node._video_capture_queue.get_nowait()
+    assert job["image_bytes"] == b"consumed"
+    assert (job["top_image_bytes"], job["top_time_delta_ns"]) == expected
+    assert len(timing.messages) == 1
+    assert node._previous_action == (0.2, 0.1, 0.0)
+
+
+def test_video_reuses_consumed_top_for_single_and_multiple_inputs(monkeypatch):
+    policy, node, _ = _policy_stub(monkeypatch)
+    node._video_top_frames = deque([(4_200_000_000, b"newer")], maxlen=16)
+    for images, stamps in (
+        ({"top_rgb": b"policy-top"}, {"top_rgb": (4, 0)}),
+        ({"fpv_rgb": b"fpv", "top_rgb": b"policy-top"},
+         {"fpv_rgb": (4, 0), "top_rgb": (4, 500_000)}),
+    ):
+        request = {"image_header_stamp": (4, 0), "images": images,
+                   "image_header_stamps": stamps}
+        image, delta = policy.BcPolicyNode._select_video_top(node, request)
+        assert image == b"policy-top"
+        assert delta in (0, 500_000)
+
+
+def test_recording_prefers_high_resolution_top_without_replacing_model_input(monkeypatch):
+    policy, node, _ = _policy_stub(monkeypatch)
+    node._video_top_frames = deque([(4_000_000_000, b"high-resolution")], maxlen=16)
+    request = {"image_header_stamp": (4, 0), "images": {"top_rgb": b"model-input"},
+               "image_header_stamps": {"top_rgb": (4, 0)}}
+    assert policy.BcPolicyNode._select_video_top(node, request) == (b"high-resolution", 0)
+    assert request["images"] == {"top_rgb": b"model-input"}
+
+
+def test_observer_video_callback_leaves_policy_observations_untouched(monkeypatch):
+    policy, node, timing = _policy_stub(monkeypatch)
+    node._video_top_frames = deque(maxlen=16)
+    node._source_images = {"fpv_rgb": b"policy-image"}
+    message = policy.CompressedImage()
+    message.header.stamp.sec = 4
+    message.data = b"observer"
+    policy.BcPolicyNode._video_top_callback(node, message)
+    assert list(node._video_top_frames) == [(4_000_000_000, b"observer")]
+    assert node._source_images == {"fpv_rgb": b"policy-image"}
+    assert timing.events == []
+    assert node._inference_count == 0
 
 
 @pytest.mark.parametrize("rejection", ["expired", "disabled", "generation", "older"])

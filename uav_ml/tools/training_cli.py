@@ -365,6 +365,22 @@ def select_multi_autoencoder_checkpoint(
     return EncoderSelection(checkpoint, automatic, summary)
 
 
+def add_episode_split_arguments(parser: argparse.ArgumentParser) -> None:
+    """Expose the same episode-subset controls for AE and BC training."""
+    parser.add_argument(
+        "--episodes", type=int,
+        help="total usable episodes to select (default: all); default split is 80/10/10",
+    )
+    for split in ("train", "validation", "test"):
+        parser.add_argument(
+            f"--{split}-episodes", type=int,
+            help=(
+                f"exact {split} episode count; provide all three split counts; "
+                "their sum must match --episodes if supplied"
+            ),
+        )
+
+
 def add_tensorboard_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--tensorboard",

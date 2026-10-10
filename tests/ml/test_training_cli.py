@@ -54,6 +54,24 @@ class _FakeProcess:
 
 
 class TrainingCliTests(unittest.TestCase):
+    def test_ae_and_bc_accept_the_same_episode_subset_arguments(self) -> None:
+        arguments = [
+            "--episodes", "50", "--train-episodes", "30",
+            "--validation-episodes", "10", "--test-episodes", "10",
+        ]
+        for parser_factory in (autoencoder_parser, bc_parser):
+            with self.subTest(parser=parser_factory.__module__):
+                args = parser_factory().parse_args(arguments)
+                self.assertEqual(
+                    (args.episodes, args.train_episodes, args.validation_episodes, args.test_episodes),
+                    (50, 30, 10, 10),
+                )
+                defaults = parser_factory().parse_args([])
+                self.assertIsNone(defaults.episodes)
+                self.assertIsNone(defaults.train_episodes)
+                self.assertIsNone(defaults.validation_episodes)
+                self.assertIsNone(defaults.test_episodes)
+
     def test_short_and_explicit_dataset_paths_resolve_identically(self) -> None:
         with tempfile.TemporaryDirectory(prefix="dataset-resolution-") as temporary:
             project = Path(temporary)

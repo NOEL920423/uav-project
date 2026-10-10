@@ -1,0 +1,89 @@
+digraph G {
+graph [rankdir=LR, bgcolor="#ffffff", pad="0.35", nodesep="0.25", ranksep="0.45", fontname="DejaVu Sans", fontsize=19, fontcolor="#0f172a", labelloc=t, labeljust=l];
+node [shape=box, style="rounded,filled", fillcolor="#f8fafc", color="#cbd5e1", penwidth=1.4, fontname="DejaVu Sans", fontsize=13, margin="0.15,0.11", fontcolor="#0f172a"];
+edge [color="#64748b", penwidth=1.4, arrowsize=0.65, fontname="DejaVu Sans", fontsize=10, fontcolor="#475569"];
+
+label="01   SIMULATION, SCENE & SENSOR INPUTS";
+isaac [label="Isaac Sim / Pegasus\nisaac/runtime/environment.py", fillcolor="#e0f2fe", color="#38bdf8"];
+bridge [label="scene_bridge_node\nPose / heartbeat validation", fillcolor="#e0f2fe", color="#38bdf8"];
+relay [label="Expert / human supervisor\nRelay scene into planning topics", fillcolor="#fff7ed", color="#fb923c"];
+scene [label="/uav/scene/{obstacles,start,goal}\nObstacleArray / PoseStamped\n→ planner, BC goal, recorder, monitors", shape=note, fillcolor="#eff6ff"];
+images [label="Camera topics · sensor_msgs/CompressedImage\n/uav/isaac/fpv/image/compressed\n/uav/isaac/observer/image/compressed\n/uav/isaac/fpv/depth/compressed", shape=note, fillcolor="#eff6ff"];
+consumers [label="bc_policy_node (configured sources)\nexpert_dataset_recorder (RGB + depth)", fillcolor="#f5f3ff", color="#a78bfa"];
+isaac -> bridge [label="/isaac_uav/pose · PoseStamped\n/uav/isaac/runtime_status · String"];
+bridge -> relay [label="/uav/isaac/scene/*"];
+relay -> scene;
+bridge -> scene [style=dashed, color="#8b5cf6", label="BC launch: remap directly", constraint=false];
+isaac -> images;
+images -> consumers [label="image subscription"];
+}
+
+digraph G {
+graph [rankdir=LR, bgcolor="#ffffff", pad="0.35", nodesep="0.25", ranksep="0.45", fontname="DejaVu Sans", fontsize=19, fontcolor="#0f172a", labelloc=t, labeljust=l];
+node [shape=box, style="rounded,filled", fillcolor="#f8fafc", color="#cbd5e1", penwidth=1.4, fontname="DejaVu Sans", fontsize=13, margin="0.15,0.11", fontcolor="#0f172a"];
+edge [color="#64748b", penwidth=1.4, arrowsize=0.65, fontname="DejaVu Sans", fontsize=10, fontcolor="#475569"];
+
+label="02   ALTERNATIVE CONTROL SOURCES → SHARED MUX";
+scene [label="IN: /uav/scene/*", shape=note, fillcolor="#eff6ff"];
+planner [label="astar_planner_node\nA* + smoothing", fillcolor="#ecfdf5", color="#34d399"];
+parameterizer [label="trajectory_parameterizer_node\nTime parameterization", fillcolor="#ecfdf5", color="#34d399"];
+follower [label="trajectory_follower_node\nIN: vehicle odometry", fillcolor="#ecfdf5", color="#34d399"];
+bc [label="bc_policy_node\nIN: images, odometry, goal\nML inference worker", fillcolor="#f5f3ff", color="#a78bfa", style="rounded,filled,dashed"];
+joystick [label="joystick_control_node\nIN: /dev/input/js0, odometry", fillcolor="#f5f3ff", color="#a78bfa", style="rounded,filled,dashed"];
+supervisor [label="Mode-specific flight supervisor\nTakeoff / hold / landing commands", fillcolor="#fff7ed", color="#fb923c"];
+mux [label="control_mux_node\nSelection / freshness / HOLD", fillcolor="#fff7ed", color="#fb923c"];
+scene -> planner;
+planner -> parameterizer [label="/uav/planner/path\nnav_msgs/Path", color="#059669"];
+parameterizer -> follower [label="/uav/trajectory/candidate\nTimedTrajectory\n/uav/trajectory/valid · Bool", color="#059669"];
+follower -> mux [label="/uav/control/astar_command", color="#059669"];
+bc -> mux [label="/uav/control/bc_command", style=dashed, color="#8b5cf6"];
+joystick -> mux [label="/uav/control/joystick_command", style=dashed, color="#8b5cf6"];
+supervisor -> mux [label="/uav/control/lifecycle_command", color="#d97706"];
+{rank=same; follower; bc; joystick; supervisor;}
+}
+
+digraph G {
+graph [rankdir=LR, bgcolor="#ffffff", pad="0.35", nodesep="0.25", ranksep="0.45", fontname="DejaVu Sans", fontsize=19, fontcolor="#0f172a", labelloc=t, labeljust=l];
+node [shape=box, style="rounded,filled", fillcolor="#f8fafc", color="#cbd5e1", penwidth=1.4, fontname="DejaVu Sans", fontsize=13, margin="0.15,0.11", fontcolor="#0f172a"];
+edge [color="#64748b", penwidth=1.4, arrowsize=0.65, fontname="DejaVu Sans", fontsize=10, fontcolor="#475569"];
+
+label="03   GUARDED PX4 OUTPUT & STATE FEEDBACK";
+mux [label="control_mux_node", fillcolor="#fff7ed", color="#fb923c"];
+gate [label="px4_mapping_gate_node\nNED mapping / safety gate", fillcolor="#fff7ed", color="#fb923c"];
+streamer [label="px4_setpoint_streamer_node\nSetpoint stream owner", fillcolor="#fff7ed", color="#fb923c"];
+agent [label="MicroXRCEAgent\nROS 2 ↔ uXRCE-DDS", fillcolor="#e0f2fe", color="#38bdf8"];
+px4 [label="PX4 SITL\n↔ Pegasus via MAVLink\n(non-ROS simulation link)", fillcolor="#f1f5f9"];
+odometry [label="px4_odometry_bridge_node", fillcolor="#e0f2fe", color="#38bdf8"];
+odom_topic [label="/uav/vehicle/odometry · Odometry\n→ follower, BC, joystick,\nrecorder, monitors", shape=note, fillcolor="#eff6ff"];
+telemetry [label="px4_live_telemetry_adapter", fillcolor="#e0f2fe", color="#38bdf8"];
+mux -> gate [label="/uav/control/selected_command\nTwistStamped + mux_status"];
+gate -> streamer [label="/uav/px4/setpoint_candidate\nPx4SetpointCandidate\nsafe_to_forward + output_gate_status"];
+streamer -> agent [label="/fmu/in/trajectory_setpoint\n/fmu/in/offboard_control_mode", color="#dc2626"];
+agent -> px4 [dir=both, label="uXRCE-DDS / UDP"];
+agent -> odometry [label="/fmu/out/vehicle_odometry", constraint=false];
+odometry -> odom_topic;
+agent -> telemetry [label="/fmu/out/{vehicle_status,\nvehicle_control_mode,vehicle_odometry,\nfailsafe_flags}", constraint=false];
+{rank=same; mux; odometry; telemetry;}
+{rank=same; gate; odom_topic;}
+telemetry -> gate [label="/uav/test/px4/telemetry_status\nPx4SyntheticTelemetry (live-adapted)", color="#0284c7", constraint=false];
+}
+
+digraph G {
+graph [rankdir=LR, bgcolor="#ffffff", pad="0.35", nodesep="0.25", ranksep="0.45", fontname="DejaVu Sans", fontsize=19, fontcolor="#0f172a", labelloc=t, labeljust=l];
+node [shape=box, style="rounded,filled", fillcolor="#f8fafc", color="#cbd5e1", penwidth=1.4, fontname="DejaVu Sans", fontsize=13, margin="0.15,0.11", fontcolor="#0f172a"];
+edge [color="#64748b", penwidth=1.4, arrowsize=0.65, fontname="DejaVu Sans", fontsize=10, fontcolor="#475569"];
+
+label="04   SUPERVISION, COMMAND OWNERSHIP & EXPERT RECORDING";
+supervisor [label="Flight supervisor · mode-specific\npx4_sitl_flight_supervisor_node\nor bc_flight_supervisor_node", fillcolor="#fff7ed", color="#fb923c"];
+services [label="Service targets\ncontrol_mux: /uav/control/set_source\ngate: /uav/px4/set_output_enable\nstreamer: /uav/px4/set_stream_enable\nfollower: /uav/control/set_tracking_enable (expert)\nBC policy: /uav/bc/set_enabled (BC)", shape=note, fillcolor="#fff7ed"];
+owner [label="px4_vehicle_command_owner_node\nSole vehicle-command publisher", fillcolor="#fff7ed", color="#fb923c"];
+px4 [label="MicroXRCEAgent → PX4 SITL", fillcolor="#e0f2fe", color="#38bdf8"];
+inputs [label="Expert recorder topic inputs\nRGB / depth, runtime_status, vehicle odometry\nastar_command, mux_status, flight_status\nscene goal, planner path / status", shape=note, fillcolor="#fff1f2"];
+recorder [label="expert_dataset_recorder\nOptional: synchronized dataset + metadata", fillcolor="#fff1f2", color="#fb7185"];
+artifacts [label="artifacts/datasets/\nEpisode data + validation metadata", fillcolor="#fff1f2", color="#fb7185"];
+supervisor -> services [label="enable / source selection", style=dashed, color="#d97706"];
+supervisor -> owner [label="/uav/px4/send_vehicle_command\nSendPx4VehicleCommand service", style=dashed, color="#d97706"];
+owner -> px4 [label="/fmu/in/vehicle_command", color="#dc2626"];
+inputs -> recorder;
+recorder -> artifacts;
+}

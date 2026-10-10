@@ -19,7 +19,6 @@ from uav_interfaces.msg import (
     Px4SyntheticTelemetry,
 )
 from uav_interfaces.srv import SetPx4OutputEnable
-from uav_px4_control.diagnostics import TimingRecorder, timed_callback
 
 from uav_px4_control.control.control_mux_node import (
     MUX_STATUS_TOPIC,
@@ -30,6 +29,7 @@ from uav_px4_control.control.control_source_models import (
     ControlCommand,
     Vector3,
 )
+from uav_px4_control.diagnostics import TimingRecorder, timed_callback
 from uav_px4_control.px4.px4_boundary_models import (
     CandidateValidation,
     MuxHealthEvidence,
@@ -66,6 +66,7 @@ class Px4MappingGateNode(Node):
         for name in defaults.__dataclass_fields__:
             self.declare_parameter(name, getattr(defaults, name))
         self.declare_parameter("publish_rate_hz", 50.0)
+        self.declare_parameter("log_startup_diagnostics", True)
         self.config = Px4MappingConfig(**{
             name: self.get_parameter(name).value
             for name in defaults.__dataclass_fields__
@@ -309,15 +310,27 @@ class Px4MappingGateNode(Node):
                     self._pair_mismatch_started_s is not None
                 ),
             }
-            self.get_logger().info("BC_STARTUP_DIAG " + json.dumps(payload))
+            diagnostic_json = json.dumps(payload)
+            if self.get_parameter("log_startup_diagnostics").value:
+                self.get_logger().info("BC_STARTUP_DIAG " + diagnostic_json)
+            elif result.fault_latched:
+                self.get_logger().warning(
+                    f"PX4 output blocked: {result.state.value}: "
+                    f"{result.hold_reason}"
+                )
             self._timing.record(
                 "fault" if result.fault_latched else "state",
                 state=result.state.value, reason=result.hold_reason,
-                thresholds_s={"command": self.config.selected_command_timeout_s,
-                              "telemetry": self.config.telemetry_timeout_s},
+                thresholds_s={
+                    "command": self.config.selected_command_timeout_s,
+                    "telemetry": self.config.telemetry_timeout_s,
+                },
+                diagnostic_json=diagnostic_json,
             )
         self._last_result = result
-        self._timing.consume(state=result.state.value, reason=result.hold_reason)
+        self._timing.consume(
+            state=result.state.value, reason=result.hold_reason
+        )
         stamp = self.get_clock().now().to_msg()
         if candidate is not None and validation is not None:
             message = self._candidate_message(candidate, validation, stamp)
@@ -327,7 +340,9 @@ class Px4MappingGateNode(Node):
             self._status_publisher,
             self._status_message(result, validation, candidate, stamp)
         )
-        self._timing.send(self._safe_publisher, Bool(data=result.safe_to_forward))
+        self._timing.send(
+            self._safe_publisher, Bool(data=result.safe_to_forward)
+        )
 
     @staticmethod
     def _candidate_message(candidate, validation, stamp):

@@ -1,0 +1,448 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="2206" viewBox="0 0 2400 2206"><rect width="100%" height="100%" fill="#f1f5f9"/>
+<text x="65" y="80" font-family="DejaVu Sans" font-size="46" font-weight="bold" fill="#0f172a">ROS 2 | Runtime communication graph</text>
+<text x="65" y="138" font-family="DejaVu Sans" font-size="25" fill="#475569">Current source + launch configuration · Repeated topic labels connect the panels</text>
+<ns0:svg xmlns:ns0="http://www.w3.org/2000/svg" width="2270" height="363" viewBox="0.00 0.00 1538.40 246.40" x="65" y="180">
+<ns0:g id="panel0_graph0" class="graph" transform="scale(1 1) rotate(0) translate(25.2 221.2)">
+<ns0:title>G</ns0:title>
+<ns0:polygon fill="#ffffff" stroke="transparent" points="-25.2,25.2 -25.2,-221.2 1513.2,-221.2 1513.2,25.2 -25.2,25.2" />
+<ns0:text text-anchor="middle" x="215.5" y="-176.8" font-family="DejaVu Sans" font-size="19.00" fill="#0f172a">01   SIMULATION, SCENE &amp; SENSOR INPUTS</ns0:text>
+
+<ns0:g id="panel0_node1" class="node">
+<ns0:title>isaac</ns0:title>
+<ns0:path fill="#e0f2fe" stroke="#38bdf8" stroke-width="1.4" d="M210,-95C210,-95 12,-95 12,-95 6,-95 0,-89 0,-83 0,-83 0,-63 0,-63 0,-57 6,-51 12,-51 12,-51 210,-51 210,-51 216,-51 222,-57 222,-63 222,-63 222,-83 222,-83 222,-89 216,-95 210,-95" />
+<ns0:text text-anchor="middle" x="111" y="-76.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Isaac Sim / Pegasus</ns0:text>
+<ns0:text text-anchor="middle" x="111" y="-62.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">isaac/runtime/environment.py</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel0_node2" class="node">
+<ns0:title>bridge</ns0:title>
+<ns0:path fill="#e0f2fe" stroke="#38bdf8" stroke-width="1.4" d="M679,-138C679,-138 501,-138 501,-138 495,-138 489,-132 489,-126 489,-126 489,-106 489,-106 489,-100 495,-94 501,-94 501,-94 679,-94 679,-94 685,-94 691,-100 691,-106 691,-106 691,-126 691,-126 691,-132 685,-138 679,-138" />
+<ns0:text text-anchor="middle" x="590" y="-119.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">scene_bridge_node</ns0:text>
+<ns0:text text-anchor="middle" x="590" y="-105.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Pose / heartbeat validation</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel0_edge1" class="edge">
+<ns0:title>isaac-&gt;bridge</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M222.03,-82.92C300.15,-89.96 404.48,-99.37 481.93,-106.35" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="482.19,-108.66 488.86,-106.97 482.6,-104.12 482.19,-108.66" />
+<ns0:text text-anchor="middle" x="320" y="-112" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/isaac_uav/pose · PoseStamped</ns0:text>
+<ns0:text text-anchor="middle" x="320" y="-101" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/uav/isaac/runtime_status · String</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel0_node5" class="node">
+<ns0:title>images</ns0:title>
+<ns0:polygon fill="#eff6ff" stroke="#cbd5e1" stroke-width="1.4" points="756,-72 418,-72 418,0 762,0 762,-66 756,-72" />
+<ns0:polyline fill="none" stroke="#cbd5e1" stroke-width="1.4" points="756,-72 756,-66 " />
+<ns0:polyline fill="none" stroke="#cbd5e1" stroke-width="1.4" points="762,-66 756,-66 " />
+<ns0:text text-anchor="middle" x="590" y="-53.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Camera topics · sensor_msgs/CompressedImage</ns0:text>
+<ns0:text text-anchor="middle" x="590" y="-39.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">/uav/isaac/fpv/image/compressed</ns0:text>
+<ns0:text text-anchor="middle" x="590" y="-25.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">/uav/isaac/observer/image/compressed</ns0:text>
+<ns0:text text-anchor="middle" x="590" y="-11.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">/uav/isaac/fpv/depth/compressed</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel0_edge5" class="edge">
+<ns0:title>isaac-&gt;images</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M222.03,-64.46C278.16,-60.11 347.81,-54.71 411.31,-49.78" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="411.52,-52.05 417.83,-49.28 411.17,-47.51 411.52,-52.05" />
+</ns0:g>
+
+<ns0:g id="panel0_node3" class="node">
+<ns0:title>relay</ns0:title>
+<ns0:path fill="#fff7ed" stroke="#fb923c" stroke-width="1.4" d="M1138,-160C1138,-160 924,-160 924,-160 918,-160 912,-154 912,-148 912,-148 912,-128 912,-128 912,-122 918,-116 924,-116 924,-116 1138,-116 1138,-116 1144,-116 1150,-122 1150,-128 1150,-128 1150,-148 1150,-148 1150,-154 1144,-160 1138,-160" />
+<ns0:text text-anchor="middle" x="1031" y="-141.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Expert / human supervisor</ns0:text>
+<ns0:text text-anchor="middle" x="1031" y="-127.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Relay scene into planning topics</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel0_edge2" class="edge">
+<ns0:title>bridge-&gt;relay</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M691.17,-121.02C754.78,-124.21 837.61,-128.36 905.45,-131.76" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="905.37,-134.03 911.97,-132.09 905.59,-129.49 905.37,-134.03" />
+<ns0:text text-anchor="middle" x="825" y="-132" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/uav/isaac/scene/*</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel0_node4" class="node">
+<ns0:title>scene</ns0:title>
+<ns0:polygon fill="#eff6ff" stroke="#cbd5e1" stroke-width="1.4" points="1482,-167 1207,-167 1207,-109 1488,-109 1488,-161 1482,-167" />
+<ns0:polyline fill="none" stroke="#cbd5e1" stroke-width="1.4" points="1482,-167 1482,-161 " />
+<ns0:polyline fill="none" stroke="#cbd5e1" stroke-width="1.4" points="1488,-161 1482,-161 " />
+<ns0:text text-anchor="middle" x="1347.5" y="-148.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">/uav/scene/{obstacles,start,goal}</ns0:text>
+<ns0:text text-anchor="middle" x="1347.5" y="-134.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">ObstacleArray / PoseStamped</ns0:text>
+<ns0:text text-anchor="middle" x="1347.5" y="-120.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">→ planner, BC goal, recorder, monitors</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel0_edge4" class="edge">
+<ns0:title>bridge-&gt;scene</ns0:title>
+<ns0:path fill="none" stroke="#8b5cf6" stroke-width="1.4" stroke-dasharray="5,2" d="M691.2,-103.26C807.67,-90.61 1005.45,-75.78 1174,-96 1194.94,-98.51 1217.01,-102.68 1238.11,-107.44" />
+<ns0:polygon fill="#8b5cf6" stroke="#8b5cf6" stroke-width="1.4" points="1237.78,-109.7 1244.62,-108.94 1238.8,-105.27 1237.78,-109.7" />
+<ns0:text text-anchor="middle" x="1031" y="-99" font-family="DejaVu Sans" font-size="10.00" fill="#475569">BC launch: remap directly</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel0_edge3" class="edge">
+<ns0:title>relay-&gt;scene</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M1150,-138C1166.39,-138 1183.39,-138 1200.21,-138" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="1200.4,-140.28 1206.9,-138 1200.4,-135.73 1200.4,-140.28" />
+</ns0:g>
+
+<ns0:g id="panel0_node6" class="node">
+<ns0:title>consumers</ns0:title>
+<ns0:path fill="#f5f3ff" stroke="#a78bfa" stroke-width="1.4" d="M1162,-51C1162,-51 900,-51 900,-51 894,-51 888,-45 888,-39 888,-39 888,-19 888,-19 888,-13 894,-7 900,-7 900,-7 1162,-7 1162,-7 1168,-7 1174,-13 1174,-19 1174,-19 1174,-39 1174,-39 1174,-45 1168,-51 1162,-51" />
+<ns0:text text-anchor="middle" x="1031" y="-32.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">bc_policy_node (configured sources)</ns0:text>
+<ns0:text text-anchor="middle" x="1031" y="-18.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">expert_dataset_recorder (RGB + depth)</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel0_edge6" class="edge">
+<ns0:title>images-&gt;consumers</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M762.3,-33.27C801.54,-32.64 842.93,-31.98 881.14,-31.37" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="881.27,-33.65 887.73,-31.27 881.2,-29.1 881.27,-33.65" />
+<ns0:text text-anchor="middle" x="825" y="-36" font-family="DejaVu Sans" font-size="10.00" fill="#475569">image subscription</ns0:text>
+</ns0:g>
+</ns0:g>
+</ns0:svg>
+<ns0:svg xmlns:ns0="http://www.w3.org/2000/svg" width="2270" height="498" viewBox="0.00 0.00 1523.40 334.40" x="65" y="578">
+<ns0:g id="panel1_graph0" class="graph" transform="scale(1 1) rotate(0) translate(25.2 309.2)">
+<ns0:title>G</ns0:title>
+<ns0:polygon fill="#ffffff" stroke="transparent" points="-25.2,25.2 -25.2,-309.2 1498.2,-309.2 1498.2,25.2 -25.2,25.2" />
+<ns0:text text-anchor="middle" x="268" y="-264.8" font-family="DejaVu Sans" font-size="19.00" fill="#0f172a">02   ALTERNATIVE CONTROL SOURCES → SHARED MUX</ns0:text>
+
+<ns0:g id="panel1_node1" class="node">
+<ns0:title>scene</ns0:title>
+<ns0:polygon fill="#eff6ff" stroke="#cbd5e1" stroke-width="1.4" points="122,-240 0,-240 0,-204 128,-204 128,-234 122,-240" />
+<ns0:polyline fill="none" stroke="#cbd5e1" stroke-width="1.4" points="122,-240 122,-234 " />
+<ns0:polyline fill="none" stroke="#cbd5e1" stroke-width="1.4" points="128,-234 122,-234 " />
+<ns0:text text-anchor="middle" x="64" y="-218.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">IN: /uav/scene/*</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel1_node2" class="node">
+<ns0:title>planner</ns0:title>
+<ns0:path fill="#ecfdf5" stroke="#34d399" stroke-width="1.4" d="M302,-244C302,-244 173,-244 173,-244 167,-244 161,-238 161,-232 161,-232 161,-212 161,-212 161,-206 167,-200 173,-200 173,-200 302,-200 302,-200 308,-200 314,-206 314,-212 314,-212 314,-232 314,-232 314,-238 308,-244 302,-244" />
+<ns0:text text-anchor="middle" x="237.5" y="-225.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">astar_planner_node</ns0:text>
+<ns0:text text-anchor="middle" x="237.5" y="-211.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">A* + smoothing</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel1_edge1" class="edge">
+<ns0:title>scene-&gt;planner</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M128.37,-222C136.81,-222 145.56,-222 154.27,-222" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="154.41,-224.28 160.91,-222 154.41,-219.73 154.41,-224.28" />
+</ns0:g>
+
+<ns0:g id="panel1_node3" class="node">
+<ns0:title>parameterizer</ns0:title>
+<ns0:path fill="#ecfdf5" stroke="#34d399" stroke-width="1.4" d="M647,-244C647,-244 444,-244 444,-244 438,-244 432,-238 432,-232 432,-232 432,-212 432,-212 432,-206 438,-200 444,-200 444,-200 647,-200 647,-200 653,-200 659,-206 659,-212 659,-212 659,-232 659,-232 659,-238 653,-244 647,-244" />
+<ns0:text text-anchor="middle" x="545.5" y="-225.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">trajectory_parameterizer_node</ns0:text>
+<ns0:text text-anchor="middle" x="545.5" y="-211.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Time parameterization</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel1_edge2" class="edge">
+<ns0:title>planner-&gt;parameterizer</ns0:title>
+<ns0:path fill="none" stroke="#059669" stroke-width="1.4" d="M314.14,-222C347.55,-222 387.63,-222 424.93,-222" />
+<ns0:polygon fill="#059669" stroke="#059669" stroke-width="1.4" points="425.36,-224.28 431.86,-222 425.36,-219.73 425.36,-224.28" />
+<ns0:text text-anchor="middle" x="373" y="-236" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/uav/planner/path</ns0:text>
+<ns0:text text-anchor="middle" x="373" y="-225" font-family="DejaVu Sans" font-size="10.00" fill="#475569">nav_msgs/Path</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel1_node4" class="node">
+<ns0:title>follower</ns0:title>
+<ns0:path fill="#ecfdf5" stroke="#34d399" stroke-width="1.4" d="M1027.5,-244C1027.5,-244 865.5,-244 865.5,-244 859.5,-244 853.5,-238 853.5,-232 853.5,-232 853.5,-212 853.5,-212 853.5,-206 859.5,-200 865.5,-200 865.5,-200 1027.5,-200 1027.5,-200 1033.5,-200 1039.5,-206 1039.5,-212 1039.5,-212 1039.5,-232 1039.5,-232 1039.5,-238 1033.5,-244 1027.5,-244" />
+<ns0:text text-anchor="middle" x="946.5" y="-225.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">trajectory_follower_node</ns0:text>
+<ns0:text text-anchor="middle" x="946.5" y="-211.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">IN: vehicle odometry</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel1_edge3" class="edge">
+<ns0:title>parameterizer-&gt;follower</ns0:title>
+<ns0:path fill="none" stroke="#059669" stroke-width="1.4" d="M659.24,-222C718.26,-222 789.87,-222 846.7,-222" />
+<ns0:polygon fill="#059669" stroke="#059669" stroke-width="1.4" points="846.7,-224.28 853.2,-222 846.7,-219.73 846.7,-224.28" />
+<ns0:text text-anchor="middle" x="740" y="-247" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/uav/trajectory/candidate</ns0:text>
+<ns0:text text-anchor="middle" x="740" y="-236" font-family="DejaVu Sans" font-size="10.00" fill="#475569">TimedTrajectory</ns0:text>
+<ns0:text text-anchor="middle" x="740" y="-225" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/uav/trajectory/valid · Bool</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel1_node8" class="node">
+<ns0:title>mux</ns0:title>
+<ns0:path fill="#fff7ed" stroke="#fb923c" stroke-width="1.4" d="M1461,-140C1461,-140 1273,-140 1273,-140 1267,-140 1261,-134 1261,-128 1261,-128 1261,-108 1261,-108 1261,-102 1267,-96 1273,-96 1273,-96 1461,-96 1461,-96 1467,-96 1473,-102 1473,-108 1473,-108 1473,-128 1473,-128 1473,-134 1467,-140 1461,-140" />
+<ns0:text text-anchor="middle" x="1367" y="-121.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">control_mux_node</ns0:text>
+<ns0:text text-anchor="middle" x="1367" y="-107.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Selection / freshness / HOLD</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel1_edge4" class="edge">
+<ns0:title>follower-&gt;mux</ns0:title>
+<ns0:path fill="none" stroke="#059669" stroke-width="1.4" d="M1039.8,-203.66C1098.8,-191.41 1176.77,-174.25 1245,-156 1260.68,-151.81 1277.36,-146.88 1293.17,-141.98" />
+<ns0:polygon fill="#059669" stroke="#059669" stroke-width="1.4" points="1293.89,-144.14 1299.41,-140.04 1292.53,-139.8 1293.89,-144.14" />
+<ns0:text text-anchor="middle" x="1166.5" y="-196" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/uav/control/astar_command</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel1_node5" class="node">
+<ns0:title>bc</ns0:title>
+<ns0:path fill="#f5f3ff" stroke="#a78bfa" stroke-width="1.4" stroke-dasharray="5,2" d="M1036,-182C1036,-182 857,-182 857,-182 851,-182 845,-176 845,-170 845,-170 845,-136 845,-136 845,-130 851,-124 857,-124 857,-124 1036,-124 1036,-124 1042,-124 1048,-130 1048,-136 1048,-136 1048,-170 1048,-170 1048,-176 1042,-182 1036,-182" />
+<ns0:text text-anchor="middle" x="946.5" y="-163.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">bc_policy_node</ns0:text>
+<ns0:text text-anchor="middle" x="946.5" y="-149.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">IN: images, odometry, goal</ns0:text>
+<ns0:text text-anchor="middle" x="946.5" y="-135.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">ML inference worker</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel1_edge5" class="edge">
+<ns0:title>bc-&gt;mux</ns0:title>
+<ns0:path fill="none" stroke="#8b5cf6" stroke-width="1.4" stroke-dasharray="5,2" d="M1048.01,-144.59C1110.2,-139.39 1190.14,-132.71 1254.31,-127.34" />
+<ns0:polygon fill="#8b5cf6" stroke="#8b5cf6" stroke-width="1.4" points="1254.58,-129.6 1260.87,-126.79 1254.2,-125.07 1254.58,-129.6" />
+<ns0:text text-anchor="middle" x="1166.5" y="-144" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/uav/control/bc_command</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel1_node6" class="node">
+<ns0:title>joystick</ns0:title>
+<ns0:path fill="#f5f3ff" stroke="#a78bfa" stroke-width="1.4" stroke-dasharray="5,2" d="M1038.5,-106C1038.5,-106 854.5,-106 854.5,-106 848.5,-106 842.5,-100 842.5,-94 842.5,-94 842.5,-74 842.5,-74 842.5,-68 848.5,-62 854.5,-62 854.5,-62 1038.5,-62 1038.5,-62 1044.5,-62 1050.5,-68 1050.5,-74 1050.5,-74 1050.5,-94 1050.5,-94 1050.5,-100 1044.5,-106 1038.5,-106" />
+<ns0:text text-anchor="middle" x="946.5" y="-87.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">joystick_control_node</ns0:text>
+<ns0:text text-anchor="middle" x="946.5" y="-73.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">IN: /dev/input/js0, odometry</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel1_edge6" class="edge">
+<ns0:title>joystick-&gt;mux</ns0:title>
+<ns0:path fill="none" stroke="#8b5cf6" stroke-width="1.4" stroke-dasharray="5,2" d="M1050.68,-92.38C1112.33,-97.39 1190.68,-103.76 1253.86,-108.89" />
+<ns0:polygon fill="#8b5cf6" stroke="#8b5cf6" stroke-width="1.4" points="1254.04,-111.19 1260.7,-109.45 1254.41,-106.65 1254.04,-111.19" />
+<ns0:text text-anchor="middle" x="1166.5" y="-111" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/uav/control/joystick_command</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel1_node7" class="node">
+<ns0:title>supervisor</ns0:title>
+<ns0:path fill="#fff7ed" stroke="#fb923c" stroke-width="1.4" d="M1060,-44C1060,-44 833,-44 833,-44 827,-44 821,-38 821,-32 821,-32 821,-12 821,-12 821,-6 827,0 833,0 833,0 1060,0 1060,0 1066,0 1072,-6 1072,-12 1072,-12 1072,-32 1072,-32 1072,-38 1066,-44 1060,-44" />
+<ns0:text text-anchor="middle" x="946.5" y="-25.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Mode-specific flight supervisor</ns0:text>
+<ns0:text text-anchor="middle" x="946.5" y="-11.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Takeoff / hold / landing commands</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel1_edge7" class="edge">
+<ns0:title>supervisor-&gt;mux</ns0:title>
+<ns0:path fill="none" stroke="#d97706" stroke-width="1.4" d="M1072.24,-43.83C1125.71,-53.94 1188.7,-66.85 1245,-81 1260.19,-84.82 1276.31,-89.38 1291.66,-93.98" />
+<ns0:polygon fill="#d97706" stroke="#d97706" stroke-width="1.4" points="1291.3,-96.25 1298.18,-95.95 1292.62,-91.89 1291.3,-96.25" />
+<ns0:text text-anchor="middle" x="1166.5" y="-84" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/uav/control/lifecycle_command</ns0:text>
+</ns0:g>
+</ns0:g>
+</ns0:svg>
+<ns0:svg xmlns:ns0="http://www.w3.org/2000/svg" width="2270" height="367" viewBox="0.00 0.00 1824.40 295.40" x="65" y="1111">
+<ns0:g id="panel2_graph0" class="graph" transform="scale(1 1) rotate(0) translate(25.2 270.2)">
+<ns0:title>G</ns0:title>
+<ns0:polygon fill="#ffffff" stroke="transparent" points="-25.2,25.2 -25.2,-270.2 1799.2,-270.2 1799.2,25.2 -25.2,25.2" />
+<ns0:text text-anchor="middle" x="236.5" y="-225.8" font-family="DejaVu Sans" font-size="19.00" fill="#0f172a">03   GUARDED PX4 OUTPUT &amp; STATE FEEDBACK</ns0:text>
+
+<ns0:g id="panel2_node1" class="node">
+<ns0:title>mux</ns0:title>
+<ns0:path fill="#fff7ed" stroke="#fb923c" stroke-width="1.4" d="M163,-201C163,-201 43,-201 43,-201 37,-201 31,-195 31,-189 31,-189 31,-177 31,-177 31,-171 37,-165 43,-165 43,-165 163,-165 163,-165 169,-165 175,-171 175,-177 175,-177 175,-189 175,-189 175,-195 169,-201 163,-201" />
+<ns0:text text-anchor="middle" x="103" y="-179.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">control_mux_node</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_node2" class="node">
+<ns0:title>gate</ns0:title>
+<ns0:path fill="#fff7ed" stroke="#fb923c" stroke-width="1.4" d="M637,-205C637,-205 460,-205 460,-205 454,-205 448,-199 448,-193 448,-193 448,-173 448,-173 448,-167 454,-161 460,-161 460,-161 637,-161 637,-161 643,-161 649,-167 649,-173 649,-173 649,-193 649,-193 649,-199 643,-205 637,-205" />
+<ns0:text text-anchor="middle" x="548.5" y="-186.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">px4_mapping_gate_node</ns0:text>
+<ns0:text text-anchor="middle" x="548.5" y="-172.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">NED mapping / safety gate</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_edge1" class="edge">
+<ns0:title>mux-&gt;gate</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M175.26,-183C247.06,-183 358.73,-183 441.04,-183" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="441.41,-185.28 447.91,-183 441.41,-180.73 441.41,-185.28" />
+<ns0:text text-anchor="middle" x="314.5" y="-197" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/uav/control/selected_command</ns0:text>
+<ns0:text text-anchor="middle" x="314.5" y="-186" font-family="DejaVu Sans" font-size="10.00" fill="#475569">TwistStamped + mux_status</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_node3" class="node">
+<ns0:title>streamer</ns0:title>
+<ns0:path fill="#fff7ed" stroke="#fb923c" stroke-width="1.4" d="M1110,-205C1110,-205 920,-205 920,-205 914,-205 908,-199 908,-193 908,-193 908,-173 908,-173 908,-167 914,-161 920,-161 920,-161 1110,-161 1110,-161 1116,-161 1122,-167 1122,-173 1122,-173 1122,-193 1122,-193 1122,-199 1116,-205 1110,-205" />
+<ns0:text text-anchor="middle" x="1015" y="-186.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">px4_setpoint_streamer_node</ns0:text>
+<ns0:text text-anchor="middle" x="1015" y="-172.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Setpoint stream owner</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_edge2" class="edge">
+<ns0:title>gate-&gt;streamer</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M649.15,-183C723.02,-183 823.82,-183 900.75,-183" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="901.15,-185.28 907.65,-183 901.15,-180.73 901.15,-185.28" />
+<ns0:text text-anchor="middle" x="791" y="-208" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/uav/px4/setpoint_candidate</ns0:text>
+<ns0:text text-anchor="middle" x="791" y="-197" font-family="DejaVu Sans" font-size="10.00" fill="#475569">Px4SetpointCandidate</ns0:text>
+<ns0:text text-anchor="middle" x="791" y="-186" font-family="DejaVu Sans" font-size="10.00" fill="#475569">safe_to_forward + output_gate_status</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_node4" class="node">
+<ns0:title>agent</ns0:title>
+<ns0:path fill="#e0f2fe" stroke="#38bdf8" stroke-width="1.4" d="M1451,-205C1451,-205 1317,-205 1317,-205 1311,-205 1305,-199 1305,-193 1305,-193 1305,-173 1305,-173 1305,-167 1311,-161 1317,-161 1317,-161 1451,-161 1451,-161 1457,-161 1463,-167 1463,-173 1463,-173 1463,-193 1463,-193 1463,-199 1457,-205 1451,-205" />
+<ns0:text text-anchor="middle" x="1384" y="-186.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">MicroXRCEAgent</ns0:text>
+<ns0:text text-anchor="middle" x="1384" y="-172.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">ROS 2 ↔ uXRCE-DDS</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_edge3" class="edge">
+<ns0:title>streamer-&gt;agent</ns0:title>
+<ns0:path fill="none" stroke="#dc2626" stroke-width="1.4" d="M1122.15,-183C1178.08,-183 1245.75,-183 1298.14,-183" />
+<ns0:polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.4" points="1298.28,-185.28 1304.78,-183 1298.28,-180.73 1298.28,-185.28" />
+<ns0:text text-anchor="middle" x="1213.5" y="-197" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/fmu/in/trajectory_setpoint</ns0:text>
+<ns0:text text-anchor="middle" x="1213.5" y="-186" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/fmu/in/offboard_control_mode</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_node5" class="node">
+<ns0:title>px4</ns0:title>
+<ns0:path fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1.4" d="M1762,-212C1762,-212 1595,-212 1595,-212 1589,-212 1583,-206 1583,-200 1583,-200 1583,-166 1583,-166 1583,-160 1589,-154 1595,-154 1595,-154 1762,-154 1762,-154 1768,-154 1774,-160 1774,-166 1774,-166 1774,-200 1774,-200 1774,-206 1768,-212 1762,-212" />
+<ns0:text text-anchor="middle" x="1678.5" y="-193.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">PX4 SITL</ns0:text>
+<ns0:text text-anchor="middle" x="1678.5" y="-179.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">↔ Pegasus via MAVLink</ns0:text>
+<ns0:text text-anchor="middle" x="1678.5" y="-165.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">(non-ROS simulation link)</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_edge4" class="edge">
+<ns0:title>agent-&gt;px4</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M1469.54,-183C1502.76,-183 1541.18,-183 1575.88,-183" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="1469.5,-180.73 1463,-183 1469.5,-185.28 1469.5,-180.73" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="1576.27,-185.28 1582.77,-183 1576.27,-180.73 1576.27,-185.28" />
+<ns0:text text-anchor="middle" x="1523" y="-186" font-family="DejaVu Sans" font-size="10.00" fill="#475569">uXRCE-DDS / UDP</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_node6" class="node">
+<ns0:title>odometry</ns0:title>
+<ns0:path fill="#e0f2fe" stroke="#38bdf8" stroke-width="1.4" d="M194,-94C194,-94 12,-94 12,-94 6,-94 0,-88 0,-82 0,-82 0,-70 0,-70 0,-64 6,-58 12,-58 12,-58 194,-58 194,-58 200,-58 206,-64 206,-70 206,-70 206,-82 206,-82 206,-88 200,-94 194,-94" />
+<ns0:text text-anchor="middle" x="103" y="-72.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">px4_odometry_bridge_node</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_edge5" class="edge">
+<ns0:title>agent-&gt;odometry</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M1304.9,-172.4C1253.11,-165.7 1183.6,-157.33 1122,-152 812.03,-125.19 732.96,-140.86 423,-114 352.9,-107.93 274.43,-98.61 212.85,-90.72" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="212.93,-88.44 206.19,-89.87 212.35,-92.95 212.93,-88.44" />
+<ns0:text text-anchor="middle" x="791" y="-139" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/fmu/out/vehicle_odometry</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_node8" class="node">
+<ns0:title>telemetry</ns0:title>
+<ns0:path fill="#e0f2fe" stroke="#38bdf8" stroke-width="1.4" d="M194,-36C194,-36 12,-36 12,-36 6,-36 0,-30 0,-24 0,-24 0,-12 0,-12 0,-6 6,0 12,0 12,0 194,0 194,0 200,0 206,-6 206,-12 206,-12 206,-24 206,-24 206,-30 200,-36 194,-36" />
+<ns0:text text-anchor="middle" x="103" y="-14.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">px4_live_telemetry_adapter</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_edge7" class="edge">
+<ns0:title>agent-&gt;telemetry</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M1326.83,-160.94C1314.49,-156.58 1301.4,-152.34 1289,-149 1020.79,-76.84 950.17,-67.61 674,-38 629.68,-33.25 365.68,-25.29 212.98,-20.98" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="212.81,-18.7 206.25,-20.79 212.68,-23.25 212.81,-18.7" />
+<ns0:text text-anchor="middle" x="791" y="-88" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/fmu/out/{vehicle_status,</ns0:text>
+<ns0:text text-anchor="middle" x="791" y="-77" font-family="DejaVu Sans" font-size="10.00" fill="#475569">vehicle_control_mode,vehicle_odometry,</ns0:text>
+<ns0:text text-anchor="middle" x="791" y="-66" font-family="DejaVu Sans" font-size="10.00" fill="#475569">failsafe_flags}</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_node7" class="node">
+<ns0:title>odom_topic</ns0:title>
+<ns0:polygon fill="#eff6ff" stroke="#cbd5e1" stroke-width="1.4" points="668,-105 423,-105 423,-47 674,-47 674,-99 668,-105" />
+<ns0:polyline fill="none" stroke="#cbd5e1" stroke-width="1.4" points="668,-105 668,-99 " />
+<ns0:polyline fill="none" stroke="#cbd5e1" stroke-width="1.4" points="674,-99 668,-99 " />
+<ns0:text text-anchor="middle" x="548.5" y="-86.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">/uav/vehicle/odometry · Odometry</ns0:text>
+<ns0:text text-anchor="middle" x="548.5" y="-72.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">→ follower, BC, joystick,</ns0:text>
+<ns0:text text-anchor="middle" x="548.5" y="-58.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">recorder, monitors</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel2_edge6" class="edge">
+<ns0:title>odometry-&gt;odom_topic</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M206.03,-76C268.34,-76 348.67,-76 415.76,-76" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="416.13,-78.28 422.63,-76 416.13,-73.73 416.13,-78.28" />
+</ns0:g>
+
+<ns0:g id="panel2_edge8" class="edge">
+<ns0:title>telemetry-&gt;gate</ns0:title>
+<ns0:path fill="none" stroke="#0284c7" stroke-width="1.4" d="M166.28,-36.08C179.46,-40.14 193.24,-44.56 206,-49 306.39,-83.89 421,-130.23 488.64,-158.27" />
+<ns0:polygon fill="#0284c7" stroke="#0284c7" stroke-width="1.4" points="488.16,-160.53 495.04,-160.92 489.91,-156.33 488.16,-160.53" />
+<ns0:text text-anchor="middle" x="314.5" y="-136" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/uav/test/px4/telemetry_status</ns0:text>
+<ns0:text text-anchor="middle" x="314.5" y="-125" font-family="DejaVu Sans" font-size="10.00" fill="#475569">Px4SyntheticTelemetry (live-adapted)</ns0:text>
+</ns0:g>
+</ns0:g>
+</ns0:svg>
+<ns0:svg xmlns:ns0="http://www.w3.org/2000/svg" width="2270" height="528" viewBox="0.00 0.00 1363.40 317.40" x="65" y="1513">
+<ns0:g id="panel3_graph0" class="graph" transform="scale(1 1) rotate(0) translate(25.2 292.2)">
+<ns0:title>G</ns0:title>
+<ns0:polygon fill="#ffffff" stroke="transparent" points="-25.2,25.2 -25.2,-292.2 1338.2,-292.2 1338.2,25.2 -25.2,25.2" />
+<ns0:text text-anchor="middle" x="322" y="-247.8" font-family="DejaVu Sans" font-size="19.00" fill="#0f172a">04   SUPERVISION, COMMAND OWNERSHIP &amp; EXPERT RECORDING</ns0:text>
+
+<ns0:g id="panel3_node1" class="node">
+<ns0:title>supervisor</ns0:title>
+<ns0:path fill="#fff7ed" stroke="#fb923c" stroke-width="1.4" d="M274.5,-119C274.5,-119 60.5,-119 60.5,-119 54.5,-119 48.5,-113 48.5,-107 48.5,-107 48.5,-73 48.5,-73 48.5,-67 54.5,-61 60.5,-61 60.5,-61 274.5,-61 274.5,-61 280.5,-61 286.5,-67 286.5,-73 286.5,-73 286.5,-107 286.5,-107 286.5,-113 280.5,-119 274.5,-119" />
+<ns0:text text-anchor="middle" x="167.5" y="-100.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Flight supervisor · mode-specific</ns0:text>
+<ns0:text text-anchor="middle" x="167.5" y="-86.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">px4_sitl_flight_supervisor_node</ns0:text>
+<ns0:text text-anchor="middle" x="167.5" y="-72.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">or bc_flight_supervisor_node</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel3_node2" class="node">
+<ns0:title>services</ns0:title>
+<ns0:polygon fill="#fff7ed" stroke="#cbd5e1" stroke-width="1.4" points="885,-162 533,-162 533,-62 891,-62 891,-156 885,-162" />
+<ns0:polyline fill="none" stroke="#cbd5e1" stroke-width="1.4" points="885,-162 885,-156 " />
+<ns0:polyline fill="none" stroke="#cbd5e1" stroke-width="1.4" points="891,-156 885,-156 " />
+<ns0:text text-anchor="middle" x="712" y="-143.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Service targets</ns0:text>
+<ns0:text text-anchor="middle" x="712" y="-129.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">control_mux: /uav/control/set_source</ns0:text>
+<ns0:text text-anchor="middle" x="712" y="-115.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">gate: /uav/px4/set_output_enable</ns0:text>
+<ns0:text text-anchor="middle" x="712" y="-101.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">streamer: /uav/px4/set_stream_enable</ns0:text>
+<ns0:text text-anchor="middle" x="712" y="-87.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">follower: /uav/control/set_tracking_enable (expert)</ns0:text>
+<ns0:text text-anchor="middle" x="712" y="-73.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">BC policy: /uav/bc/set_enabled (BC)</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel3_edge1" class="edge">
+<ns0:title>supervisor-&gt;services</ns0:title>
+<ns0:path fill="none" stroke="#d97706" stroke-width="1.4" stroke-dasharray="5,2" d="M286.55,-94.79C356.58,-97.63 446.89,-101.29 526.19,-104.51" />
+<ns0:polygon fill="#d97706" stroke="#d97706" stroke-width="1.4" points="526.26,-106.79 532.85,-104.78 526.45,-102.24 526.26,-106.79" />
+<ns0:text text-anchor="middle" x="434" y="-107" font-family="DejaVu Sans" font-size="10.00" fill="#475569">enable / source selection</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel3_node3" class="node">
+<ns0:title>owner</ns0:title>
+<ns0:path fill="#fff7ed" stroke="#fb923c" stroke-width="1.4" d="M830,-44C830,-44 594,-44 594,-44 588,-44 582,-38 582,-32 582,-32 582,-12 582,-12 582,-6 588,0 594,0 594,0 830,0 830,0 836,0 842,-6 842,-12 842,-12 842,-32 842,-32 842,-38 836,-44 830,-44" />
+<ns0:text text-anchor="middle" x="712" y="-25.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">px4_vehicle_command_owner_node</ns0:text>
+<ns0:text text-anchor="middle" x="712" y="-11.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Sole vehicle-command publisher</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel3_edge2" class="edge">
+<ns0:title>supervisor-&gt;owner</ns0:title>
+<ns0:path fill="none" stroke="#d97706" stroke-width="1.4" stroke-dasharray="5,2" d="M286.55,-75.2C371.54,-64.55 486.39,-50.15 575.19,-39.02" />
+<ns0:polygon fill="#d97706" stroke="#d97706" stroke-width="1.4" points="575.64,-41.26 581.81,-38.19 575.08,-36.74 575.64,-41.26" />
+<ns0:text text-anchor="middle" x="434" y="-81" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/uav/px4/send_vehicle_command</ns0:text>
+<ns0:text text-anchor="middle" x="434" y="-70" font-family="DejaVu Sans" font-size="10.00" fill="#475569">SendPx4VehicleCommand service</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel3_node4" class="node">
+<ns0:title>px4</ns0:title>
+<ns0:path fill="#e0f2fe" stroke="#38bdf8" stroke-width="1.4" d="M1274,-40C1274,-40 1089,-40 1089,-40 1083,-40 1077,-34 1077,-28 1077,-28 1077,-16 1077,-16 1077,-10 1083,-4 1089,-4 1089,-4 1274,-4 1274,-4 1280,-4 1286,-10 1286,-16 1286,-16 1286,-28 1286,-28 1286,-34 1280,-40 1274,-40" />
+<ns0:text text-anchor="middle" x="1181.5" y="-18.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">MicroXRCEAgent → PX4 SITL</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel3_edge3" class="edge">
+<ns0:title>owner-&gt;px4</ns0:title>
+<ns0:path fill="none" stroke="#dc2626" stroke-width="1.4" d="M842.29,-22C913.9,-22 1001.96,-22 1070.28,-22" />
+<ns0:polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.4" points="1070.32,-24.28 1076.82,-22 1070.32,-19.73 1070.32,-24.28" />
+<ns0:text text-anchor="middle" x="970.5" y="-25" font-family="DejaVu Sans" font-size="10.00" fill="#475569">/fmu/in/vehicle_command</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel3_node5" class="node">
+<ns0:title>inputs</ns0:title>
+<ns0:polygon fill="#fff1f2" stroke="#cbd5e1" stroke-width="1.4" points="329,-238 0,-238 0,-166 335,-166 335,-232 329,-238" />
+<ns0:polyline fill="none" stroke="#cbd5e1" stroke-width="1.4" points="329,-238 329,-232 " />
+<ns0:polyline fill="none" stroke="#cbd5e1" stroke-width="1.4" points="335,-232 329,-232 " />
+<ns0:text text-anchor="middle" x="167.5" y="-219.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Expert recorder topic inputs</ns0:text>
+<ns0:text text-anchor="middle" x="167.5" y="-205.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">RGB / depth, runtime_status, vehicle odometry</ns0:text>
+<ns0:text text-anchor="middle" x="167.5" y="-191.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">astar_command, mux_status, flight_status</ns0:text>
+<ns0:text text-anchor="middle" x="167.5" y="-177.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">scene goal, planner path / status</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel3_node6" class="node">
+<ns0:title>recorder</ns0:title>
+<ns0:path fill="#fff1f2" stroke="#fb7185" stroke-width="1.4" d="M857,-224C857,-224 567,-224 567,-224 561,-224 555,-218 555,-212 555,-212 555,-192 555,-192 555,-186 561,-180 567,-180 567,-180 857,-180 857,-180 863,-180 869,-186 869,-192 869,-192 869,-212 869,-212 869,-218 863,-224 857,-224" />
+<ns0:text text-anchor="middle" x="712" y="-205.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">expert_dataset_recorder</ns0:text>
+<ns0:text text-anchor="middle" x="712" y="-191.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Optional: synchronized dataset + metadata</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel3_edge4" class="edge">
+<ns0:title>inputs-&gt;recorder</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M335.32,-202C402.91,-202 480.71,-202 547.91,-202" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="548.3,-204.28 554.8,-202 548.3,-199.73 548.3,-204.28" />
+</ns0:g>
+
+<ns0:g id="panel3_node7" class="node">
+<ns0:title>artifacts</ns0:title>
+<ns0:path fill="#fff1f2" stroke="#fb7185" stroke-width="1.4" d="M1301,-224C1301,-224 1062,-224 1062,-224 1056,-224 1050,-218 1050,-212 1050,-212 1050,-192 1050,-192 1050,-186 1056,-180 1062,-180 1062,-180 1301,-180 1301,-180 1307,-180 1313,-186 1313,-192 1313,-192 1313,-212 1313,-212 1313,-218 1307,-224 1301,-224" />
+<ns0:text text-anchor="middle" x="1181.5" y="-205.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">artifacts/datasets/</ns0:text>
+<ns0:text text-anchor="middle" x="1181.5" y="-191.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Episode data + validation metadata</ns0:text>
+</ns0:g>
+
+<ns0:g id="panel3_edge5" class="edge">
+<ns0:title>recorder-&gt;artifacts</ns0:title>
+<ns0:path fill="none" stroke="#64748b" stroke-width="1.4" d="M869.32,-202C925.56,-202 988.55,-202 1043.06,-202" />
+<ns0:polygon fill="#64748b" stroke="#64748b" stroke-width="1.4" points="1043.17,-204.28 1049.67,-202 1043.17,-199.73 1043.17,-204.28" />
+</ns0:g>
+</ns0:g>
+</ns0:svg>
+<text x="65" y="2082" font-family="DejaVu Sans" font-size="22" fill="#475569">Expert: planner → parameterizer → follower. BC and human modes replace the expert chain.</text>
+<text x="65" y="2113" font-family="DejaVu Sans" font-size="22" fill="#475569">Green = expert flow. Purple dashed = alternative sources. Amber dashed = supervisor service calls.</text>
+<text x="65" y="2144" font-family="DejaVu Sans" font-size="22" fill="#475569">Images are published by Isaac runtime; uav_camera_bridge is an idle placeholder.</text>
+<text x="65" y="2175" font-family="DejaVu Sans" font-size="22" fill="#475569">Principal flows shown; status subscriptions, monitor nodes and some telemetry links are omitted. Not a live graph capture.</text>
+</svg>

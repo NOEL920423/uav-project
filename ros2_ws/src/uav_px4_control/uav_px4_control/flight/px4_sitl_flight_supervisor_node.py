@@ -1,10 +1,10 @@
-"""Explicitly sequence one ASTAR_EXPERT-controlled PX4 SITL flight."""
+"""Explicitly sequence A* or physical joystick control of PX4 SITL."""
 
 import importlib
 import json
 import math
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TwistStamped
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -43,14 +43,24 @@ from uav_px4_control.control.control_mux_node import (
     SET_SOURCE_SERVICE,
     control_qos,
 )
+from uav_px4_control.control.control_source_models import (
+    FLIGHT_LIFECYCLE, HUMAN_JOYSTICK, SOURCE_TOPICS, VALID_COMMAND_FRAME,
+)
 from uav_px4_control.flight.px4_flight_models import (
     FlightEvidence,
     Px4FlightConfig,
+    Px4FlightState,
     altitude_above_ground,
+    altitude_hold_down_velocity,
     planner_status_allows_final_path,
     vehicle_command_was_accepted,
 )
-from uav_px4_control.flight.px4_flight_state_machine import Px4FlightStateMachine
+from uav_px4_control.flight.px4_flight_state_machine import (
+    Px4FlightStateMachine,
+)
+from uav_px4_control.flight.px4_vehicle_command_owner_node import (
+    SEND_VEHICLE_COMMAND_SERVICE,
+)
 from uav_px4_control.px4.px4_mapping_gate_node import (
     GATE_STATUS_TOPIC,
     SET_OUTPUT_ENABLE_SERVICE,
@@ -63,9 +73,6 @@ from uav_px4_control.px4.px4_setpoint_streamer_node import (
     px4_output_qos,
     sitl_process_matches,
     xrce_agent_detected,
-)
-from uav_px4_control.flight.px4_vehicle_command_owner_node import (
-    SEND_VEHICLE_COMMAND_SERVICE,
 )
 
 
@@ -109,6 +116,7 @@ class Px4SitlFlightSupervisorNode(Node):
         self.declare_parameter("goal_north_m", 3.0)
         self.declare_parameter("goal_east_m", 0.5)
         self.declare_parameter("use_external_scene", False)
+        self.declare_parameter("human_control", False)
         self.declare_parameter("external_runtime_timeout_s", 0.50)
         self.declare_parameter("expected_sitl_process_fragment", (
             "/PX4-Autopilot/build/px4_sitl_default/bin/px4"
@@ -117,7 +125,15 @@ class Px4SitlFlightSupervisorNode(Node):
             name: self.get_parameter(name).value
             for name in defaults.__dataclass_fields__
         })
-        self.machine = Px4FlightStateMachine(self.config)
+        self.human_control = bool(self.get_parameter("human_control").value)
+        self.machine = Px4FlightStateMachine(
+            self.config, human_control=self.human_control
+        )
+        self._human_command = None
+        self._human_receipt_s = None
+        self._mux_receipt_s = None
+        self._gate_receipt_s = None
+        self._stream_receipt_s = None
 
         self._planner_path_valid = False
         self._planner_status = ""
@@ -135,6 +151,7 @@ class Px4SitlFlightSupervisorNode(Node):
         self._vehicle_odometry = None
         self._vehicle_odometry_receipt_s: float | None = None
         self._land_detected = None
+        self._land_receipt_s = None
         self._scene_kind = ""
         self._expected_goal: tuple[float, float, float] | None = None
         self._initial_north_east: tuple[float, float] | None = None
@@ -155,6 +172,15 @@ class Px4SitlFlightSupervisorNode(Node):
         self._external_bridge_receipt_s: float | None = None
 
         qos = control_qos()
+        self._lifecycle_publisher = None
+        if self.human_control:
+            self._lifecycle_publisher = self.create_publisher(
+                TwistStamped, SOURCE_TOPICS[FLIGHT_LIFECYCLE], qos
+            )
+            self.create_subscription(
+                TwistStamped, SOURCE_TOPICS[HUMAN_JOYSTICK],
+                self._human_callback, qos,
+            )
         self.create_subscription(
             String, PLANNER_STATUS_TOPIC, self._planner_callback, qos
         )
@@ -278,6 +304,34 @@ class Px4SitlFlightSupervisorNode(Node):
 
     def _flight_enable_callback(self, request, response):
         now = self._now_seconds()
+        if request.enable and self.human_control:
+            evidence = self._evidence(now)
+            blockers = [
+                message for blocked, message in (
+                    (not evidence.telemetry_fresh,
+                     "PX4 status/odometry is stale"),
+                    (not evidence.landed, "landed state is not confirmed"),
+                    (evidence.vehicle_armed, "PX4 is already armed"),
+                    (evidence.offboard_active, "PX4 is already in OFFBOARD"),
+                    (evidence.failsafe, "PX4 failsafe is active"),
+                    (not evidence.human_input_ready,
+                     "human input inactive: center sticks, SA -1 then +1"),
+                    (evidence.human_input_ready
+                     and not evidence.human_input_neutral,
+                     "center sticks before requesting takeoff"),
+                ) if blocked
+            ]
+            if blockers:
+                response.accepted = False
+                response.mission_enable_requested = (
+                    self.machine.mission_enable_requested
+                )
+                response.state = self.machine.state.value
+                response.status_message = (
+                    "Takeoff blocked: " + "; ".join(blockers)
+                )
+                self.get_logger().warning(response.status_message)
+                return response
         if request.enable and not self._sitl_guard_valid():
             response.accepted = False
             response.mission_enable_requested = False
@@ -297,7 +351,8 @@ class Px4SitlFlightSupervisorNode(Node):
         accepted, message = self.machine.request_enable(request.enable, now)
         if accepted and request.enable:
             self._reset_mission_evidence()
-            self._publish_takeoff_scene()
+            if not self.human_control:
+                self._publish_takeoff_scene()
         response.accepted = accepted
         response.mission_enable_requested = (
             self.machine.mission_enable_requested
@@ -340,12 +395,15 @@ class Px4SitlFlightSupervisorNode(Node):
 
     def _mux_callback(self, message: ControlMuxStatus) -> None:
         self._mux_status = message
+        self._mux_receipt_s = self._now_seconds()
 
     def _gate_callback(self, message: Px4OutputGateStatus) -> None:
         self._gate_status = message
+        self._gate_receipt_s = self._now_seconds()
 
     def _stream_callback(self, message: Px4StreamStatus) -> None:
         self._stream_status = message
+        self._stream_receipt_s = self._now_seconds()
         if message.state != self._last_stream_state:
             transition = (
                 f"STREAM_TRANSITION {self._last_stream_state or 'NONE'}"
@@ -361,6 +419,22 @@ class Px4SitlFlightSupervisorNode(Node):
                 self.get_logger().info(transition)
             self._last_stream_state = message.state
 
+    def _human_callback(self, message: TwistStamped) -> None:
+        now = self._now_seconds()
+        stamp = message.header.stamp.sec + message.header.stamp.nanosec / 1e9
+        values = (
+            message.twist.linear.x, message.twist.linear.y,
+            message.twist.linear.z, message.twist.angular.z,
+        )
+        if (message.header.frame_id != VALID_COMMAND_FRAME
+                or not all(math.isfinite(value) for value in values)
+                or not 0.0 <= now - stamp <= 0.20):
+            self._human_command = None
+            self._human_receipt_s = None
+            return
+        self._human_command = message
+        self._human_receipt_s = now
+
     def _vehicle_status_callback(self, message) -> None:
         self._vehicle_status = message
         self._vehicle_status_receipt_s = self._now_seconds()
@@ -371,6 +445,7 @@ class Px4SitlFlightSupervisorNode(Node):
 
     def _land_callback(self, message) -> None:
         self._land_detected = message
+        self._land_receipt_s = self._now_seconds()
 
     @staticmethod
     def _message_stamp(message) -> tuple[int, int]:
@@ -570,6 +645,46 @@ class Px4SitlFlightSupervisorNode(Node):
         landed = bool(
             self._land_detected is not None and self._land_detected.landed
         )
+        lifecycle_selected = False
+        human_selected = False
+        human_ready = False
+        human_neutral = False
+        if self.human_control:
+            landed = bool(
+                landed and self._land_receipt_s is not None
+                and 0.0 <= now - self._land_receipt_s <= 0.75
+            )
+            lifecycle_selected = bool(
+                mux is not None and mux.active_source == FLIGHT_LIFECYCLE
+            )
+            human_selected = bool(
+                mux is not None and mux.active_source == HUMAN_JOYSTICK
+            )
+            source_valid = bool(
+                mux is not None and mux.selected_command_valid
+                and not mux.hold_active
+                and (lifecycle_selected or human_selected)
+                and self._mux_receipt_s is not None
+                and 0.0 <= now - self._mux_receipt_s <= 0.25
+            )
+            gate_safe = bool(
+                gate_safe and self._gate_receipt_s is not None
+                and 0.0 <= now - self._gate_receipt_s <= 0.25
+            )
+            stream_stable = bool(
+                stream_stable and self._stream_receipt_s is not None
+                and 0.0 <= now - self._stream_receipt_s <= 0.25
+            )
+            human_ready = bool(
+                self._human_command is not None
+                and self._human_receipt_s is not None
+                and 0.0 <= now - self._human_receipt_s <= 0.20
+            )
+            if human_ready:
+                twist = self._human_command.twist
+                human_neutral = all(abs(value) <= 0.01 for value in (
+                    twist.linear.x, twist.linear.y, twist.angular.z,
+                ))
         return FlightEvidence(
             pipeline_ready=(
                 self._pipeline_ready() and self._scene_kind == "takeoff"
@@ -597,6 +712,10 @@ class Px4SitlFlightSupervisorNode(Node):
             failsafe=failsafe,
             fatal_command_ack=self._fatal_command_ack,
             environment_valid=self._external_environment_valid(now),
+            lifecycle_selected=lifecycle_selected,
+            human_selected=human_selected,
+            human_input_ready=human_ready,
+            human_input_neutral=human_neutral,
         )
 
     def _goal_distance(self) -> float:
@@ -612,7 +731,8 @@ class Px4SitlFlightSupervisorNode(Node):
     def _tick(self) -> None:
         now = self._now_seconds()
         if (
-            self.machine.mission_enable_requested
+            not self.human_control
+            and self.machine.mission_enable_requested
             and not self._scene_kind
             and self._vehicle_odometry is not None
         ):
@@ -626,12 +746,35 @@ class Px4SitlFlightSupervisorNode(Node):
             )
         for action in decision.actions:
             self._execute_action(action, now)
+        if self.human_control:
+            self._publish_human_takeoff_command(evidence)
         self._status_publisher.publish(self._status_message(evidence))
 
+    def _publish_human_takeoff_command(self, evidence: FlightEvidence) -> None:
+        """Keep the existing lifecycle source fresh through human handoff."""
+        if self.machine.state in {
+            Px4FlightState.DISABLED, Px4FlightState.COMPLETE,
+            Px4FlightState.FAILED, Px4FlightState.LANDING,
+            Px4FlightState.HUMAN_CONTROL,
+        }:
+            return
+        message = TwistStamped()
+        message.header.frame_id = VALID_COMMAND_FRAME
+        message.header.stamp = self.get_clock().now().to_msg()
+        if evidence.vehicle_armed and evidence.telemetry_fresh:
+            message.twist.linear.z = altitude_hold_down_velocity(
+                -self.config.takeoff_altitude_m, -evidence.altitude_m
+            )
+        self._lifecycle_publisher.publish(message)
+
     def _execute_action(self, action: str, now: float) -> None:
-        if action == "SELECT_ASTAR":
+        if action in {"SELECT_ASTAR", "SELECT_LIFECYCLE", "SELECT_HUMAN"}:
             request = SetControlSource.Request()
-            request.source = "ASTAR_EXPERT"
+            request.source = {
+                "SELECT_ASTAR": "ASTAR_EXPERT",
+                "SELECT_LIFECYCLE": FLIGHT_LIFECYCLE,
+                "SELECT_HUMAN": HUMAN_JOYSTICK,
+            }[action]
             self._request_service(action, self._mux_client, request, now)
         elif action == "SELECT_HOLD":
             request = SetControlSource.Request()
@@ -646,6 +789,8 @@ class Px4SitlFlightSupervisorNode(Node):
             request.enable = action == "ENABLE_STREAM"
             self._request_service(action, self._stream_client, request, now)
         elif action in {"START_TRACKING", "STOP_TRACKING"}:
+            if self.human_control:
+                return
             request = SetBool.Request()
             request.data = action == "START_TRACKING"
             self._request_service(action, self._tracking_client, request, now)
@@ -901,6 +1046,11 @@ class Px4SitlFlightSupervisorNode(Node):
             f"{str(self._uses_external_scene()).lower()}|environment_valid="
             f"{environment_valid}"
         )
+        if self.human_control:
+            message.status_message += (
+                f"|human_control=true|human_input_ready="
+                f"{str(evidence.human_input_ready).lower()}"
+            )
         return message
 
 

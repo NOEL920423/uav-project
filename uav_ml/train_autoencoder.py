@@ -8,6 +8,7 @@ import json
 import math
 import random
 import subprocess
+import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +44,7 @@ from uav_ml.models import (
 from uav_ml.tools.bc_baseline import audit_dataset, create_episode_split
 from uav_ml.tools.training_cli import (
     TensorBoardServer,
+    add_episode_split_arguments,
     add_tensorboard_arguments,
     autoencoder_latest_path,
     experiment_run_directory,
@@ -392,8 +394,13 @@ def train(
     initialize_from: str | Path | None = None,
     image_sources: Sequence[str] | None = None,
     initialize_sources: Mapping[str, str | Path] | None = None,
+    episodes: int | None = None,
+    train_episodes: int | None = None,
+    validation_episodes: int | None = None,
+    test_episodes: int | None = None,
 ) -> dict:
     """Train, select on validation MSE, then evaluate the held-out test split."""
+    training_started_s = time.monotonic()
     if SummaryWriter is None:
         raise RuntimeError(
             "TensorBoard is required; run: python3 -m pip install -r "
@@ -430,13 +437,24 @@ def train(
             "multi-image training requires the formal episode-aligned dataset; "
             "omit --split-file"
         )
+    if split_file is not None and any(
+        count is not None
+        for count in (episodes, train_episodes, validation_episodes, test_episodes)
+    ):
+        raise ValueError("episode count options cannot be combined with --split-file")
     if split_file is None:
         audit = audit_dataset(
             resolved_dataset,
             image_source=sources[0] if len(sources) == 1 else sources,
         )
         audit["dataset_name"] = resolved_dataset_name
-        split_manifest = create_episode_split(audit, seed)
+        split_manifest = create_episode_split(
+            audit, seed,
+            episodes=episodes,
+            train_episodes=train_episodes,
+            validation_episodes=validation_episodes,
+            test_episodes=test_episodes,
+        )
         if multi_image:
             datasets = {
                 split: ExpertImageDataset(
@@ -632,6 +650,10 @@ def train(
         "image_source": source_label,
         "image_sources": list(sources),
         "maximum_epochs_requested": epochs,
+        "episodes": episodes,
+        "train_episodes": train_episodes,
+        "validation_episodes": validation_episodes,
+        "test_episodes": test_episodes,
         "batch_size": batch_size,
         "learning_rate": learning_rate,
         "latent_dimension": latent_dimension,
@@ -652,7 +674,7 @@ def train(
         f"Dataset:\n{resolved_dataset_name}\n\n"
         f"Resolved path:\n{resolved_dataset}\n\n"
         f"Image sources:\n{', '.join(sources)}\n\n"
-        f"Usable episodes:\n{sum(len(value) for value in split_manifest['splits'].values())}\n\n"
+        f"Selected episodes:\n{sum(len(value) for value in split_manifest['splits'].values())}\n\n"
         "Train / Validation / Test:\n"
         f"{len(datasets['train'].episode_ids)} / "
         f"{len(datasets['validation'].episode_ids)} / "
@@ -803,6 +825,7 @@ def train(
         "epochs": epochs,
         "maximum_epochs_requested": epochs,
         "actual_epochs_trained": actual_epochs_trained,
+        "training_duration_s": time.monotonic() - training_started_s,
         "best_epoch": best_epoch,
         "early_stopping_triggered": early_stopping_triggered,
         "best_train_metrics": {
@@ -844,6 +867,7 @@ def train(
         "actual_epochs_trained": actual_epochs_trained,
         "best_epoch": best_epoch,
         "early_stopping_triggered": early_stopping_triggered,
+        "training_duration_s": summary["training_duration_s"],
     })
     with (output / "training_config.json").open("w", encoding="utf-8") as stream:
         json.dump(training_config, stream, indent=2, sort_keys=True)
@@ -878,6 +902,7 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--epochs", type=int, default=20)
+    add_episode_split_arguments(parser)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--latent-dimension", type=int, default=64)
@@ -990,6 +1015,10 @@ def main() -> int:
                 latest_index_path=latest_index,
                 initialize_from=args.initialize_from,
                 initialize_sources=initialize_sources,
+                episodes=args.episodes,
+                train_episodes=args.train_episodes,
+                validation_episodes=args.validation_episodes,
+                test_episodes=args.test_episodes,
             )
             print(
                 "=========================================\n"

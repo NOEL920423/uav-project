@@ -2,15 +2,20 @@
 
 from dataclasses import replace
 
+import pytest
+
 from uav_px4_control.flight.px4_flight_models import (
     FlightEvidence,
     Px4FlightConfig,
     Px4FlightState,
     altitude_above_ground,
+    altitude_hold_down_velocity,
     planner_status_allows_final_path,
     vehicle_command_was_accepted,
 )
-from uav_px4_control.flight.px4_flight_state_machine import Px4FlightStateMachine
+from uav_px4_control.flight.px4_flight_state_machine import (
+    Px4FlightStateMachine,
+)
 
 
 READY = FlightEvidence(
@@ -252,3 +257,92 @@ def test_land_retry_stops_only_after_exact_accepted_ack():
     assert vehicle_command_was_accepted("21:ACCEPTED", 21)
     assert not vehicle_command_was_accepted("21:IN_PROGRESS", 21)
     assert not vehicle_command_was_accepted("400:ACCEPTED", 21)
+
+
+HUMAN_READY = replace(
+    READY, pipeline_ready=False, follower_command_valid=False,
+    astar_selected=False, lifecycle_selected=True,
+    human_input_ready=True, human_input_neutral=True,
+)
+
+
+def test_human_takeoff_handoff_and_explicit_landing_without_planner():
+    """USB flight reuses OFFBOARD/arm and needs no planner or follower."""
+    machine = Px4FlightStateMachine(human_control=True)
+    assert machine.request_enable(True, 0.0)[0]
+    assert machine.step(0.1, HUMAN_READY).actions == ("SELECT_LIFECYCLE",)
+    assert (
+        machine.step(0.2, HUMAN_READY).state
+        == Px4FlightState.ENABLING_OUTPUT_GATE
+    )
+    assert machine.step(0.3, HUMAN_READY).actions == ("ENABLE_STREAM",)
+    assert machine.step(0.4, HUMAN_READY).actions == ("SEND_OFFBOARD",)
+    offboard = replace(HUMAN_READY, offboard_active=True)
+    assert machine.step(0.5, offboard).actions == ("SEND_ARM",)
+    armed = replace(offboard, vehicle_armed=True, landed=False)
+    assert machine.step(0.6, armed).state == Px4FlightState.TAKEOFF
+    at_altitude = replace(armed, altitude_m=1.85)
+    assert machine.step(0.7, at_altitude).actions == ("SELECT_HUMAN",)
+    barrier = replace(at_altitude, source_valid=False, output_gate_safe=False)
+    assert machine.step(0.75, barrier).state == Px4FlightState.SELECTING_HUMAN
+    human = replace(at_altitude, lifecycle_selected=False, human_selected=True)
+    assert machine.step(0.8, human).state == Px4FlightState.HUMAN_CONTROL
+    # Pilot operation is not bounded by the autonomous mission timeout.
+    moving = replace(human, human_input_neutral=False)
+    assert machine.step(100.0, moving).state == Px4FlightState.HUMAN_CONTROL
+    assert machine.request_enable(False, 100.1)[0]
+    assert machine.step(100.2, moving).actions == (
+        "DISABLE_STREAM", "DISABLE_OUTPUT_GATE", "SEND_LAND",
+    )
+    landed = replace(moving, vehicle_armed=False, landed=True)
+    assert machine.step(101.0, landed).state == Px4FlightState.COMPLETE
+
+
+@pytest.mark.parametrize("changes", [
+    {"human_input_ready": False}, {"telemetry_fresh": False},
+    {"human_selected": False}, {"source_valid": False},
+    {"output_gate_safe": False}, {"stream_stable": False},
+    {"offboard_active": False}, {"environment_valid": False},
+])
+def test_human_airborne_faults_land_and_never_auto_resume(changes):
+    """Release, device loss, mux HOLD, and stale safety evidence end flight."""
+    machine = Px4FlightStateMachine(human_control=True)
+    machine.request_enable(True, 0.0)
+    machine.state = Px4FlightState.HUMAN_CONTROL
+    flying = replace(
+        HUMAN_READY, vehicle_armed=True, offboard_active=True,
+        landed=False, human_selected=True, lifecycle_selected=False,
+    )
+    decision = machine.step(1.0, replace(flying, **changes))
+    assert decision.state == Px4FlightState.LANDING
+    assert "SEND_LAND" in decision.actions
+    assert "DISABLE_STREAM" in decision.actions
+    assert "SELECT_HUMAN" not in decision.actions
+
+
+def test_human_handoff_timeout_and_non_neutral_start_do_not_bypass_guards():
+    """A failed handoff lands; non-neutral prearm input cannot request arm."""
+    machine = Px4FlightStateMachine(human_control=True)
+    machine.request_enable(True, 0.0)
+    decision = machine.step(
+        0.1, replace(HUMAN_READY, human_input_neutral=False)
+    )
+    assert decision.state == Px4FlightState.FAILED
+    assert "SEND_ARM" not in decision.actions
+    machine.request_enable(True, 1.0)
+    machine.state = Px4FlightState.SELECTING_HUMAN
+    flying = replace(
+        HUMAN_READY, vehicle_armed=True, landed=False, offboard_active=True
+    )
+    decision = machine.step(10.0, flying)
+    assert decision.state == Px4FlightState.LANDING
+    assert "handoff timed out" in decision.failure_reason
+
+
+def test_altitude_feedback_corrects_drift_with_bounded_ned_speed():
+    """Target feedback climbs below target and descends above target."""
+    assert altitude_hold_down_velocity(-1.5, 0.0) == -0.6
+    assert altitude_hold_down_velocity(-1.5, -1.5) == 0.0
+    assert altitude_hold_down_velocity(-1.5, -1.7) == pytest.approx(0.2)
+    with pytest.raises(ValueError):
+        altitude_hold_down_velocity(-1.5, float("nan"))

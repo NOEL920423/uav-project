@@ -16,15 +16,19 @@ _AIRBORNE_STATES = frozenset({
     Px4FlightState.REPLANNING,
     Px4FlightState.STARTING_TRACKING,
     Px4FlightState.TRACKING,
+    Px4FlightState.HUMAN_CONTROL,
+    Px4FlightState.SELECTING_HUMAN,
 })
 
 
 class Px4FlightStateMachine:
     """Sequence one explicitly enabled SITL mission and fail toward landing."""
 
-    def __init__(self, config: Px4FlightConfig | None = None) -> None:
+    def __init__(self, config: Px4FlightConfig | None = None,
+                 *, human_control: bool = False) -> None:
         """Create a disabled mission with no previous clock sample."""
         self.config = config or Px4FlightConfig()
+        self.human_control = human_control
         self.state = Px4FlightState.DISABLED
         self.mission_enable_requested = False
         self.failure_reason = ""
@@ -59,7 +63,9 @@ class Px4FlightStateMachine:
             Px4FlightState.REQUESTING_ARM,
             Px4FlightState.LANDING,
         }:
-            self.failure_reason = "explicit abort requested"
+            self.failure_reason = (
+                "" if self.human_control else "explicit abort requested"
+            )
             self._set_state(Px4FlightState.LANDING, now)
             return True, "abort accepted; controlled landing requested"
         self._set_state(Px4FlightState.DISABLED, now)
@@ -100,16 +106,37 @@ class Px4FlightStateMachine:
         if self.state in _AIRBORNE_STATES and evidence.vehicle_armed:
             if not evidence.telemetry_fresh:
                 return self._fail(now, evidence, "PX4 telemetry became stale")
-            if not evidence.source_valid or not evidence.astar_selected:
+            expected_source = (
+                evidence.human_selected
+                if self.state == Px4FlightState.HUMAN_CONTROL
+                else evidence.lifecycle_selected
+            ) if self.human_control else evidence.astar_selected
+            handoff = (
+                self.human_control
+                and self.state == Px4FlightState.SELECTING_HUMAN
+            )
+            if not handoff and (
+                not evidence.source_valid or not expected_source
+            ):
                 return self._fail(
-                    now, evidence, "ASTAR_EXPERT source became invalid"
+                    now, evidence, (
+                        "selected flight source became invalid"
+                        if self.human_control
+                        else "ASTAR_EXPERT source became invalid"
+                    )
                 )
-            if not evidence.output_gate_safe or not evidence.stream_stable:
+            if not handoff and (
+                not evidence.output_gate_safe or not evidence.stream_stable
+            ):
                 return self._fail(
                     now, evidence, "setpoint safety chain stopped"
                 )
 
         elapsed = now - self._state_started_s
+        if self.human_control:
+            decision = self._step_human(now, elapsed, evidence)
+            if decision is not None:
+                return decision
         if self.state == Px4FlightState.WAITING_PIPELINE:
             if evidence.pipeline_ready and evidence.follower_command_valid:
                 self._set_state(Px4FlightState.SELECTING_ASTAR, now)
@@ -266,6 +293,13 @@ class Px4FlightStateMachine:
             self._set_state(Px4FlightState.LANDING, now)
             return self._decision("SEND_LAND")
         if self.state == Px4FlightState.LANDING:
+            if self.human_control:
+                if not (evidence.landed and not evidence.vehicle_armed):
+                    if elapsed <= self.config.landing_timeout_s:
+                        return self._decision(
+                            "DISABLE_STREAM", "DISABLE_OUTPUT_GATE",
+                            "SEND_LAND",
+                        )
             if evidence.landed and not evidence.vehicle_armed:
                 self.mission_enable_requested = False
                 terminal = (
@@ -289,6 +323,81 @@ class Px4FlightStateMachine:
                 return self._decision("SEND_LAND")
             return self._decision("SEND_LAND")
         return self._fail(now, evidence, f"unhandled state {self.state.value}")
+
+    def _step_human(self, now, elapsed, evidence):
+        """Reuse startup/landing while replacing the planner with USB input."""
+        if self.state != Px4FlightState.LANDING:
+            if not evidence.human_input_ready:
+                return self._fail(
+                    now, evidence, "human input heartbeat stopped"
+                )
+            if not evidence.telemetry_fresh:
+                return self._fail(now, evidence, "PX4 telemetry became stale")
+            if evidence.vehicle_armed and not evidence.offboard_active:
+                return self._fail(now, evidence, "human flight left OFFBOARD")
+        if self.state in {
+            Px4FlightState.REQUESTING_OFFBOARD, Px4FlightState.REQUESTING_ARM,
+        } and not (
+            evidence.lifecycle_selected and evidence.source_valid
+            and evidence.output_gate_safe and evidence.stream_stable
+        ):
+            return self._fail(now, evidence, "prearm safety chain stopped")
+        if self.state in {
+            Px4FlightState.WAITING_PIPELINE,
+            Px4FlightState.SELECTING_LIFECYCLE,
+            Px4FlightState.ENABLING_OUTPUT_GATE,
+            Px4FlightState.ENABLING_STREAM,
+            Px4FlightState.PRESTREAMING,
+            Px4FlightState.REQUESTING_OFFBOARD,
+            Px4FlightState.REQUESTING_ARM,
+            Px4FlightState.SELECTING_HUMAN,
+        } and not evidence.human_input_neutral:
+            return self._fail(
+                now, evidence, "center sticks until takeoff starts"
+            )
+        if self.state == Px4FlightState.WAITING_PIPELINE:
+            self._set_state(Px4FlightState.SELECTING_LIFECYCLE, now)
+            return self._decision("SELECT_LIFECYCLE")
+        if self.state == Px4FlightState.SELECTING_LIFECYCLE:
+            if evidence.lifecycle_selected and evidence.source_valid:
+                self._set_state(Px4FlightState.ENABLING_OUTPUT_GATE, now)
+                return self._decision()
+            return self._timeout(
+                elapsed, self.config.pipeline_timeout_s, now, evidence,
+                "FLIGHT_LIFECYCLE selection timed out", "SELECT_LIFECYCLE",
+            )
+        if (self.state == Px4FlightState.REQUESTING_ARM
+                and evidence.vehicle_armed):
+            self._set_state(Px4FlightState.TAKEOFF, now)
+            return self._decision()
+        if self.state == Px4FlightState.TAKEOFF:
+            if evidence.altitude_m >= (
+                self.config.takeoff_altitude_m
+                - self.config.takeoff_altitude_tolerance_m
+            ):
+                if evidence.human_input_neutral:
+                    self._set_state(Px4FlightState.SELECTING_HUMAN, now)
+                    return self._decision("SELECT_HUMAN")
+            return self._timeout(
+                elapsed, self.config.takeoff_timeout_s, now, evidence,
+                "takeoff/neutral human handoff timed out",
+            )
+        if self.state == Px4FlightState.SELECTING_HUMAN:
+            if (evidence.human_selected and evidence.source_valid
+                    and evidence.output_gate_safe and evidence.stream_stable):
+                self._set_state(Px4FlightState.HUMAN_CONTROL, now)
+                return self._decision()
+            return self._timeout(
+                elapsed, self.config.arm_timeout_s, now, evidence,
+                "HUMAN_JOYSTICK handoff timed out", "SELECT_HUMAN",
+            )
+        if self.state == Px4FlightState.HUMAN_CONTROL:
+            if not evidence.offboard_active or not evidence.vehicle_armed:
+                return self._fail(
+                    now, evidence, "human flight left armed OFFBOARD"
+                )
+            return self._decision()
+        return None
 
     def _timeout(
         self,

@@ -2,11 +2,103 @@
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 
 
 PACKAGE = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PACKAGE.parent
 REPOSITORY = SOURCE_ROOT.parents[1]
+
+
+def test_quiet_telemetry_keeps_safety_data_and_diagnostics(monkeypatch):
+    """Only routine console diagnostics change; safety data remain live."""
+    import px4_msgs.msg as px4
+    import rclpy
+    from rclpy.parameter import Parameter
+    from uav_px4_control.px4.px4_live_telemetry_adapter import (
+        Px4LiveTelemetryAdapter,
+    )
+
+    monkeypatch.delenv("UAV_TIMING_DIR", raising=False)
+    rclpy.init(args=[
+        "--ros-args", "-p", "log_telemetry_diagnostics:=false",
+    ])
+    node = None
+    try:
+        node = Px4LiveTelemetryAdapter()
+        info, records, published = [], [], []
+        node.get_logger = lambda: SimpleNamespace(info=info.append)
+        node._timing.record = lambda event, **fields: records.append(
+            (event, fields)
+        )
+        node._publisher = SimpleNamespace(publish=published.append)
+        node._status = px4.VehicleStatus()
+        node._mode = px4.VehicleControlMode()
+        node._odometry = px4.VehicleOdometry()
+        node._flags = px4.FailsafeFlags()
+        node._odometry.pose_frame = node._odometry.POSE_FRAME_NED
+        node._odometry.velocity_frame = node._odometry.VELOCITY_FRAME_NED
+        node._record_topic("vehicle_odometry")
+        node._tick()
+        assert info == []
+        assert len(published) == 1 and published[0].odometry_valid
+        diagnostic = next(fields for event, fields in records
+                          if event == "telemetry_diagnostic")
+        assert diagnostic["topics"]["vehicle_odometry"]["received_count"] == 1
+        # Default/full output remains available without changing the data.
+        node.set_parameters([
+            Parameter("log_telemetry_diagnostics", value=True),
+        ])
+        node._last_diagnostic_log_s = 0.0
+        node._tick()
+        assert "PX4_TELEMETRY_DIAG" in info[-1]
+        assert len(published) == 2 and published[1].odometry_valid
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
+def test_quiet_gate_and_streamer_keep_status_and_diagnostic_records(monkeypatch):
+    """Hide large startup dictionaries without enabling or dropping outputs."""
+    import rclpy
+    from rclpy.parameter import Parameter
+    from uav_px4_control.px4.px4_mapping_gate_node import Px4MappingGateNode
+    from uav_px4_control.px4.px4_setpoint_streamer_node import (
+        Px4SetpointStreamerNode,
+    )
+
+    monkeypatch.delenv("UAV_TIMING_DIR", raising=False)
+    rclpy.init(args=["--ros-args", "-p", "log_startup_diagnostics:=false"])
+    nodes = []
+    try:
+        for cls in (Px4MappingGateNode, Px4SetpointStreamerNode):
+            node = cls()
+            nodes.append(node)
+            info, records, statuses = [], [], []
+            node.get_logger = lambda: SimpleNamespace(
+                info=info.append, warning=info.append, error=info.append,
+            )
+            node._timing.record = lambda event, **fields: records.append(
+                (event, fields)
+            )
+            node._status_publisher = SimpleNamespace(publish=statuses.append)
+            node._tick()
+            assert info == []
+            assert len(statuses) == 1
+            assert any("diagnostic_json" in fields for _, fields in records)
+            first_state = statuses[-1].state
+            node.set_parameters([
+                Parameter("log_startup_diagnostics", value=True),
+            ])
+            node._diagnostic_key = None
+            node._tick()
+            assert "BC_STARTUP_DIAG" in info[-1]
+            assert statuses[-1].state == first_state
+    finally:
+        for node in nodes:
+            node.destroy_node()
+        rclpy.shutdown()
 
 
 def text(path: Path) -> str:

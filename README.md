@@ -38,6 +38,32 @@ Use a profile for repeatable daily arguments without changing module defaults:
 Profiles live in `config/profiles/`. They only supply workflow CLI arguments;
 PX4 safety limits remain in the package ROS parameter YAML files.
 
+AE and BC training can select a subset of usable episodes without changing the
+source dataset. For example, select 50 episodes and split them into 30 training,
+10 validation, and 10 held-out test episodes:
+
+```bash
+./uav ae-train --dataset cylinder_v4 --episodes 50 \
+  --train-episodes 30 --validation-episodes 10 --test-episodes 10 --seed 7
+./uav bc-train --dataset cylinder_v4 --episodes 50 \
+  --train-episodes 30 --validation-episodes 10 --test-episodes 10 --seed 7
+```
+
+Use the same dataset, image sources, seed, and episode counts for AE and BC so
+the encoder and policy share the same held-out episodes. Keep the dataset
+unchanged between runs. BC automatically selects the latest compatible AE;
+use `--encoder` to choose a specific checkpoint from the matching AE run.
+
+All three split counts must be supplied together. Their sum determines the
+total when `--episodes` is omitted, and must equal `--episodes` when supplied.
+With only `--episodes 50`, the default split is 40/5/5. Without count options,
+training continues to use all usable episodes with the existing 80/10/10 split.
+Each split must contain at least one episode, and insufficient usable data is
+reported as an error. Selection is reproducible with `--seed`; actual episode
+IDs and unused usable episodes are saved in the run's `split_manifest.json`.
+Dataset auditing still checks the full dataset before selecting the subset.
+AE count options cannot be combined with the legacy `--split-file` option.
+
 未來會考慮簡化資料結構
 
 ```bash

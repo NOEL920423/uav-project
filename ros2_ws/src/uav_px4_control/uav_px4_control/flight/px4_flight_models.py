@@ -11,6 +11,9 @@ class Px4FlightState(str, Enum):
     DISABLED = "DISABLED"
     WAITING_PIPELINE = "WAITING_PIPELINE"
     SELECTING_ASTAR = "SELECTING_ASTAR"
+    SELECTING_LIFECYCLE = "SELECTING_LIFECYCLE"
+    SELECTING_HUMAN = "SELECTING_HUMAN"
+    HUMAN_CONTROL = "HUMAN_CONTROL"
     ENABLING_OUTPUT_GATE = "ENABLING_OUTPUT_GATE"
     ENABLING_STREAM = "ENABLING_STREAM"
     PRESTREAMING = "PRESTREAMING"
@@ -80,6 +83,19 @@ class FlightEvidence:
     failsafe: bool = False
     fatal_command_ack: str = ""
     environment_valid: bool = True
+    lifecycle_selected: bool = False
+    human_selected: bool = False
+    human_input_ready: bool = False
+    human_input_neutral: bool = False
+
+
+def altitude_hold_down_velocity(
+    target_down: float, current_down: float
+) -> float:
+    """Apply bounded proportional altitude feedback in the NED frame."""
+    if not all(math.isfinite(value) for value in (target_down, current_down)):
+        raise ValueError("altitude feedback requires finite NED positions")
+    return max(-0.6, min(0.6, target_down - current_down))
 
 
 @dataclass(frozen=True, slots=True)

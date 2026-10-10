@@ -19,7 +19,7 @@ def runtime_sources():
     """Return Phase 8 runtime sources, excluding the later flight boundary."""
     return sorted(
         source
-        for source in PACKAGE.glob("*.py")
+        for source in PACKAGE.rglob("*.py")
         if source not in {
             FLIGHT_SUPERVISOR,
             BC_FLIGHT_SUPERVISOR,

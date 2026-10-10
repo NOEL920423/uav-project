@@ -35,6 +35,7 @@ class Px4LiveTelemetryAdapter(Node):
     def __init__(self) -> None:
         """Subscribe read-only and expose the established Phase 7 contract."""
         super().__init__("px4_live_telemetry_adapter")
+        self.declare_parameter("log_telemetry_diagnostics", True)
         self._timing = TimingRecorder(self)
         message_module = importlib.import_module("px4_msgs.msg")
         self._status = None
@@ -124,15 +125,19 @@ class Px4LiveTelemetryAdapter(Node):
                        else round(now - item.last_receive_s, 3))
                 for name, item in self._topic_diagnostics.items()
             }
-            self.get_logger().info(
-                "PX4_TELEMETRY_DIAG "
-                + str({
-                    name: {"received_count": item.count,
-                           "last_receive_age_s": ages[name],
-                           "maximum_observed_gap_s": round(item.maximum_gap_s, 3)}
-                    for name, item in self._topic_diagnostics.items()
-                })
+            diagnostics = {
+                name: {"received_count": item.count,
+                       "last_receive_age_s": ages[name],
+                       "maximum_observed_gap_s": round(item.maximum_gap_s, 3)}
+                for name, item in self._topic_diagnostics.items()
+            }
+            self._timing.record(
+                "telemetry_diagnostic", topics=diagnostics
             )
+            if self.get_parameter("log_telemetry_diagnostics").value:
+                self.get_logger().info(
+                    "PX4_TELEMETRY_DIAG " + str(diagnostics)
+                )
         if any(
             item is None
             for item in (self._status, self._mode, self._odometry, self._flags)

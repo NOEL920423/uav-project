@@ -786,6 +786,10 @@ try:
         TOP_RGB_MODE,
         TOP_RGB_PUBLISH_PERIOD_S,
         TOP_RGB_WIDTH,
+        TOP_VIDEO_JPEG_QUALITY,
+        TOP_VIDEO_RGB_HEIGHT,
+        TOP_VIDEO_RGB_WIDTH,
+        TOP_VIDEO_TOPIC,
     )
 except ModuleNotFoundError:
     ISAAC_RUNTIME_AVAILABLE = False
@@ -869,6 +873,10 @@ if ISAAC_RUNTIME_AVAILABLE:
                 os.environ.get("UAV_EXPERT_SENSORS", "0") == "1"
             )
             self._expert_sensors_enabled = self._formal_expert_sensors_enabled
+            self._observer_video_enabled = (
+                self._expert_sensors_enabled
+                and os.environ.get("UAV_BC_VIDEO_TOP", "0") == "1"
+            )
             self._observer_resolution = (
                 (TOP_RGB_WIDTH, TOP_RGB_HEIGHT)
                 if self._formal_expert_sensors_enabled
@@ -900,22 +908,27 @@ if ISAAC_RUNTIME_AVAILABLE:
             self._replay_error = ""
             self._camera_publisher = None
             self._observer_camera_publisher = None
+            self._observer_video_publisher = None
             self._depth_publisher = None
             self._camera_transform = None
             self._observer_camera_transform = None
             self._rgb_annotator = None
             self._observer_rgb_annotator = None
+            self._observer_video_rgb_annotator = None
             self._depth_annotator = None
             self._render_product = None
             self._observer_render_product = None
+            self._observer_video_render_product = None
             self._last_camera_publish_monotonic = 0.0
             self._last_observer_publish_monotonic = 0.0
             self._last_depth_publish_monotonic = 0.0
             self._camera_frame_count = 0
             self._observer_frame_count = 0
+            self._observer_video_frame_count = 0
             self._depth_frame_count = 0
             self._camera_error = "disabled"
             self._observer_camera_error = "disabled"
+            self._observer_video_error = "disabled"
             self._depth_error = "disabled"
             self._fpv_camera_position = None
             self._observer_camera_position = None
@@ -1031,6 +1044,24 @@ if ISAAC_RUNTIME_AVAILABLE:
                 )
                 self._observer_camera_error = "warming"
                 self._depth_error = "warming"
+                if self._observer_video_enabled:
+                    try:
+                        self._observer_video_render_product = rep.create.render_product(
+                            OBSERVER_CAMERA_PATH, (TOP_VIDEO_RGB_WIDTH, TOP_VIDEO_RGB_HEIGHT),
+                            force_new=True,
+                        )
+                        self._observer_video_rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
+                        self._observer_video_rgb_annotator.attach([self._observer_video_render_product])
+                        self._observer_video_publisher = self._node.create_publisher(
+                            CompressedImage, TOP_VIDEO_TOPIC, 2
+                        )
+                        self._observer_video_error = "warming"
+                    except Exception as error:
+                        self._observer_video_error = f"{type(error).__name__}: {error}"
+                        self._observer_video_enabled = False
+                        self._node.get_logger().error(
+                            f"TOP video camera setup failed: {self._observer_video_error}"
+                        )
                 if self._observer_viewport_requested:
                     self._select_observer_viewport()
             print(
@@ -1449,7 +1480,8 @@ if ISAAC_RUNTIME_AVAILABLE:
 
         @staticmethod
         def _jpeg_message(
-            data, stamp, frame_id, expected_size=(CAMERA_WIDTH, CAMERA_HEIGHT)
+            data, stamp, frame_id, expected_size=(CAMERA_WIDTH, CAMERA_HEIGHT),
+            *, quality=JPEG_QUALITY, subsampling=-1,
         ):
             import numpy as np
             from PIL import Image
@@ -1466,7 +1498,7 @@ if ISAAC_RUNTIME_AVAILABLE:
                 rgb = np.clip(rgb, 0, 255).astype(np.uint8)
             stream = BytesIO()
             Image.fromarray(rgb, mode="RGB").save(
-                stream, format="JPEG", quality=JPEG_QUALITY
+                stream, format="JPEG", quality=quality, subsampling=subsampling
             )
             message = CompressedImage()
             message.header.stamp = stamp
@@ -1545,6 +1577,22 @@ if ISAAC_RUNTIME_AVAILABLE:
                     self._observer_camera_error = (
                         f"{type(error).__name__}: {error}"
                     )
+                if self._observer_video_enabled:
+                    try:
+                        message = self._jpeg_message(
+                            self._observer_video_rgb_annotator.get_data(), stamp,
+                            "isaac_observer_optical",
+                            (TOP_VIDEO_RGB_WIDTH, TOP_VIDEO_RGB_HEIGHT),
+                            quality=TOP_VIDEO_JPEG_QUALITY, subsampling=0,
+                        )
+                        self._observer_video_publisher.publish(message)
+                        self._observer_video_frame_count += 1
+                        self._observer_video_error = ""
+                    except Exception as error:
+                        reason = f"{type(error).__name__}: {error}"
+                        if reason != self._observer_video_error:
+                            self._node.get_logger().error(f"TOP video camera failed: {reason}")
+                        self._observer_video_error = reason
 
             if (
                 self._expert_sensors_enabled
@@ -1654,6 +1702,9 @@ if ISAAC_RUNTIME_AVAILABLE:
                 "observer_rgb_frame_count": self._observer_frame_count,
                 "observer_rgb_error": self._observer_camera_error,
                 "observer_mode": self._observer_mode,
+                "observer_video_enabled": self._observer_video_enabled,
+                "observer_video_frame_count": self._observer_video_frame_count,
+                "observer_video_error": self._observer_video_error,
                 "fpv_depth_enabled": self._expert_sensors_enabled,
                 "fpv_depth_ready": self._depth_frame_count > 0,
                 "fpv_depth_frame_count": self._depth_frame_count,
@@ -1675,6 +1726,12 @@ if ISAAC_RUNTIME_AVAILABLE:
             if self._observer_rgb_annotator is not None:
                 self._observer_rgb_annotator.detach()
                 self._observer_rgb_annotator = None
+            if self._observer_video_rgb_annotator is not None:
+                self._observer_video_rgb_annotator.detach()
+                self._observer_video_rgb_annotator = None
+            if self._observer_video_render_product is not None:
+                self._observer_video_render_product.destroy()
+                self._observer_video_render_product = None
             if self._depth_annotator is not None:
                 self._depth_annotator.detach()
                 self._depth_annotator = None

@@ -48,6 +48,8 @@ setup(
     entry_points={
         "console_scripts": [
             "control_mux_node = uav_px4_control.control.control_mux_node:main",
+            "joystick_control_node = "
+            "uav_px4_control.control.joystick_control_node:main",
             "bc_policy_node = uav_px4_control.flight.bc_policy_node:main",
             "bc_flight_supervisor_node = "
             "uav_px4_control.flight.bc_flight_supervisor_node:main",

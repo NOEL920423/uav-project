@@ -15,6 +15,12 @@ TOP_RGB_PUBLISH_PERIOD_S = FORMAL_RGB_PUBLISH_PERIOD_S
 TOP_RGB_MODE = "fixed_global_top"
 TOP_RGB_ALIGNMENT_TOLERANCE_S = 0.001
 
+# Recording-only TOP output; policy and dataset image contracts stay unchanged.
+TOP_VIDEO_RGB_WIDTH = 1024
+TOP_VIDEO_RGB_HEIGHT = 1024
+TOP_VIDEO_JPEG_QUALITY = 95
+TOP_VIDEO_TOPIC = "/uav/isaac/observer/video/image/compressed"
+
 # 上視圖大小，採樣頻率更改
 LEGACY_OBSERVER_RGB_WIDTH = 320
 LEGACY_OBSERVER_RGB_HEIGHT = 180

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from io import BytesIO
 import hashlib
 import json
@@ -51,10 +52,8 @@ BC_ACTION_LIMITS = {
     "v_right_mps": ACTION_LIMITS[1],
     "yaw_rate_radps": ACTION_LIMITS[2],
 }
-DEFAULT_LATEST_POINTER = Path(
-    "artifacts/experiments/bc/bc_expert_cylinder_v1/top/latest.json"
-)
 BC_EXPERIMENTS_ROOT = Path("artifacts/experiments/bc")
+DEFAULT_LATEST_POINTER = BC_EXPERIMENTS_ROOT / "latest.json"
 
 
 def sha256_file(path: Path) -> str:
@@ -70,7 +69,7 @@ def resolve_checkpoint(
     repository_root: Path,
     checkpoint: Path | None = None,
 ) -> Path:
-    """Resolve an explicit checkpoint or the current cylinder TOP pointer.
+    """Resolve an explicit checkpoint or the most recently completed BC run.
 
     Relative checkpoints may be given either from the current directory or
     from ``artifacts/experiments/bc`` for concise experiment selection.
@@ -90,13 +89,35 @@ def resolve_checkpoint(
                 else from_bc_experiments
             )
     else:
-        pointer = repository_root.resolve() / DEFAULT_LATEST_POINTER
-        if not pointer.is_file():
+        experiments_root = repository_root.resolve() / BC_EXPERIMENTS_ROOT
+        global_pointer = repository_root.resolve() / DEFAULT_LATEST_POINTER
+        candidates = []
+        for pointer in sorted(experiments_root.rglob("latest.json")):
+            try:
+                payload = json.loads(pointer.read_text(encoding="utf-8"))
+                if payload.get("format_version") != BC_CHECKPOINT_FORMAT:
+                    raise ValueError("unsupported BC latest pointer format")
+                updated = datetime.fromisoformat(payload["updated_utc"].replace("Z", "+00:00"))
+                if updated.tzinfo is None:
+                    raise ValueError("BC latest pointer timestamp has no timezone")
+                candidate = Path(payload["best_checkpoint"]).expanduser().resolve()
+                if not candidate.is_file():
+                    raise FileNotFoundError(f"BC checkpoint is missing: {candidate}")
+                summary_path = candidate.parent / "summary.json"
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                if summary.get("run_status") != "completed":
+                    raise ValueError(f"BC training is not completed: {summary_path}")
+                candidates.append((updated, pointer == global_pointer, str(candidate), candidate))
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+                print(
+                    f"[BC Flight] Ignoring unusable BC pointer {pointer}: {error}",
+                    file=sys.stderr, flush=True,
+                )
+        if not candidates:
             raise FileNotFoundError(
-                f"BC checkpoint pointer is missing: {pointer}"
+                f"No completed BC checkpoint is available under: {experiments_root}"
             )
-        payload = json.loads(pointer.read_text(encoding="utf-8"))
-        path = Path(payload["best_checkpoint"]).expanduser().resolve()
+        path = max(candidates)[-1]
     if not path.is_file():
         raise FileNotFoundError(f"BC checkpoint is missing: {path}")
     return path
@@ -111,21 +132,10 @@ def _numpy_compatibility_aliases() -> None:
 
 def load_checkpoint_payload(
     checkpoint_path: Path,
-    requested_image_source: str | tuple[str, ...] | list[str],
+    requested_image_source: str | tuple[str, ...] | list[str] | None,
     device: torch.device,
 ) -> dict:
     """Load and fail closed on every training/runtime contract mismatch."""
-    requested_single_source = isinstance(requested_image_source, str)
-    requested_sources = tuple(
-        canonical_image_source(source)
-        for source in (
-            (requested_image_source,)
-            if isinstance(requested_image_source, str)
-            else requested_image_source
-        )
-    )
-    if not requested_sources or len(set(requested_sources)) != len(requested_sources):
-        raise ValueError("requested image sources must be nonempty and unique")
     _numpy_compatibility_aliases()
     payload = torch.load(
         checkpoint_path.resolve(), map_location=device, weights_only=False
@@ -145,6 +155,16 @@ def load_checkpoint_payload(
             "image_sources", [payload.get("image_source", "")]
         )
     )
+    requested_single_source = isinstance(requested_image_source, str)
+    requested_sources = tuple(
+        canonical_image_source(source)
+        for source in (
+            checkpoint_sources if requested_image_source is None else
+            (requested_image_source,) if requested_single_source else requested_image_source
+        )
+    )
+    if not requested_sources or len(set(requested_sources)) != len(requested_sources):
+        raise ValueError("requested image sources must be nonempty and unique")
     if requested_single_source:
         if not checkpoint_sources or requested_sources[0] != checkpoint_sources[0]:
             raise ValueError(
@@ -225,19 +245,11 @@ class BcFlightPolicy:
     def __init__(
         self,
         checkpoint_path: Path,
-        requested_image_source: str | tuple[str, ...] | list[str],
+        requested_image_source: str | tuple[str, ...] | list[str] | None,
         device: torch.device,
         encoder_override: Path | None = None,
     ) -> None:
         checkpoint_path = checkpoint_path.resolve()
-        requested_sources = tuple(
-            canonical_image_source(source)
-            for source in (
-                (requested_image_source,)
-                if isinstance(requested_image_source, str)
-                else requested_image_source
-            )
-        )
         payload = load_checkpoint_payload(
             checkpoint_path, requested_image_source, device
         )

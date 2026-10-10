@@ -203,6 +203,59 @@ class MockClosedLoopEnvironment:
 
 
 class BcBaselineTests(unittest.TestCase):
+    def test_episode_subset_selects_exact_counts_reproducibly_without_leakage(self) -> None:
+        audit = {
+            "usable": [
+                {"episode_id": f"episode_{index:06d}", "samples": index + 1}
+                for index in range(2000)
+            ],
+            "excluded": [{"episode_id": "failed_episode", "reason": "failed"}],
+        }
+        options = dict(train_episodes=30, validation_episodes=10, test_episodes=10)
+        first = create_episode_split(audit, 7, episodes=50, **options)
+        self.assertEqual(first, create_episode_split(audit, 7, **options))
+        self.assertEqual(first, create_episode_split(audit, 7, episodes=50, **options))
+        self.assertNotEqual(first["splits"], create_episode_split(audit, 8, **options)["splits"])
+        self.assertEqual(first["episode_counts"], {"train": 30, "validation": 10, "test": 10})
+        members = [item for values in first["splits"].values() for item in values]
+        unused = set(first["unused_episode_ids"])
+        self.assertEqual(len(members), 50)
+        self.assertEqual(len(set(members)), 50)
+        self.assertEqual(len(unused), 1950)
+        self.assertFalse(set(members) & unused)
+        self.assertEqual(set(members) | unused, {item["episode_id"] for item in audit["usable"]})
+        self.assertNotIn("failed_episode", members)
+        samples = {item["episode_id"]: item["samples"] for item in audit["usable"]}
+        self.assertEqual(first["sample_counts"], {
+            name: sum(samples[item] for item in ids)
+            for name, ids in first["splits"].items()
+        })
+        default_subset = create_episode_split(audit, 7, episodes=50)
+        self.assertEqual(default_subset["episode_counts"], {"train": 40, "validation": 5, "test": 5})
+        self.assertEqual(set(members), {
+            item for values in default_subset["splits"].values() for item in values
+        })
+
+    def test_episode_subset_rejects_invalid_or_unavailable_counts(self) -> None:
+        audit = {
+            "usable": [{"episode_id": str(index), "samples": 1} for index in range(9)],
+            "excluded": [],
+        }
+        cases = (
+            ({"train_episodes": 3}, "together"),
+            ({"episodes": 0}, "positive integer"),
+            ({"episodes": -1}, "positive integer"),
+            ({"episodes": 1.5}, "positive integer"),
+            ({"episodes": 2}, "at least three"),
+            ({"episodes": 10}, "only 9 usable"),
+            ({"train_episodes": 8, "validation_episodes": 1, "test_episodes": 1}, "only 9 usable"),
+            ({"train_episodes": 0, "validation_episodes": 1, "test_episodes": 1}, "positive integer"),
+            ({"episodes": 8, "train_episodes": 3, "validation_episodes": 1, "test_episodes": 1}, "must equal"),
+        )
+        for options, message in cases:
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, message):
+                create_episode_split(audit, 7, **options)
+
     def test_audit_excludes_failures_and_split_has_no_leakage(self) -> None:
         with tempfile.TemporaryDirectory(prefix="bc-baseline-audit-") as temporary:
             dataset, encoder = _make_fixture(Path(temporary))
@@ -283,6 +336,10 @@ class BcBaselineTests(unittest.TestCase):
                     learning_rate=1e-3,
                     early_stopping_patience=2,
                     seed=7,
+                    episodes=7,
+                    train_episodes=4,
+                    validation_episodes=2,
+                    test_episodes=1,
                 ),
                 "cpu",
                 encode_batch_size=4,
@@ -299,6 +356,10 @@ class BcBaselineTests(unittest.TestCase):
             ):
                 self.assertTrue((output / name).is_file(), name)
             self.assertEqual(len(summary["plots"]), 3)
+            self.assertEqual(summary["episode_counts"], {"train": 4, "validation": 2, "test": 1})
+            manifest = json.loads((output / "split_manifest.json").read_text())
+            self.assertEqual(manifest["selected_episode_count"], 7)
+            self.assertEqual(len(manifest["unused_episode_ids"]), 2)
             self.assertTrue(all(Path(path).is_file() for path in summary["plots"]))
             checkpoint = torch.load(
                 output / "best.pt", map_location="cpu", weights_only=False
@@ -321,6 +382,22 @@ class BcBaselineTests(unittest.TestCase):
                 training_config["best_epoch"], summary["best_epoch"]
             )
             self.assertFalse(training_config["early_stopping_triggered"])
+            self.assertGreater(summary["training_duration_s"], 0.0)
+            self.assertEqual(training_config["training_duration_s"], summary["training_duration_s"])
+            from uav_ml.tools.bc_baseline import _publish_latest_bc
+            from uav_ml.inference.bc_flight import BcFlightPolicy, resolve_checkpoint
+
+            _publish_latest_bc(root, summary)
+            self.assertEqual(resolve_checkpoint(root), output / "best.pt")
+            automatic_policy = BcFlightPolicy(output / "best.pt", None, torch.device("cpu"))
+            self.assertEqual(automatic_policy.identity.image_source, "fpv_rgb")
+            self.assertEqual(automatic_policy.identity.encoder_path, str(encoder))
+            pointer = root / "artifacts/experiments/bc/latest.json"
+            self.assertEqual(json.loads(pointer.read_text())["best_checkpoint"], str(output / "best.pt"))
+            self.assertFalse(pointer.with_suffix(".json.tmp").exists())
+            with self.assertRaisesRegex(ValueError, "incomplete BC run"):
+                _publish_latest_bc(root, {**summary, "run_status": "running"})
+            self.assertEqual(resolve_checkpoint(root), output / "best.pt")
             self.assertTrue((output / "tensorboard").is_dir())
             self.assertTrue(any((output / "tensorboard").iterdir()))
             accumulator = EventAccumulator(str(output / "tensorboard"))
@@ -406,8 +483,20 @@ class BcBaselineTests(unittest.TestCase):
                 workers=0,
                 image_source="top",
                 image_log_interval=1,
+                episodes=7,
+                train_episodes=4,
+                validation_episodes=2,
+                test_episodes=1,
             )
             self.assertEqual(summary["image_source"], "top")
+            self.assertEqual(summary["episodes"], {"train": 4, "validation": 2, "test": 1})
+            manifest = json.loads((output / "split_manifest.json").read_text())
+            expected = create_episode_split(
+                audit_dataset(dataset), 7,
+                train_episodes=4, validation_episodes=2, test_episodes=1,
+            )
+            self.assertEqual(manifest["splits"], expected["splits"])
+            self.assertEqual(len(manifest["unused_episode_ids"]), 2)
             self.assertEqual(summary["encoder_architecture"], "RgbAutoencoderV0")
             self.assertEqual(summary["latent_dimension"], 64)
             self.assertEqual(summary["dataset_name"], "dataset")
@@ -423,6 +512,11 @@ class BcBaselineTests(unittest.TestCase):
                 "split_manifest.json",
             ):
                 self.assertTrue((output / name).is_file(), name)
+            config = json.loads((output / "training_config.json").read_text())
+            self.assertEqual(config["episodes"], 7)
+            self.assertEqual(config["train_episodes"], 4)
+            self.assertGreater(summary["training_duration_s"], 0.0)
+            self.assertEqual(config["training_duration_s"], summary["training_duration_s"])
             self.assertTrue((output / "reconstruction_loss_curves.png").is_file())
             accumulator = EventAccumulator(str(output / "tensorboard"))
             accumulator.Reload()

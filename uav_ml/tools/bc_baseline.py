@@ -47,6 +47,7 @@ from uav_ml.tools.validate_expert_collection import (
 )
 from uav_ml.tools.training_cli import (
     TensorBoardServer,
+    add_episode_split_arguments,
     add_tensorboard_arguments,
     experiment_run_directory,
     resolve_dataset,
@@ -103,6 +104,24 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def _publish_latest_bc(repository_root: Path, summary: dict) -> None:
+    """Atomically publish a completed CLI training run as the global default."""
+    if summary.get("run_status") != "completed":
+        raise ValueError("refusing to publish an incomplete BC run")
+    checkpoint = Path(summary["best_checkpoint"]).resolve()
+    if not checkpoint.is_file() or not (checkpoint.parent / "summary.json").is_file():
+        raise FileNotFoundError(f"completed BC artifacts are missing: {checkpoint}")
+    pointer = repository_root / "artifacts/experiments/bc/latest.json"
+    temporary = pointer.with_suffix(".json.tmp")
+    _write_json(temporary, {
+        "format_version": FORMAT_VERSION,
+        "updated_utc": _utc_now(),
+        "run_dir": str(checkpoint.parent),
+        "best_checkpoint": str(checkpoint),
+    })
+    temporary.replace(pointer)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -130,6 +149,10 @@ class TrainingConfig:
     early_stopping_patience: int = 1000
     min_epochs: int = 0
     seed: int = DEFAULT_SEED
+    episodes: int | None = None
+    train_episodes: int | None = None
+    validation_episodes: int | None = None
+    test_episodes: int | None = None
 
 
 def _validate_sample_row(dataset_root: Path, row: dict) -> None:
@@ -314,13 +337,52 @@ def audit_dataset(
     }
 
 
-def create_episode_split(audit: dict, seed: int) -> dict:
-    """Create a deterministic 80/10/10 split without frame leakage."""
+def create_episode_split(
+    audit: dict,
+    seed: int,
+    *,
+    episodes: int | None = None,
+    train_episodes: int | None = None,
+    validation_episodes: int | None = None,
+    test_episodes: int | None = None,
+) -> dict:
+    """Select complete episodes and split deterministically without frame leakage."""
+    requested_counts = (train_episodes, validation_episodes, test_episodes)
+    explicit_counts = any(count is not None for count in requested_counts)
+    if explicit_counts and any(count is None for count in requested_counts):
+        raise ValueError(
+            "provide --train-episodes, --validation-episodes and --test-episodes together"
+        )
+    for name, count in zip(
+        ("episodes", "train-episodes", "validation-episodes", "test-episodes"),
+        (episodes, *requested_counts),
+    ):
+        if count is not None and (type(count) is not int or count <= 0):
+            raise ValueError(f"--{name} must be a positive integer")
+    if explicit_counts:
+        selected_count = sum(requested_counts)
+        if episodes is not None and episodes != selected_count:
+            raise ValueError("--episodes must equal the sum of the three split counts")
+    else:
+        selected_count = len(audit["usable"]) if episodes is None else episodes
+    if selected_count > len(audit["usable"]):
+        raise ValueError(
+            f"requested {selected_count} episodes but only "
+            f"{len(audit['usable'])} usable episodes are available"
+        )
+    if selected_count < 3:
+        raise ValueError("at least three selected episodes are required")
+
     episodes = [item["episode_id"] for item in audit["usable"]]
     random.Random(seed).shuffle(episodes)
-    validation_count = max(1, round(len(episodes) * 0.10))
-    test_count = max(1, round(len(episodes) * 0.10))
-    train_count = len(episodes) - validation_count - test_count
+    unused_episodes = sorted(episodes[selected_count:])
+    episodes = episodes[:selected_count]
+    if explicit_counts:
+        train_count, validation_count, test_count = requested_counts
+    else:
+        validation_count = max(1, round(len(episodes) * 0.10))
+        test_count = max(1, round(len(episodes) * 0.10))
+        train_count = len(episodes) - validation_count - test_count
     if train_count < 1:
         raise ValueError("dataset is too small for train/validation/test split")
     splits = {
@@ -337,7 +399,12 @@ def create_episode_split(audit: dict, seed: int) -> dict:
     return {
         "format_version": "bc_episode_split_v1.0",
         "seed": seed,
-        "strategy": "episode_level_80_10_10",
+        "strategy": (
+            "episode_level_explicit_counts" if explicit_counts else "episode_level_80_10_10"
+        ),
+        "available_episode_count": len(audit["usable"]),
+        "selected_episode_count": selected_count,
+        "unused_episode_ids": unused_episodes,
         "splits": splits,
         "episode_counts": {
             name: len(values) for name, values in splits.items()
@@ -683,6 +750,7 @@ def train_baseline(
     initialize_policy: Path | None = None,
 ) -> dict:
     """Run reproducible BC training and held-out offline evaluation."""
+    training_started_s = time.monotonic()
     if SummaryWriter is None:
         raise RuntimeError(
             "TensorBoard is required; run: python3 -m pip install -r "
@@ -719,7 +787,13 @@ def train_baseline(
     )
     resolved_dataset_name = dataset_name or Path(audit["dataset_root"]).name
     audit["dataset_name"] = resolved_dataset_name
-    split_manifest = create_episode_split(audit, config.seed)
+    split_manifest = create_episode_split(
+        audit, config.seed,
+        episodes=config.episodes,
+        train_episodes=config.train_episodes,
+        validation_episodes=config.validation_episodes,
+        test_episodes=config.test_episodes,
+    )
     split_manifest["dataset_name"] = resolved_dataset_name
     split_manifest["dataset_path"] = audit["dataset_root"]
     if output_dir.exists():
@@ -772,6 +846,7 @@ def train_baseline(
         "BC Dataset Eligibility\n"
         f"Total episodes     : {audit['total_episodes']}\n"
         f"Usable episodes    : {audit['usable_episodes']}\n"
+        f"Selected episodes  : {split_manifest['selected_episode_count']}\n"
         f"Excluded episodes  : {audit['excluded_episodes']}\n"
         f"Exclusion reasons  : {audit['exclusion_reasons']}\n"
         f"Accepted samples   : {audit['total_accepted_samples']}\n"
@@ -1018,6 +1093,7 @@ def train_baseline(
         output_dir, history, test_metrics, prediction, target
     )
     metrics["plots"] = plots
+    metrics["training_duration_s"] = time.monotonic() - training_started_s
     _write_json(output_dir / "metrics.json", metrics)
     metadata = dict(encoder_payload.get("metadata", {}))
     summary = {
@@ -1049,6 +1125,7 @@ def train_baseline(
         "actual_epochs_trained": len(history),
         "best_epoch": best_epoch,
         "early_stopping_triggered": early_stopping_triggered,
+        "training_duration_s": metrics["training_duration_s"],
     })
     _write_json(output_dir / "training_config.json", training_config)
     latest = output_dir.parent / "latest.json"
@@ -1080,6 +1157,7 @@ def _parser() -> argparse.ArgumentParser:
                         default="autoencoder", help="frozen visual encoder (default: autoencoder)")
     parser.add_argument("--output")
     parser.add_argument("--epochs", type=int, default=100)
+    add_episode_split_arguments(parser)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--patience", type=int, default=1000)
@@ -1187,6 +1265,10 @@ def main() -> int:
                     early_stopping_patience=args.patience,
                     min_epochs=args.min_epochs,
                     seed=args.seed,
+                    episodes=args.episodes,
+                    train_episodes=args.train_episodes,
+                    validation_episodes=args.validation_episodes,
+                    test_episodes=args.test_episodes,
                 ),
                 args.device,
                 args.encode_batch_size,
@@ -1202,6 +1284,7 @@ def main() -> int:
                 image_sources=sources if len(sources) > 1 else None,
                 initialize_policy=args.initialize_policy,
             )
+            _publish_latest_bc(repository_root, summary)
             test = summary["test"]["per_action"]
             print(
                 "=========================================\n"
