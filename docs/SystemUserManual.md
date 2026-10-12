@@ -21,7 +21,7 @@ expert-collect
 DATASET=bc_expert_run_v1
 ```
 
-這是 shell 變數，以下命令會將資料寫入 `artifacts/datasets/bc_expert_run_v1`。新的一輪收集請使用新的資料集名稱，避免將不同實驗混在一起。
+這是 shell 變數，以下命令會將資料寫入 `datasets/bc_expert_run_v1`。新的一輪收集請使用新的資料集名稱，避免將不同實驗混在一起。
 
 **命令來源：**`./uav` 的 expert collection CLI；參數說明見 [`expert_dataset_collection.md`](expert_dataset_collection.md) 與 `uav_ml/tools/expert_collect.py`。
 
@@ -55,7 +55,7 @@ DATASET=bc_expert_run_v1
 ```bash
 # 重新驗證 1000 筆 accepted episodes；通過後將 collection metadata 標記為 complete。
 ./uav expert-validate \
-  --dataset "artifacts/datasets/$DATASET" \
+  --dataset "datasets/$DATASET" \
   --episodes 1000 \
   --autoencoder autoencoder_runs/rgb_ae_v0_baseline_20260811/best.pt \
   --finalize
@@ -72,7 +72,7 @@ DATASET=bc_expert_run_v1
 ./uav ae-train --dataset "$DATASET" --image-source top --epochs 200
 ```
 
-AE 會使用 episode-level train / validation / test split，並將訓練結果寫入 `artifacts/experiments/autoencoder/` 下的 run 目錄。記下輸出的 run 路徑；BC 階段會依 dataset 和 image source 選用相符的已完成 AE checkpoint。需要調整 batch size、GPU 或輸出位置時，可查詢：
+AE 會使用 episode-level train / validation / test split，並將訓練結果寫入 `experiments/autoencoder/` 下的 run 目錄。記下輸出的 run 路徑；BC 階段會依 dataset 和 image source 選用相符的已完成 AE checkpoint。需要調整 batch size、GPU 或輸出位置時，可查詢：
 
 ```bash
 # 查看 Autoencoder 訓練支援的參數。
@@ -85,13 +85,13 @@ AE 會使用 episode-level train / validation / test split，並將訓練結果�
 
 ```bash
 # 設定本次 BC run 輸出目錄；請確認它尚不存在，且每次訓練使用新名稱。
-BC_RUN="artifacts/experiments/bc_baseline/${DATASET}_run_01"
+BC_RUN="experiments/bc/${DATASET}/top/run_01"
 # BC 會依 dataset 與 image source 自動選取已完成且相符的 AE provenance。
 # 使用 TOP 影像和同資料集的 AE encoder 訓練 BC 500 epochs。
 ./uav bc-train --dataset "$DATASET" --image-source top --epochs 500 --output "$BC_RUN"
 ```
 
-BC 預設輸出在 `artifacts/experiments/bc_baseline/`。完成後記下這次 BC run 的 `best.pt` 路徑，供 closed-loop 評估使用。可查詢其餘訓練參數：
+BC 預設輸出在 `experiments/bc/<dataset>/<image_source>/run_<timestamp>/`。完成後記下這次 BC run 的 `best.pt` 路徑，供 closed-loop 評估使用。可查詢其餘訓練參數：
 
 ```bash
 # 查看 BC 訓練參數與 encoder 選項。
@@ -110,7 +110,7 @@ BC 預設輸出在 `artifacts/experiments/bc_baseline/`。完成後記下這次 
   --checkpoint "$BC_RUN/best.pt"
 ```
 
-`bc-eval` 會管理 Isaac Sim、Pegasus、PX4 SITL 與 ROS 2 flight stack；若要查看模擬畫面，可加上 `--visible`。評估結果會寫入 `artifacts/evaluations/bc_flight/run_<timestamp>/`。檢查每回合的 success、failure reason 與 aggregate success rate；offline BC loss 不能取代 closed-loop 飛行結果。
+`bc-eval` 會管理 Isaac Sim、Pegasus、PX4 SITL 與 ROS 2 flight stack；若要查看模擬畫面，可加上 `--visible`。評估結果會寫入 `evaluations/bc/<AE或ResNet18>_<MMDDTHHMMYyyyy>/`。檢查每回合的 success、failure reason 與 aggregate success rate；offline BC loss 不能取代 closed-loop 飛行結果。
 
 ```bash
 # 查看 closed-loop evaluator 的完整參數。
@@ -123,10 +123,10 @@ BC 預設輸出在 `artifacts/experiments/bc_baseline/`。完成後記下這次 
 
 | 階段 | 主要輸出位置 |
 |---|---|
-| 專家資料 | `artifacts/datasets/<dataset>/` |
-| AE checkpoint 和訓練紀錄 | `artifacts/experiments/autoencoder/<dataset>/<image_source>/run_<timestamp>/` |
+| 專家資料 | `datasets/<dataset>/` |
+| AE checkpoint 和訓練紀錄 | `experiments/autoencoder/<dataset>/<image_source>/run_<timestamp>/` |
 | BC checkpoint、split 和 metrics | 本手冊指令設定的 `$BC_RUN/` |
-| Closed-loop episodes、metrics 和 plots | `artifacts/evaluations/bc_flight/run_<timestamp>/` |
+| Closed-loop episodes、metrics 和 plots | `evaluations/bc/<AE或ResNet18>_<MMDDTHHMMYyyyy>/` |
 
 ## 執行注意事項
 

@@ -16,7 +16,10 @@
 - `legacy/`：過去開發過程中保留的舊版程式，目前正式飛行流程不會使用。
 - `assets/usd/legacy_or_unclassified/`：舊版或尚未重新分類的 USD 場景與資源。
 - `docs/`：系統設計、問題紀錄、研究里程碑與開發文件。
-- `artifacts/`：實驗、測試與診斷產生的輸出結果。
+- `datasets/`：專家資料集與影像。
+- `experiments/`：Autoencoder、BC 模型與訓練結果。
+- `evaluations/bc/`：Closed-loop 飛行測試結果。
+- `artifacts/`：保留的舊資料、`bc_baseline` 與其他診斷輸出。
 
 ## Current workflows
 

@@ -40,6 +40,7 @@ from uav_ml.models import (
     MultiImageAutoencoderV0,
     RgbAutoencoderConfig,
     RgbAutoencoderV0,
+    ResNet18AutoencoderV0,
 )
 from uav_ml.tools.bc_baseline import audit_dataset, create_episode_split
 from uav_ml.tools.training_cli import (
@@ -206,6 +207,10 @@ def _load_model(
     payload = torch.load(path, map_location=device, weights_only=False)
     if payload.get("model_class") == "RgbAutoencoderV0":
         model = RgbAutoencoderV0(RgbAutoencoderConfig(**payload["model_config"]))
+    elif payload.get("model_class") == "ResNet18AutoencoderV0":
+        model = ResNet18AutoencoderV0(
+            RgbAutoencoderConfig(**payload["model_config"])
+        )
     elif payload.get("model_class") == "MultiImageAutoencoderV0":
         model = MultiImageAutoencoderV0(
             MultiImageAutoencoderConfig.from_dict(payload["model_config"])
@@ -398,6 +403,7 @@ def train(
     train_episodes: int | None = None,
     validation_episodes: int | None = None,
     test_episodes: int | None = None,
+    encoder_backbone: str = "cnn",
 ) -> dict:
     """Train, select on validation MSE, then evaluate the held-out test split."""
     training_started_s = time.monotonic()
@@ -420,6 +426,8 @@ def train(
         raise ValueError("min_epochs cannot exceed epochs")
     if latent_dimension < 2:
         raise ValueError("latent dimension must be at least 2")
+    if encoder_backbone not in {"cnn", "resnet18"}:
+        raise ValueError("encoder_backbone must be cnn or resnet18")
     set_seeds(seed)
     device = resolve_device(device_name)
     output = Path(output_dir)
@@ -513,10 +521,15 @@ def train(
             MultiImageAutoencoderV0(MultiImageAutoencoderConfig(
                 image_sources=sources,
                 latent_dimension=latent_dimension,
+                encoder_backbone=encoder_backbone,
             ))
         ).to(device)
     else:
-        model = RgbAutoencoderV0(
+        model_class = (
+            ResNet18AutoencoderV0 if encoder_backbone == "resnet18"
+            else RgbAutoencoderV0
+        )
+        model = model_class(
             RgbAutoencoderConfig(latent_dimension=latent_dimension)
         ).to(device)
     if initialize_from is not None:
@@ -546,8 +559,8 @@ def train(
                 )
             model.load_state_dict(payload["model_state"])
         else:
-            if payload.get("model_class") != "RgbAutoencoderV0":
-                raise ValueError("initial checkpoint model class is not RgbAutoencoderV0")
+            if payload.get("model_class") != type(model).__name__:
+                raise ValueError("initial checkpoint model class does not match requested architecture")
             initial_config = RgbAutoencoderConfig(**payload["model_config"])
             initial_source = initial_metadata.get("image_source")
             initial_preprocessing = initial_metadata.get("image_preprocessing")
@@ -577,9 +590,10 @@ def train(
                 source_checkpoint, map_location="cpu", weights_only=False
             )
             metadata = payload.get("metadata", {})
-            if payload.get("model_class") != "RgbAutoencoderV0":
+            if payload.get("model_class") != type(model.branches[source]).__name__:
                 raise ValueError(
-                    f"initializer for {source} must be a single-source RgbAutoencoderV0"
+                    f"initializer for {source} must be a single-source "
+                    f"{type(model.branches[source]).__name__}"
                 )
             if (
                 metadata.get("image_source") != source
@@ -617,6 +631,7 @@ def train(
             {source: IMAGE_PREPROCESSING[source] for source in sources}
         ),
         "encoder_architecture": type(model).__name__,
+        "encoder_backbone": encoder_backbone,
         "latent_dimension": latent_dimension,
         "policy_rollouts": "excluded",
         "data_warning": (
@@ -658,6 +673,7 @@ def train(
         "learning_rate": learning_rate,
         "latent_dimension": latent_dimension,
         "seed": seed,
+        "encoder_backbone": encoder_backbone,
         "tensorboard_enabled": tensorboard_enabled,
         "tensorboard_port": tensorboard_port,
         "early_stopping_patience": early_stopping_patience,
@@ -882,7 +898,7 @@ def _parser() -> argparse.ArgumentParser:
     dataset_group = parser.add_mutually_exclusive_group()
     dataset_group.add_argument(
         "--dataset",
-        help="dataset name under artifacts/datasets, or explicit path",
+        help="dataset name under datasets, or explicit path",
     )
     dataset_group.add_argument(
         "--dataset-root",
@@ -906,6 +922,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--latent-dimension", type=int, default=64)
+    parser.add_argument(
+        "--encoder-backbone", choices=("cnn", "resnet18"), default="cnn",
+        help="trainable AE encoder architecture (default: cnn; resnet18 trains from scratch)",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=614420090)
     parser.add_argument("--workers", type=int, default=4)
@@ -984,9 +1004,13 @@ def main() -> int:
             project_root=repository_root,
         )
     )
+    if args.encoder_backbone == "resnet18" and not args.output_dir:
+        output = output.parent / "resnet18" / output.name
     latest_index = autoencoder_latest_path(
         location, source_label, project_root=repository_root
     )
+    if args.encoder_backbone == "resnet18":
+        latest_index = latest_index.parent / "resnet18" / latest_index.name
     try:
         with TensorBoardServer(
             output / "tensorboard",
@@ -1019,6 +1043,7 @@ def main() -> int:
                 train_episodes=args.train_episodes,
                 validation_episodes=args.validation_episodes,
                 test_episodes=args.test_episodes,
+                encoder_backbone=args.encoder_backbone,
             )
             print(
                 "=========================================\n"
@@ -1030,6 +1055,7 @@ def main() -> int:
                 f"Actual epochs trained:\n"
                 f"{summary['actual_epochs_trained']}\n\n"
                 f"Best epoch:\n{summary['best_epoch']}\n\n"
+                f"Total training duration:\n{summary['training_duration_s']:.2f} s\n\n"
                 f"Early stopping:\n"
                 f"{'yes' if summary['early_stopping_triggered'] else 'no'}\n\n"
                 "Best validation reconstruction loss:\n"

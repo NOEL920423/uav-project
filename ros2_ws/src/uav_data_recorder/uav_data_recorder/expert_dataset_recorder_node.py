@@ -104,7 +104,9 @@ class ExpertDatasetRecorderNode(Node):
         """Create output paths, buffers, subscriptions, and join timer."""
         super().__init__("expert_dataset_recorder")
         self.declare_parameter(
-            "dataset_root", "artifacts/datasets/bc_expert_v1"
+            "dataset_root", str(
+                Path(__file__).resolve().parents[4] / "datasets/bc_expert_v1"
+            )
         )
         self.declare_parameter("episode_id", EPISODE_ID)
         self.declare_parameter("collection_mode", "single")

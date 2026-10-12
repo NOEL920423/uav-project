@@ -4,10 +4,10 @@
 啟動的資料集工作流程。資料集位置為：
 
 ```text
-artifacts/datasets/bc_expert_highrise_v1/
+datasets/bc_expert_highrise_v1/
 ```
 
-整個 `artifacts/` 產生資料目錄都由 Git 忽略。影像、depth PNG、飛行證據、manifests、
+整個 `datasets/` 產生資料目錄都由 Git 忽略。影像、depth PNG、飛行證據、manifests、
 runtime logs 和 contact sheets 都不得提交至版本控制。
 
 ## 指令
@@ -57,8 +57,9 @@ manifest 和 seed 邏輯，不會啟動 Isaac、ROS、PX4，也不會建立正�
 ## 固定研究規約
 
 每個正式 episode 都使用 `isaac/runtime/environment.py` 中的 normal mode：起點 `(0, 0)`、
-終點 `(3, 5)`、恰好八棟高樓、固定的 width/depth/height/yaw 範圍、0.50 m 最小間距、
-兩個保證阻擋直線路徑的障礙物，以及 canonical lighting。Collector 會在飛行開始前驗證
+終點 `(3, 5)`、兩個圓柱障礙物、0.50 m 最小間距，以及 canonical lighting。
+使用 `--scene v3` 依 seed 生成障礙物，或 `--scene v4` 使用固定配置；未指定時維持 v4。
+Collector 會在飛行開始前驗證
 純確定性場景；aggregate validator 也會再次檢查記錄下來的場景。
 
 Collector 不負責設定 camera geometry，而是啟動既有的 canonical sensor runtime，使用：
@@ -129,10 +130,94 @@ validation 拒絕該 collection。
 
 ## 驗證範圍
 
-Per-episode 與 aggregate validation 會檢查 seed 唯一、canonical 八棟高樓/兩個阻擋物場景、
+Per-episode 與 aggregate validation 會檢查 seed 唯一、所選版本的兩個阻擋物場景、
 建築邊界與間距、lighting、JPEG 可讀性與尺寸、uint16 PNG depth、timestamp 單調性、同步
 容許值、rejection accounting、stream 數量、A* path metadata、終止結果與安全失敗證據、
 sampling rate、磁碟統計及 Visual QA 頻率。每個 accepted sample 都會解碼，並通過目前的
 preprocessing/encoder，以重建有限的 64D latent、72D observation 與 3D expert target。
 
 此工具不會啟動 BC 或 PPO 訓練。
+
+## v3 / v4 場景切換與交叉測試
+
+`config/scenes/v3.json` 與 `config/scenes/v4.json` 是獨立保存的場景設定。
+v3 的生成器還原自 Git revision `d53c991`，並比對過去 v3 資料的完整障礙物記錄。
+兩個版本都使用 X `[-5, 5]`、Y `[-2, 7]`、起點 `(0, 0, 0)`、目標 `(3, 5, 1.5)`、
+兩個直線 blocker、0.50 m 最小間距及 intensity 800 的白色 DomeLight。
+
+| 參數 | v3 | v4 |
+|---|---|---|
+| 障礙物生成 | episode seed 決定位置、尺寸、yaw 與裝飾 | 固定位置、尺寸、yaw 與裝飾 seed 0 |
+| 額外隨機障礙物 | 0 | 0 |
+| 第一個 blocker | width/depth basis 0.72 m，高 5.2 m；位置沿直線比例 0.34–0.38，加橫向 jitter ±0.08 m | `(1.08, 1.80)`，width/depth basis 0.72 m，高 5.2 m，yaw 0 |
+| 第二個 blocker | width/depth basis 0.56–0.72 m，高 3.2–5.2 m；位置沿直線比例 0.62–0.66，加橫向 jitter ±0.08 m | `(1.92, 3.20)`，width/depth basis 0.64 m，高 4.0 m，yaw 0 |
+| yaw 範圍 | −35° 至 35° | 0° |
+
+歷史 v3 的每個 `episode.json` 已保存實際障礙物、牆壁、placement contract 與光源，
+但沒有完整的 `environment_parameters` 或資料集層級設定 JSON。外觀設定由當時的 Git
+程式確認；新紀錄會保存完整設定，不會覆寫或補造歷史 episode 資料。
+
+### 蒐集指定場景
+
+場景版本由 `--scene` 決定，與 `--dataset` 名稱獨立。使用新名稱避免覆寫既有資料集：
+
+```bash
+./uav expert-collect --scene v3 --episodes 100 --dataset cylinder_v3_new
+./uav expert-collect --scene v4 --episodes 100 --dataset cylinder_v4_new
+./uav expert-collect --scene v3 --episodes 100 --dataset cylinder_v3_new --resume
+```
+
+`--episodes` 的 accepted 目標語意不變。`expert-collect-publish` 與
+`expert-scene-preview` 也接受 `--scene v3|v4`。
+`--resume` 會在修改 attempt history 前核對設定 JSON；不同版本或不同參數會直接拒絕。
+對於沒有設定快照的舊資料集，會先核對所有已有 episode 的場景，才建立資料集層級快照。
+
+新輸出包含：
+
+```text
+datasets/<dataset>/scene_parameters.json
+datasets/<dataset>/collection_manifest.json
+datasets/<dataset>/episode_XXXXXX/episode.json
+run_logs/expert-collection_*/episode_XXXXXX/expected_scene.json
+run_logs/expert-collection_*/episode_XXXXXX/scene.json
+```
+
+`scene_parameters.json` 保存版本、完整生成與外觀參數，以及正規化 JSON 內容的 SHA-256。
+`episode.json` 的 `scene_configuration` 保存相同設定、實際幾何、episode seed、版本與摘要。
+`expected_scene.json` 是飛行前預期場景；`scene.json` 是 Isaac 實際回報的場景。
+離線 `--dry-run` 只生成設定與預期場景，不會產生 Isaac 回報。
+
+### 分別訓練與四組閉循環測試
+
+已有 `datasets/cylinder_v3` 與 `datasets/cylinder_v4` 時可以直接訓練，不必重新蒐集。
+下列命令示範原有的 TOP Autoencoder + BC 流程；epochs 是示範值，依實驗需求設定。
+訓練時使用 `--dataset` 選資料來源；測試時用 `--checkpoint` 選模型、`--scene` 選場景。
+BC 會選擇同一 dataset/image source 的 Autoencoder checkpoint。
+
+```bash
+./uav ae-train --dataset cylinder_v3 --image-source top --epochs 20
+./uav bc-train --dataset cylinder_v3 --image-source top --epochs 100 \
+  --output experiments/bc/cylinder_v3/top_rgb/scene_transfer
+./uav ae-train --dataset cylinder_v4 --image-source top --epochs 20
+./uav bc-train --dataset cylinder_v4 --image-source top --epochs 100 \
+  --output experiments/bc/cylinder_v4/top_rgb/scene_transfer
+
+./uav eval --scene v3 --checkpoint experiments/bc/cylinder_v3/top_rgb/scene_transfer/best.pt \
+  --episodes 1 --seed 900000 --headless --output evaluations/bc/v3_train_v3_test
+./uav eval --scene v4 --checkpoint experiments/bc/cylinder_v3/top_rgb/scene_transfer/best.pt \
+  --episodes 1 --seed 900000 --headless --output evaluations/bc/v3_train_v4_test
+./uav eval --scene v3 --checkpoint experiments/bc/cylinder_v4/top_rgb/scene_transfer/best.pt \
+  --episodes 1 --seed 900000 --headless --output evaluations/bc/v4_train_v3_test
+./uav eval --scene v4 --checkpoint experiments/bc/cylinder_v4/top_rgb/scene_transfer/best.pt \
+  --episodes 1 --seed 900000 --headless --output evaluations/bc/v4_train_v4_test
+```
+
+`eval` 是 `bc-eval` 的別名，兩者接受相同選項。`--episodes 1` 是一次飛行；
+一組評估要飛行多次時，請自行設定 episode 數量。四組使用相同的測試 seed 序列可比較場景
+差異；v4 幾何不因 seed 改變。若使用新蒐集資料，將訓練與 checkpoint 路徑中的 dataset
+名稱換成 `cylinder_v3_new`、`cylinder_v4_new`。重做實驗時請換新的 `--output` 目錄。
+可以將 `--headless` 改為 `--visible` 開啟 WebRTC 預覽。
+
+每組 evaluation 在根目錄保存 `scene_parameters.json` 與 `summary.json`，每個 episode
+保存 `scene_status.json`、`scene.json`、`result.json`。Isaac 必須回覆相同場景版本與設定
+SHA-256 才會啟動 BC 飛行；結果同時記錄模型 checkpoint SHA-256 與場景設定 SHA-256。

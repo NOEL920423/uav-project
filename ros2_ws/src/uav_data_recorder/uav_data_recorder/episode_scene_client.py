@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -34,6 +35,8 @@ class EpisodeSceneClient(Node):
         self.declare_parameter("episode_id", "episode_000001")
         self.declare_parameter("random_seed", 0)
         self.declare_parameter("scene_mode", "normal")
+        self.declare_parameter("scene_version", "v4")
+        self.declare_parameter("scene_profile_path", "")
         self.declare_parameter("timeout_s", 20.0)
         self.declare_parameter("require_px4_safe_state", True)
         self.declare_parameter("expected_runtime_generation", -1)
@@ -42,6 +45,21 @@ class EpisodeSceneClient(Node):
         self.episode_id = str(self.get_parameter("episode_id").value)
         self.random_seed = int(self.get_parameter("random_seed").value)
         self.scene_mode = str(self.get_parameter("scene_mode").value)
+        self.scene_version = str(self.get_parameter("scene_version").value)
+        self.scene_profile = None
+        self.scene_profile_sha256 = None
+        profile_path = str(self.get_parameter("scene_profile_path").value)
+        if profile_path:
+            payload = json.loads(Path(profile_path).read_text(encoding="utf-8"))
+            self.scene_profile = payload.get("scene_profile", payload)
+            if self.scene_profile.get("scene_version") != self.scene_version:
+                raise ValueError("scene version does not match scene profile")
+            self.scene_profile_sha256 = hashlib.sha256(json.dumps(
+                self.scene_profile, sort_keys=True, separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")).hexdigest()
+            if payload.get("scene_profile_sha256", self.scene_profile_sha256) != self.scene_profile_sha256:
+                raise ValueError("scene profile snapshot checksum mismatch")
         self.timeout_s = float(self.get_parameter("timeout_s").value)
         self.require_px4_safe_state = bool(
             self.get_parameter("require_px4_safe_state").value
@@ -131,6 +149,13 @@ class EpisodeSceneClient(Node):
             and status.get("random_seed") == self.random_seed
             and status.get("scene_configuration", {}).get("mode")
             == self.scene_mode
+            and status.get("scene_configuration", {}).get("scene_version")
+            == self.scene_version
+            and (
+                self.scene_profile_sha256 is None
+                or status.get("scene_configuration", {}).get("scene_profile_sha256")
+                == self.scene_profile_sha256
+            )
             and status.get("timeline_playing") is True
             and status.get("pose_valid") is True
             and int(status.get("scene_revision", 0))
@@ -174,6 +199,8 @@ class EpisodeSceneClient(Node):
             "episode_id": self.episode_id,
             "random_seed": self.random_seed,
             "mode": self.scene_mode,
+            "scene_version": self.scene_version,
+            "scene_profile": self.scene_profile,
         }, sort_keys=True, separators=(",", ":"))
         self.publisher.publish(request)
         self.command_count += 1

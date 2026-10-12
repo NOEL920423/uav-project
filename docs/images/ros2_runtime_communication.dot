@@ -80,7 +80,7 @@ owner [label="px4_vehicle_command_owner_node\nSole vehicle-command publisher", f
 px4 [label="MicroXRCEAgent → PX4 SITL", fillcolor="#e0f2fe", color="#38bdf8"];
 inputs [label="Expert recorder topic inputs\nRGB / depth, runtime_status, vehicle odometry\nastar_command, mux_status, flight_status\nscene goal, planner path / status", shape=note, fillcolor="#fff1f2"];
 recorder [label="expert_dataset_recorder\nOptional: synchronized dataset + metadata", fillcolor="#fff1f2", color="#fb7185"];
-artifacts [label="artifacts/datasets/\nEpisode data + validation metadata", fillcolor="#fff1f2", color="#fb7185"];
+artifacts [label="datasets/\nEpisode data + validation metadata", fillcolor="#fff1f2", color="#fb7185"];
 supervisor -> services [label="enable / source selection", style=dashed, color="#d97706"];
 supervisor -> owner [label="/uav/px4/send_vehicle_command\nSendPx4VehicleCommand service", style=dashed, color="#d97706"];
 owner -> px4 [label="/fmu/in/vehicle_command", color="#dc2626"];

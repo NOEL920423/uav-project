@@ -326,7 +326,7 @@ def validate(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--dataset", default="artifacts/datasets/bc_expert_v1"
+        "--dataset", default=str(REPOSITORY_ROOT / "datasets/bc_expert_v1")
     )
     parser.add_argument(
         "--autoencoder",

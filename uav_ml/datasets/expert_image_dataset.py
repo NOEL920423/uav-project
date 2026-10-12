@@ -260,6 +260,7 @@ class ExpertImageDataset(Dataset):
         image_sources: Sequence[str] | None = None,
         image_width: int = 128,
         image_height: int = 72,
+        sample_fields: Sequence[str] = (),
     ) -> None:
         if split not in {"train", "validation", "test"}:
             raise ValueError("split must be train, validation, or test")
@@ -277,6 +278,7 @@ class ExpertImageDataset(Dataset):
         self.image_source = sources[0] if len(sources) == 1 else None
         self.image_width = image_width
         self.image_height = image_height
+        self.sample_fields = tuple(sample_fields)
         self.split_metadata = split_manifest
         try:
             self.episode_ids = tuple(split_manifest["splits"][split])
@@ -287,13 +289,24 @@ class ExpertImageDataset(Dataset):
         self.samples = []
         for episode_id in self.episode_ids:
             if len(sources) == 1:
-                self.samples.extend(select_episode_images(
+                selected = select_episode_images(
                     self.dataset_root, str(episode_id), sources[0]
-                ))
+                )
             else:
-                self.samples.extend(select_episode_image_sets(
+                selected = select_episode_image_sets(
                     self.dataset_root, str(episode_id), sources
-                ))
+                )
+            if self.sample_fields:
+                rows = {
+                    int(row["sample_id"]): row
+                    for row in _read_rows(self.dataset_root / str(episode_id) / "samples.csv")
+                }
+                for sample in selected:
+                    row = rows[int(sample["sample_id"])]
+                    sample["sample_values"] = [
+                        _finite(row[field], field) for field in self.sample_fields
+                    ]
+            self.samples.extend(selected)
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -304,6 +317,10 @@ class ExpertImageDataset(Dataset):
             **sample,
             "image_path": str(sample["image_path"]),
         }
+        if self.sample_fields:
+            result["sample_values"] = torch.tensor(
+                sample["sample_values"], dtype=torch.float32
+            )
         if len(self.image_sources) == 1:
             result["image"] = preprocess_expert_image(
                 sample["image_path"],

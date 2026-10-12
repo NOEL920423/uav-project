@@ -14,6 +14,7 @@ from uav_ml.models import (
     MultiImageAutoencoderV0,
     RgbAutoencoderConfig,
     RgbAutoencoderV0,
+    ResNet18AutoencoderV0,
 )
 from uav_ml.train_bc import resolve_device
 
@@ -43,12 +44,13 @@ def resnet_preprocessing_for_sources(
 
 
 class ResNet18Encoder(torch.nn.Module):
-    """Frozen ImageNet features for one or more aligned image streams."""
+    """ResNet18 features with an optional trained projection to 64 dimensions."""
 
     def __init__(
         self,
         pretrained: bool = False,
         image_sources: tuple[str, ...] | list[str] = ("fpv_rgb",),
+        latent_dimension: int = 512,
     ) -> None:
         super().__init__()
         # AE users do not need torchvision installed.
@@ -58,13 +60,19 @@ class ResNet18Encoder(torch.nn.Module):
         if not sources or len(set(sources)) != len(sources):
             raise ValueError("image_sources must be nonempty and unique")
         self.image_sources = sources
+        if latent_dimension not in (64, 512):
+            raise ValueError("ResNet18 latent dimension must be 64 or 512")
         if len(sources) == 1:
-            self.config = RgbAutoencoderConfig(latent_dimension=512)
+            self.config = RgbAutoencoderConfig(latent_dimension=latent_dimension)
             self.backbone = self._build_backbone(resnet18, ResNet18_Weights, pretrained)
+            self.projection = (
+                torch.nn.Linear(512, latent_dimension)
+                if latent_dimension != 512 else torch.nn.Identity()
+            )
         else:
             self.config = MultiImageAutoencoderConfig(
                 image_sources=sources,
-                latent_dimension=512,
+                latent_dimension=latent_dimension,
             )
             self.backbones = torch.nn.ModuleDict({
                 source: self._build_backbone(
@@ -72,7 +80,7 @@ class ResNet18Encoder(torch.nn.Module):
                 )
                 for source in sources
             })
-            self.fusion = torch.nn.Linear(len(sources) * 512, 512)
+            self.fusion = torch.nn.Linear(len(sources) * 512, latent_dimension)
         self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
         self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
         self.requires_grad_(False)
@@ -111,7 +119,7 @@ class ResNet18Encoder(torch.nn.Module):
             return self.fusion(torch.cat(features, dim=1))
         if not isinstance(image, torch.Tensor):
             raise ValueError("single-image ResNet input must be a tensor")
-        return self._encode_single(image, self.backbone)
+        return self.projection(self._encode_single(image, self.backbone))
 
     def _encode_single(
         self, image: torch.Tensor, backbone: torch.nn.Module
@@ -129,6 +137,10 @@ def load_frozen_encoder(
     architecture = payload.get("model_class")
     if architecture == "RgbAutoencoderV0":
         model = RgbAutoencoderV0(RgbAutoencoderConfig(**payload["model_config"]))
+    elif architecture == "ResNet18AutoencoderV0":
+        model = ResNet18AutoencoderV0(
+            RgbAutoencoderConfig(**payload["model_config"])
+        )
     elif architecture == "MultiImageAutoencoderV0":
         model = MultiImageAutoencoderV0(
             MultiImageAutoencoderConfig.from_dict(payload["model_config"])
@@ -136,7 +148,8 @@ def load_frozen_encoder(
     elif architecture == "ResNet18Encoder":
         model_config = payload["model_config"]
         model = ResNet18Encoder(
-            image_sources=tuple(model_config.get("image_sources", ("fpv_rgb",)))
+            image_sources=tuple(model_config.get("image_sources", ("fpv_rgb",))),
+            latent_dimension=int(model_config.get("latent_dimension", 512)),
         )
         expected_config = (
             model.checkpoint_config

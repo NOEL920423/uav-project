@@ -154,6 +154,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
         resume: bool = False,
         episodes: int = 3,
         fixed_seed: int | None = None,
+        scene_version: str = "v4",
         max_attempts: int | None = None,
     ) -> ExpertCollector:
         return ExpertCollector(
@@ -161,6 +162,7 @@ class ExpertCollectionToolTest(unittest.TestCase):
             dataset_root=dataset,
             episodes=episodes,
             fixed_seed=fixed_seed,
+            scene_version=scene_version,
             max_attempts=max_attempts,
             resume=resume,
             backend=backend,
@@ -190,6 +192,35 @@ class ExpertCollectionToolTest(unittest.TestCase):
         self.assertTrue(all(
             entry["status"] == "complete" for entry in manifest["episodes"]
         ))
+
+    def test_selected_scene_is_recorded_and_incompatible_resume_preserves_files(self) -> None:
+        dataset = self.root / "v3"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self._collector(dataset, DryRunBackend(), scene_version="v3").run()
+        record = json.loads((dataset / "scene_parameters.json").read_text())
+        manifest = json.loads((dataset / "collection_manifest.json").read_text())
+        self.assertEqual(record["scene_version"], "v3")
+        self.assertEqual(record["scene_profile"]["generation"], "seeded")
+        self.assertEqual(manifest["scene_profile_sha256"], record["scene_profile_sha256"])
+        plan = json.loads((self.root / "runtime/episode_000001/expected_scene.json").read_text())
+        self.assertEqual(plan["scene_version"], "v3")
+        self.assertEqual(plan["environment_parameters"]["obstacle_generation"]["decoration_seed"], 103001)
+        before = {path.name: path.read_bytes() for path in dataset.glob("*.json")}
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "resume scene parameters"):
+            self._collector(dataset, DryRunBackend(), resume=True, scene_version="v4").run()
+        self.assertEqual(before, {path.name: path.read_bytes() for path in dataset.glob("*.json")})
+        with contextlib.redirect_stdout(io.StringIO()):
+            self._collector(dataset, DryRunBackend(), resume=True, scene_version="v3").run()
+
+    def test_scene_validator_rejects_profile_or_layout_tampering(self) -> None:
+        scene = generate_episode_scene("episode_000001", 103001, 0.0, 0.0, scene_version="v3")
+        validate_cylinder_scene(scene, "episode_000001", 103001)
+        scene["obstacles"][0]["yaw_deg"] += 1.0
+        with self.assertRaisesRegex(ValueError, "recorded profile"):
+            validate_cylinder_scene(scene, "episode_000001", 103001)
+        scene["scene_profile"]["parameters"]["FLOOR_COLOR"] = [0.1, 0.1, 0.1]
+        with self.assertRaisesRegex(ValueError, "profile identity"):
+            validate_cylinder_scene(scene, "episode_000001", 103001)
 
     def test_fixed_seed_reaches_scene_generator_and_reproduces_scene(self) -> None:
         generated_scenes = []
@@ -349,11 +380,11 @@ class ExpertCollectionToolTest(unittest.TestCase):
         dataset = self.root / "dataset"
         original = generate_episode_scene
 
-        def generate(episode_id, seed, reset_east_m, reset_north_m):
+        def generate(episode_id, seed, reset_east_m, reset_north_m, **kwargs):
             if episode_id == "episode_000002":
                 raise ValueError("fixture invalid scene")
             return original(
-                episode_id, seed, reset_east_m, reset_north_m
+                episode_id, seed, reset_east_m, reset_north_m, **kwargs
             )
 
         with mock.patch(

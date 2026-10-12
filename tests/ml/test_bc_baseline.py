@@ -16,7 +16,12 @@ import torch
 from PIL import Image
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
-from uav_ml.models import RgbAutoencoderV0
+from uav_ml.models import (
+    MultiImageAutoencoderConfig,
+    MultiImageAutoencoderV0,
+    ResNet18AutoencoderV0,
+    RgbAutoencoderV0,
+)
 from uav_ml.datasets.expert_image_dataset import (
     preprocess_expert_image,
     select_episode_images,
@@ -392,7 +397,7 @@ class BcBaselineTests(unittest.TestCase):
             automatic_policy = BcFlightPolicy(output / "best.pt", None, torch.device("cpu"))
             self.assertEqual(automatic_policy.identity.image_source, "fpv_rgb")
             self.assertEqual(automatic_policy.identity.encoder_path, str(encoder))
-            pointer = root / "artifacts/experiments/bc/latest.json"
+            pointer = root / "experiments/bc/latest.json"
             self.assertEqual(json.loads(pointer.read_text())["best_checkpoint"], str(output / "best.pt"))
             self.assertFalse(pointer.with_suffix(".json.tmp").exists())
             with self.assertRaisesRegex(ValueError, "incomplete BC run"):
@@ -419,6 +424,7 @@ class BcBaselineTests(unittest.TestCase):
                 raise
             self.skipTest("optional torchvision dependency is not installed")
         from uav_ml.inference.bc_flight import TopRgbBcPolicy
+        from uav_ml.inference.bc_flight_contract import LIVE_IMAGE_SIZES
         from uav_ml.inference.rgb_encoder import RESNET_PREPROCESSING
         from uav_ml.tools.bc_baseline import _episode_arrays
 
@@ -427,7 +433,7 @@ class BcBaselineTests(unittest.TestCase):
             dataset, ae_path = _make_fixture(root, encoder_source="top")
             for image_path in dataset.glob("episode_*/observer_rgb/*.jpg"):
                 with Image.open(image_path) as source:
-                    image = source.resize((640, 360))
+                    image = source.resize(LIVE_IMAGE_SIZES["top_rgb"])
                 image.save(image_path)
             ae_hash = _sha256(ae_path)
             output = root / "resnet-run"
@@ -531,6 +537,265 @@ class BcBaselineTests(unittest.TestCase):
                 "ae/top/validation_original_vs_reconstructed",
                 accumulator.Tags()["images"],
             )
+
+    def test_trainable_resnet_exports_best_64d_encoder_for_frozen_bc(self) -> None:
+        try:
+            import torchvision
+        except ModuleNotFoundError as error:
+            if error.name != "torchvision":
+                raise
+            self.skipTest("optional torchvision dependency is not installed")
+        from uav_ml.datasets.expert_image_dataset import IMAGE_PREPROCESSING
+        from uav_ml.inference.bc_flight import TopRgbBcPolicy
+        from uav_ml.inference.bc_flight_contract import LIVE_IMAGE_SIZES
+        from uav_ml.tools.bc_baseline import _run_loader, _episode_arrays
+        from uav_ml.tools.training_cli import resolve_dataset, select_autoencoder_checkpoint
+
+        initial_weights = []
+        initial_backbones = []
+        validation_weights = []
+
+        def run_loader(model, loader, device, optimizer=None, **options):
+            encoder = options.get("encoder")
+            if optimizer is not None and not initial_weights:
+                initial_weights.append(encoder.projection.weight.detach().clone())
+                initial_backbones.append(encoder.backbone.conv1.weight.detach().clone())
+            metrics, prediction, target = _run_loader(model, loader, device, optimizer, **options)
+            if getattr(loader.dataset, "split", None) == "validation":
+                validation_weights.append(encoder.projection.weight.detach().clone())
+                # Force epoch one to win so a stale/final encoder cannot pass.
+                metrics["mse"] = 0.01 * len(validation_weights)
+            return metrics, prediction, target
+
+        with tempfile.TemporaryDirectory(prefix="resnet-supervised-") as temporary:
+            root = Path(temporary)
+            dataset, _ = _make_fixture(root, encoder_source="top")
+            for path in dataset.glob("episode_*/observer_rgb/*.jpg"):
+                with Image.open(path) as image:
+                    resized = image.resize(LIVE_IMAGE_SIZES["top_rgb"])
+                resized.save(path)
+            output = root / "resnet"
+            config = TrainingConfig(
+                epochs=2, batch_size=4, seed=7, episodes=7,
+                train_episodes=4, validation_episodes=2, test_episodes=1,
+            )
+            with mock.patch("uav_ml.tools.bc_baseline._run_loader", side_effect=run_loader), mock.patch(
+                "torch.hub.download_url_to_file", side_effect=AssertionError("must not download"),
+            ):
+                summary = train_baseline(
+                    dataset, None, output, config, "cpu", image_source="top",
+                    encoder_type="resnet18_trainable",
+                )
+            self.assertEqual(summary["best_epoch"], 1)
+            self.assertEqual(summary["latent_dimension"], 64)
+            self.assertEqual(summary["training_stage"], "resnet")
+            self.assertTrue(summary["encoder"]["trained"])
+            accumulator = EventAccumulator(str(output / "tensorboard"))
+            accumulator.Reload()
+            self.assertIn("resnet/train_action_loss", accumulator.Tags()["scalars"])
+            self.assertGreater(summary["training_duration_s"], 0.0)
+            for name in ("metrics.json", "training_config.json", "summary.json"):
+                self.assertEqual(
+                    json.loads((output / name).read_text())["training_duration_s"],
+                    summary["training_duration_s"],
+                )
+            encoder_path = Path(summary["best_encoder_checkpoint"])
+            payload = torch.load(encoder_path, weights_only=False)
+            self.assertFalse(any("decoder" in key for key in payload["model_state"]))
+            self.assertFalse(torch.equal(initial_weights[0], validation_weights[0]))
+            self.assertFalse(torch.equal(
+                initial_backbones[0], payload["model_state"]["backbone.conv1.weight"],
+            ))
+            torch.testing.assert_close(payload["model_state"]["projection.weight"], validation_weights[0])
+            last_encoder = output / "resnet18_encoder_last.pt"
+            torch.testing.assert_close(
+                torch.load(last_encoder, weights_only=False)["model_state"]["projection.weight"],
+                validation_weights[1],
+            )
+            for policy_name in ("best.pt", "last.pt"):
+                policy = torch.load(output / policy_name, weights_only=False)
+                self.assertEqual(
+                    _sha256(Path(policy["autoencoder_checkpoint"])),
+                    policy["autoencoder_checkpoint_sha256"],
+                )
+            selection = select_autoencoder_checkpoint(
+                resolve_dataset(dataset, must_exist=True), "top", IMAGE_PREPROCESSING["top"],
+                explicit=encoder_path,
+            )
+            with self.assertRaisesRegex(ValueError, "provenance mismatch"):
+                select_autoencoder_checkpoint(
+                    resolve_dataset(root, must_exist=True), "top", IMAGE_PREPROCESSING["top"],
+                    explicit=encoder_path,
+                )
+            frozen_hash = _sha256(encoder_path)
+            bc_output = root / "bc"
+            bc_summary = train_baseline(
+                dataset, selection.checkpoint, bc_output,
+                TrainingConfig(
+                    epochs=1, batch_size=4, seed=7, episodes=7,
+                    train_episodes=4, validation_episodes=2, test_episodes=1,
+                ), "cpu", image_source="top",
+            )
+            self.assertEqual(_sha256(encoder_path), frozen_hash)
+            self.assertGreater(bc_summary["training_duration_s"], 0.0)
+            self.assertEqual(bc_summary["policy"]["model_config"]["observation_dimension"], 72)
+            self.assertEqual(
+                json.loads((output / "split_manifest.json").read_text())["splits"],
+                json.loads((bc_output / "split_manifest.json").read_text())["splits"],
+            )
+            for policy_path in (output / "best.pt", output / "last.pt", bc_output / "best.pt"):
+                runtime = TopRgbBcPolicy(policy_path, "top_rgb", torch.device("cpu"))
+                self.assertFalse(any(p.requires_grad for p in runtime.encoder.parameters()))
+                self.assertFalse(runtime.encoder.training)
+                episode_id = json.loads((output / "split_manifest.json").read_text())["splits"]["test"][0]
+                observations, _ = _episode_arrays(
+                    dataset, episode_id, runtime.encoder, torch.device("cpu"), 4, "top"
+                )
+                image = select_episode_images(dataset, episode_id, "top")[0]["image_path"]
+                with torch.inference_mode():
+                    expected = runtime.policy(
+                        (torch.from_numpy(observations[:1]) - runtime.mean) / runtime.std
+                    )[0].numpy()
+                np.testing.assert_allclose(
+                    runtime.act(Path(image).read_bytes(), observations[0, -8:]), expected, atol=1e-6,
+                )
+
+    def test_resnet_autoencoder_backpropagates_through_backbone_and_projection(self) -> None:
+        try:
+            import torchvision
+        except ModuleNotFoundError as error:
+            if error.name != "torchvision":
+                raise
+            self.skipTest("optional torchvision dependency is not installed")
+        from uav_ml.inference.rgb_encoder import load_frozen_encoder
+
+        for sources in (("top",), ("fpv_rgb", "fpv_depth")):
+            with self.subTest(sources=sources):
+                if len(sources) == 1:
+                    model = ResNet18AutoencoderV0()
+                    branches = [model]
+                    images = torch.rand(2, 3, 72, 128)
+                else:
+                    config = MultiImageAutoencoderConfig(
+                        image_sources=sources, encoder_backbone="resnet18"
+                    )
+                    self.assertEqual(
+                        MultiImageAutoencoderConfig.from_dict(config.to_dict()), config
+                    )
+                    model = MultiImageAutoencoderV0(config)
+                    branches = list(model.branches.values())
+                    images = {source: torch.rand(2, 3, 72, 128) for source in sources}
+                original_weight = branches[0].encoder_cnn.conv1.weight.detach().clone()
+                reconstruction, latent = model(images)
+                self.assertEqual(tuple(latent.shape), (2, 64))
+                pairs = (
+                    [(reconstruction, images)] if len(sources) == 1 else
+                    [(reconstruction[source], images[source]) for source in sources]
+                )
+                for rebuilt, image in pairs:
+                    self.assertEqual(rebuilt.shape, image.shape)
+                    self.assertGreaterEqual(float(rebuilt.detach().min()), 0.0)
+                    self.assertLessEqual(float(rebuilt.detach().max()), 1.0)
+                loss = torch.stack([
+                    torch.nn.functional.mse_loss(rebuilt, image) for rebuilt, image in pairs
+                ]).mean()
+                loss.backward()
+                self.assertTrue(torch.isfinite(loss))
+                for branch in branches:
+                    for parameter in (
+                        branch.encoder_cnn.conv1.weight, branch.encoder_head.weight
+                    ):
+                        self.assertIsNotNone(parameter.grad)
+                        self.assertTrue(torch.isfinite(parameter.grad).all())
+                self.assertGreater(float(branches[0].encoder_cnn.conv1.weight.grad.abs().sum()), 0.0)
+                torch.optim.SGD(model.parameters(), lr=0.01).step()
+                self.assertFalse(torch.equal(
+                    original_weight, branches[0].encoder_cnn.conv1.weight
+                ))
+                model.eval()
+                with torch.inference_mode():
+                    expected = model.encode(images)
+                with tempfile.TemporaryDirectory(prefix="resnet-ae-reload-") as temporary:
+                    checkpoint = Path(temporary) / "encoder.pt"
+                    torch.save({
+                        "model_class": type(model).__name__,
+                        "model_config": model.config.to_dict(),
+                        "model_state": model.state_dict(),
+                    }, checkpoint)
+                    loaded, _ = load_frozen_encoder(checkpoint, torch.device("cpu"))
+                    self.assertFalse(any(p.requires_grad for p in loaded.parameters()))
+                    with torch.inference_mode():
+                        torch.testing.assert_close(loaded.encode(images), expected)
+
+    def test_resnet_autoencoder_checkpoint_trains_bc_and_matches_live_inference(self) -> None:
+        try:
+            import torchvision
+        except ModuleNotFoundError as error:
+            if error.name != "torchvision":
+                raise
+            self.skipTest("optional torchvision dependency is not installed")
+        from uav_ml.datasets.expert_image_dataset import IMAGE_PREPROCESSING
+        from uav_ml.inference.bc_flight import TopRgbBcPolicy
+        from uav_ml.inference.bc_flight_contract import LIVE_IMAGE_SIZES
+        from uav_ml.tools.bc_baseline import _episode_arrays
+        from uav_ml.tools.training_cli import resolve_dataset, select_autoencoder_checkpoint
+
+        with tempfile.TemporaryDirectory(prefix="resnet-ae-bc-") as temporary:
+            root = Path(temporary)
+            dataset, _ = _make_fixture(root, encoder_source="top")
+            for image_path in dataset.glob("episode_*/observer_rgb/*.jpg"):
+                with Image.open(image_path) as source:
+                    image = source.resize(LIVE_IMAGE_SIZES["top_rgb"])
+                image.save(image_path)
+            with mock.patch(
+                "torch.hub.download_url_to_file",
+                side_effect=AssertionError("trainable AE must not download weights"),
+            ):
+                ae_summary = train_autoencoder(
+                    dataset_root=dataset, split_file=None, output_dir=root / "ae",
+                    epochs=1, batch_size=4, workers=0, device_name="cpu", seed=7,
+                    image_source="top", encoder_backbone="resnet18",
+                    episodes=7, train_episodes=4, validation_episodes=2, test_episodes=1,
+                )
+                ae_checkpoint = Path(ae_summary["artifacts"]["best_checkpoint"])
+                self.assertTrue(ae_summary["checkpoint_reload_verified"])
+                self.assertEqual(ae_summary["encoder_architecture"], "ResNet18AutoencoderV0")
+                self.assertEqual(ae_summary["latent_dimension"], 64)
+                selection = select_autoencoder_checkpoint(
+                    resolve_dataset(dataset, must_exist=True), "top",
+                    IMAGE_PREPROCESSING["top"], explicit=ae_checkpoint,
+                )
+                self.assertFalse(selection.automatic)
+                ae_hash = _sha256(ae_checkpoint)
+                bc_output = root / "bc"
+                summary = train_baseline(
+                    dataset, selection.checkpoint, bc_output,
+                    TrainingConfig(
+                        epochs=1, batch_size=4, seed=7, episodes=7,
+                        train_episodes=4, validation_episodes=2, test_episodes=1,
+                    ), "cpu", image_source="top",
+                )
+                self.assertEqual(summary["policy"]["model_config"]["observation_dimension"], 72)
+                self.assertEqual(_sha256(ae_checkpoint), ae_hash)
+                self.assertEqual(
+                    json.loads((root / "ae" / "split_manifest.json").read_text())["splits"],
+                    json.loads((bc_output / "split_manifest.json").read_text())["splits"],
+                )
+                runtime = TopRgbBcPolicy(bc_output / "best.pt", "top_rgb", torch.device("cpu"))
+            self.assertFalse(runtime.encoder.training)
+            self.assertFalse(any(p.requires_grad for p in runtime.encoder.parameters()))
+            self.assertEqual(runtime.encoder.config.latent_dimension, 64)
+            episode_id = ae_summary["split_manifest"]["splits"]["test"][0]
+            observations, _ = _episode_arrays(
+                dataset, episode_id, runtime.encoder, torch.device("cpu"), 4, "top"
+            )
+            selected = select_episode_images(dataset, episode_id, "top")
+            with torch.inference_mode():
+                expected = runtime.policy(
+                    (torch.from_numpy(observations[:1]) - runtime.mean) / runtime.std
+                )[0].numpy()
+            actual = runtime.act(Path(selected[0]["image_path"]).read_bytes(), observations[0, -8:])
+            np.testing.assert_allclose(actual, expected, atol=1e-6)
 
     def test_training_interrupt_closes_ae_and_bc_summary_writers(self) -> None:
         with tempfile.TemporaryDirectory(prefix="training-interrupt-") as temporary:

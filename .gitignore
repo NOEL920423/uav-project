@@ -37,6 +37,7 @@ pegasus_test/
 # Dataset / logs / images / videos
 *.csv
 *.json
+!/config/scenes/*.json
 *.log
 *.png
 *.jpg
@@ -56,6 +57,7 @@ pegasus_test/
 
 # ML Phase 1 generated artifacts
 /datasets/
+/experiments/
 /checkpoints/
 /training_runs/
 /autoencoder_runs/

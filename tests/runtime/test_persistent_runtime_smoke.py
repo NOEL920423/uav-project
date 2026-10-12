@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import signal
 import subprocess
@@ -153,6 +154,27 @@ def test_two_consecutive_reset_failures_escalate_to_job_fatal(tmp_path):
         manager.prepare_attempt(1, tmp_path / "attempt_1")
     with pytest.raises(FatalRuntimeError):
         manager.prepare_attempt(2, tmp_path / "attempt_2")
+
+
+def test_collection_scene_profile_reaches_ros_and_wrong_ack_is_fatal(tmp_path):
+    from isaac.runtime.environment import generate_episode_scene, load_scene_profile, scene_profile_record
+
+    manager = PersistentRuntimeManager(ROOT, tmp_path)
+    profile_path = tmp_path / "scene_parameters.json"
+    profile_path.write_text(json.dumps(scene_profile_record(load_scene_profile("v3"))))
+    scene = generate_episode_scene("episode_000001", 103001, 0.0, 0.0, scene_version="v3")
+    evidence_path = tmp_path / "scene_status.json"
+    evidence_path.write_text(json.dumps({"scene_revision": 1, "scene_configuration": scene}))
+    manager.run_ros = mock.Mock(return_value=0)
+    evidence = manager.prepare_scene(1, "episode_000001", 103001, tmp_path, scene_version="v3", scene_profile_path=profile_path)
+    arguments = manager.run_ros.call_args.args[0]
+    assert "scene_version:=v3" in arguments
+    assert f"scene_profile_path:={profile_path}" in arguments
+    assert evidence["scene_configuration"] == scene
+    scene["scene_profile_sha256"] = "stale-profile"
+    evidence_path.write_text(json.dumps({"scene_revision": 2, "scene_configuration": scene}))
+    with pytest.raises(FatalRuntimeError, match="different collection scene parameters"):
+        manager.prepare_scene(2, "episode_000001", 103001, tmp_path, scene_version="v3", scene_profile_path=profile_path)
 
 
 def test_stream_transition_logging_uses_fixed_severity_call_sites():

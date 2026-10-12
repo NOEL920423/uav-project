@@ -5,6 +5,7 @@ import csv
 import json
 import random
 import subprocess
+import time
 from pathlib import Path
 
 import numpy as np
@@ -125,6 +126,7 @@ def train(
     resume: str | Path | None = None,
 ) -> dict:
     """Run deterministic supervised regression and persist full metadata."""
+    training_started_s = time.monotonic()
     if epochs < 1 or batch_size < 1 or learning_rate <= 0.0:
         raise ValueError("epochs, batch size, and learning rate must be positive")
     dataset_stats = validate_dataset(dataset_path)
@@ -221,6 +223,9 @@ def train(
     reloaded, _, _ = load_checkpoint(checkpoint, device)
     if reloaded.parameter_count != model.parameter_count:
         raise RuntimeError("checkpoint reload parameter count mismatch")
+    training_duration_s = time.monotonic() - training_started_s
+    metadata["training_duration_s"] = training_duration_s
+    save_checkpoint(checkpoint, model, normalization, metadata, optimizer)
     result = {
         "initial_train_loss": initial_train["loss"],
         "final_train_loss": history[-1]["train_loss"],
@@ -232,6 +237,7 @@ def train(
         "dataset_episodes": dataset_stats["episodes"],
         "dataset_samples": dataset_stats["samples"],
         "checkpoint_reload": True,
+        "training_duration_s": training_duration_s,
     }
     print(json.dumps(result, indent=2, sort_keys=True))
     return result

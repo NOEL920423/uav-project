@@ -16,7 +16,7 @@ import torch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATASET_BASE = PROJECT_ROOT / "artifacts" / "datasets"
+DATASET_BASE = PROJECT_ROOT / "datasets"
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,7 @@ def resolve_dataset(
     raw = Path(value).expanduser()
     if not str(raw).strip():
         raise ValueError("dataset cannot be empty")
-    dataset_base = project_root.resolve() / "artifacts" / "datasets"
+    dataset_base = project_root.resolve() / "datasets"
     is_short_name = (
         short_name
         and not raw.is_absolute()
@@ -86,7 +86,6 @@ def experiment_run_directory(
     """Return the canonical provenance-preserving experiment run path."""
     return (
         project_root.resolve()
-        / "artifacts"
         / "experiments"
         / experiment
         / dataset.name
@@ -103,7 +102,6 @@ def autoencoder_latest_path(
 ) -> Path:
     return (
         project_root.resolve()
-        / "artifacts"
         / "experiments"
         / "autoencoder"
         / dataset.name
@@ -200,7 +198,10 @@ def validate_autoencoder_checkpoint(
         == image_source == checkpoint_source,
         "encoder architecture": summary.get(
             "encoder_architecture", payload.get("model_class")
-        ) == "RgbAutoencoderV0" == payload.get("model_class"),
+        ) == payload.get("model_class")
+        and payload.get("model_class") in {
+            "RgbAutoencoderV0", "ResNet18AutoencoderV0", "ResNet18Encoder",
+        },
         "preprocessing": summary.get(
             "image_preprocessing", checkpoint_preprocessing
         ) == image_preprocessing == checkpoint_preprocessing,
@@ -323,7 +324,9 @@ def select_multi_autoencoder_checkpoint(
     metadata = payload.get("metadata", {})
     config = payload.get("model_config", {})
     checks = {
-        "model class": payload.get("model_class") == "MultiImageAutoencoderV0",
+        "model class": payload.get("model_class") in {
+            "MultiImageAutoencoderV0", "ResNet18Encoder",
+        },
         "source order": tuple(metadata.get("image_sources", ())) == sources,
         "model source order": tuple(config.get("image_sources", ())) == sources,
         "source preprocessing": metadata.get("image_preprocessing") == image_preprocessing,

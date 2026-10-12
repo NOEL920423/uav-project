@@ -64,6 +64,11 @@ help_output="$("$UAV" help)"
     fail "expert-collect is missing from help"
 [[ "$help_output" == *"expert-collect-publish"* ]] || \
     fail "expert-collect-publish is missing from help"
+[[ "$help_output" == *"resnet-train"* ]] || \
+    fail "resnet-train is missing from help"
+resnet_help="$($UAV resnet-train --help)"
+[[ "$resnet_help" == *"--dataset DATASET"* ]] || \
+    fail "resnet-train help is missing --dataset"
 expert_help="$($UAV expert-collect --help)"
 [[ "$expert_help" == *"--episodes EPISODES"* ]] || \
     fail "expert-collect help is missing --episodes"
@@ -71,6 +76,11 @@ expert_help="$($UAV expert-collect --help)"
     fail "expert-collect help is missing --resume"
 [[ "$expert_help" == *"--seed SEED"* ]] || \
     fail "expert-collect help is missing --seed"
+[[ "$expert_help" == *"--scene {v3,v4}"* ]] || \
+    fail "expert-collect help is missing --scene"
+evaluation_help="$($UAV eval --help)"
+[[ "$evaluation_help" == *"--scene {v3,v4}"* ]] || \
+    fail "eval alias is missing --scene"
 publish_help="$($UAV expert-collect-publish --help)"
 [[ "$publish_help" == *"--nas-root <path>"* ]] || \
     fail "expert-collect-publish help is missing --nas-root"
@@ -85,7 +95,7 @@ git -C "$REPO_ROOT" check-ignore -q ros2_ws/install/example
 git -C "$REPO_ROOT" check-ignore -q ros2_ws/log/example
 git -C "$REPO_ROOT" check-ignore -q run_logs/example.log
 git -C "$REPO_ROOT" check-ignore -q \
-    artifacts/datasets/bc_expert_highrise_v1/episode_000001/images/frame.jpg
+    datasets/bc_expert_highrise_v1/episode_000001/images/frame.jpg
 
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck "$UAV" "$REPO_ROOT/tests/test_uav_wrapper.sh"

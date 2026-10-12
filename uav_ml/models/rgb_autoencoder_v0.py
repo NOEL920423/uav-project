@@ -99,6 +99,21 @@ class RgbAutoencoderV0(nn.Module):
         return sum(parameter.numel() for parameter in self.parameters())
 
 
+class ResNet18AutoencoderV0(RgbAutoencoderV0):
+    """Train ResNet18 and a latent projection with the existing RGB decoder."""
+
+    def __init__(self, config: RgbAutoencoderConfig | None = None) -> None:
+        super().__init__(config)
+        # Keep torchvision optional for the original convolutional baseline.
+        from torchvision.models import resnet18
+
+        # Train from scratch on the same [0,1] images as the original AE.
+        # Checkpoint loading never downloads classification weights.
+        self.encoder_cnn = resnet18(weights=None)
+        self.encoder_cnn.fc = nn.Identity()
+        self.encoder_head = nn.Linear(512, self.config.latent_dimension)
+
+
 @dataclass(frozen=True)
 class MultiImageAutoencoderConfig:
     """Configuration for a fixed set of aligned image streams."""
@@ -107,6 +122,7 @@ class MultiImageAutoencoderConfig:
     image_height: int = 72
     image_width: int = 128
     latent_dimension: int = 64
+    encoder_backbone: str = "cnn"
 
     def __post_init__(self) -> None:
         sources = tuple(str(source) for source in self.image_sources)
@@ -117,12 +133,17 @@ class MultiImageAutoencoderConfig:
             raise ValueError("latent_dimension must be at least 2")
         if (self.image_height, self.image_width) != (72, 128):
             raise ValueError("MultiImageAutoencoderV0 currently requires 128x72 input")
+        if self.encoder_backbone not in {"cnn", "resnet18"}:
+            raise ValueError("encoder_backbone must be cnn or resnet18")
 
     def to_dict(self) -> dict:
-        return {
+        values = {
             **asdict(self),
             "image_sources": list(self.image_sources),
         }
+        if self.encoder_backbone == "cnn":
+            values.pop("encoder_backbone")
+        return values
 
     @classmethod
     def from_dict(cls, values: Mapping) -> "MultiImageAutoencoderConfig":
@@ -131,6 +152,7 @@ class MultiImageAutoencoderConfig:
             image_height=int(values.get("image_height", 72)),
             image_width=int(values.get("image_width", 128)),
             latent_dimension=int(values.get("latent_dimension", 64)),
+            encoder_backbone=str(values.get("encoder_backbone", "cnn")),
         )
 
 
@@ -149,8 +171,12 @@ class MultiImageAutoencoderV0(nn.Module):
             image_width=config.image_width,
             latent_dimension=config.latent_dimension,
         )
+        branch_class = (
+            ResNet18AutoencoderV0
+            if config.encoder_backbone == "resnet18" else RgbAutoencoderV0
+        )
         self.branches = nn.ModuleDict({
-            source: RgbAutoencoderV0(branch_config)
+            source: branch_class(branch_config)
             for source in config.image_sources
         })
         self.fusion = nn.Linear(

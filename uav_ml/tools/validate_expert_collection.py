@@ -28,6 +28,10 @@ from isaac.runtime.environment import (
     START_POS,
     TARGET_POS,
     build_environment_parameters,
+    generate_episode_scene,
+    load_scene_profile,
+    scene_parameters,
+    scene_profile_sha256,
 )
 from isaac.runtime.formal_expert_sensor_contract import (
     FORMAL_RGB_EXPECTED_RATE_RANGE_HZ,
@@ -43,7 +47,9 @@ from uav_ml.tools.validate_expert_episode import (
 )
 
 
-DEFAULT_DATASET = Path("artifacts/datasets/bc_expert_cylinder_v1")
+DEFAULT_DATASET = (
+    Path(__file__).resolve().parents[2] / "datasets" / "bc_expert_cylinder_v1"
+)
 DEFAULT_AUTOENCODER = Path(
     "autoencoder_runs/rgb_ae_v0_baseline_20260811/best.pt"
 )
@@ -67,6 +73,13 @@ def validate_cylinder_scene(
     scene: dict, episode_id: str, seed: int
 ) -> dict:
     """Enforce the frozen scene without regenerating or changing it."""
+    profile = scene.get("scene_profile")
+    p = scene_parameters(profile)
+    if profile is not None and (
+        scene.get("scene_version") != profile["scene_version"]
+        or scene.get("scene_profile_sha256") != scene_profile_sha256(profile)
+    ):
+        raise ValueError(f"{episode_id}: scene profile identity mismatch")
     if scene.get("episode_id") != episode_id:
         raise ValueError(f"{episode_id}: scene identity mismatch")
     if scene.get("random_seed") != seed:
@@ -77,19 +90,19 @@ def validate_cylinder_scene(
         raise ValueError(
             f"{episode_id}: formal collection requires normal mode"
         )
-    if scene.get("start") != list(START_POS):
+    if scene.get("start") != list(p.START_POS):
         raise ValueError(f"{episode_id}: canonical start changed")
-    if scene.get("target_marker") != list(TARGET_POS):
+    if scene.get("target_marker") != list(p.TARGET_POS):
         raise ValueError(f"{episode_id}: canonical goal changed")
     obstacles = scene.get("obstacles")
     if (
         not isinstance(obstacles, list)
-        or len(obstacles) != NUM_OBSTACLES
-        or scene.get("obstacle_count") != NUM_OBSTACLES
-        or scene.get("normal_obstacle_count") != NUM_OBSTACLES
+        or len(obstacles) != p.NUM_OBSTACLES
+        or scene.get("obstacle_count") != p.NUM_OBSTACLES
+        or scene.get("normal_obstacle_count") != p.NUM_OBSTACLES
     ):
         raise ValueError(
-            f"{episode_id}: expected exactly {NUM_OBSTACLES} obstacles"
+            f"{episode_id}: expected exactly {p.NUM_OBSTACLES} obstacles"
         )
     blockers = 0
     for index, obstacle in enumerate(obstacles, start=1):
@@ -100,16 +113,16 @@ def validate_cylinder_scene(
         for name, lower, upper in (
             (
                 "radius_basis_width",
-                RADIUS_BASIS_WIDTH_MIN,
-                RADIUS_BASIS_WIDTH_MAX,
+                p.RADIUS_BASIS_WIDTH_MIN,
+                p.RADIUS_BASIS_WIDTH_MAX,
             ),
             (
                 "radius_basis_depth",
-                RADIUS_BASIS_DEPTH_MIN,
-                RADIUS_BASIS_DEPTH_MAX,
+                p.RADIUS_BASIS_DEPTH_MIN,
+                p.RADIUS_BASIS_DEPTH_MAX,
             ),
-            ("height", CYLINDER_HEIGHT_MIN, CYLINDER_HEIGHT_MAX),
-            ("yaw_deg", OBSTACLE_YAW_MIN_DEG, OBSTACLE_YAW_MAX_DEG),
+            ("height", p.CYLINDER_HEIGHT_MIN, p.CYLINDER_HEIGHT_MAX),
+            ("yaw_deg", p.OBSTACLE_YAW_MIN_DEG, p.OBSTACLE_YAW_MAX_DEG),
         ):
             try:
                 value = float(obstacle[name])
@@ -125,9 +138,9 @@ def validate_cylinder_scene(
             obstacle.get("placement_mode")
             == "guaranteed_direct_path_blocker"
         )
-    if blockers != DIRECT_PATH_BLOCKER_COUNT or scene.get(
+    if blockers != p.DIRECT_PATH_BLOCKER_COUNT or scene.get(
         "direct_path_blocker_count"
-    ) != DIRECT_PATH_BLOCKER_COUNT:
+    ) != p.DIRECT_PATH_BLOCKER_COUNT:
         raise ValueError(f"{episode_id}: direct-path blocker contract changed")
     for left_index, left in enumerate(obstacles):
         for right in obstacles[left_index + 1:]:
@@ -138,27 +151,44 @@ def validate_cylinder_scene(
             required = (
                 float(left["radius"])
                 + float(right["radius"])
-                + MIN_OBSTACLE_GAP
+                + p.MIN_OBSTACLE_GAP
             )
             if separation + 1e-6 < required:
                 raise ValueError(
                     f"{episode_id}: minimum obstacle gap violated"
                 )
-    if scene.get("lighting") != LIGHTING_CONTRACT:
+    if scene.get("lighting") != p.LIGHTING_CONTRACT:
         raise ValueError(f"{episode_id}: canonical lighting changed")
     recorded_environment = scene.get("environment_parameters")
-    if (
-        recorded_environment is not None
-        and recorded_environment != build_environment_parameters(obstacles)
-    ):
+    expected_environment = build_environment_parameters(
+        obstacles, p,
+        generation=profile["generation"] if profile else "fixed",
+        seed=seed if profile and profile["generation"] == "seeded" else None,
+    )
+    if profile is None and recorded_environment is not None:
+        generation = expected_environment["obstacle_generation"]
+        for key in ("seeded_obstacle_count", "layout_mode", "episode_seed_affects_obstacles"):
+            if key not in recorded_environment.get("obstacle_generation", {}):
+                generation.pop(key)
+    if recorded_environment is not None and recorded_environment != expected_environment:
         raise ValueError(
             f"{episode_id}: environment parameter record does not match scene"
         )
+    if profile is not None:
+        expected = generate_episode_scene(
+            episode_id, seed, 0.0, 0.0,
+            scene_version=profile["scene_version"], scene_profile=profile,
+        )
+        if any(scene.get(key) != expected[key] for key in (
+            "obstacles", "walls", "goal", "placement_contract", "environment_parameters",
+        )):
+            raise ValueError(f"{episode_id}: scene does not match its recorded profile")
     return {
         "obstacle_count": len(obstacles),
         "direct_path_blocker_count": blockers,
-        "minimum_gap_m": MIN_OBSTACLE_GAP,
+        "minimum_gap_m": p.MIN_OBSTACLE_GAP,
     }
+
 
 
 def validate_episode_metadata(episode: dict, validation: dict) -> dict:
@@ -264,6 +294,23 @@ def validate_collection_episode(
 ) -> dict:
     """Rebuild one episode's 72D observations and validate all streams."""
     dataset_root = dataset_root.resolve()
+    episode = _load(dataset_root / episode_id / "episode.json")
+    snapshot_path = dataset_root / "scene_parameters.json"
+    if snapshot_path.is_file() and not str(episode.get("terminal_reason", "")).startswith("invalid_scene:"):
+        record = _load(snapshot_path)
+        profile = load_scene_profile(record["scene_version"], snapshot_path)
+        scene = episode["scene_configuration"]
+        if scene.get("scene_profile") is not None:
+            if scene.get("scene_profile_sha256") != scene_profile_sha256(profile):
+                raise ValueError(f"{episode_id}: scene differs from dataset profile")
+        else:
+            # A resumed legacy episode retains its original metadata.
+            expected = generate_episode_scene(
+                episode_id, int(episode["random_seed"]), 0.0, 0.0,
+                scene_version=profile["scene_version"], scene_profile=profile,
+            )
+            if scene.get("obstacles") != expected["obstacles"]:
+                raise ValueError(f"{episode_id}: legacy scene differs from dataset profile")
     validation = validate_episode(
         dataset_root,
         autoencoder_checkpoint,
@@ -275,7 +322,6 @@ def validate_collection_episode(
         update_manifest=False,
         dataset_disk_usage_bytes=dataset_disk_usage_bytes,
     )
-    episode = _load(dataset_root / episode_id / "episode.json")
     validation["formal_metadata"] = validate_episode_metadata(
         episode, validation
     )

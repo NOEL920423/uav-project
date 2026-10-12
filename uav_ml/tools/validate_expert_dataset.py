@@ -346,7 +346,9 @@ def validate_batch(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--dataset", default="artifacts/datasets/bc_expert_cylinder_v1"
+        "--dataset", default=str(
+            Path(__file__).resolve().parents[2] / "datasets/bc_expert_cylinder_v1"
+        )
     )
     parser.add_argument(
         "--autoencoder",

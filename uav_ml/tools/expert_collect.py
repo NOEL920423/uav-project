@@ -17,7 +17,13 @@ from typing import Callable
 
 from PIL import UnidentifiedImageError
 
-from isaac.runtime.environment import generate_episode_scene
+from isaac.runtime.environment import (
+    DEFAULT_SCENE_VERSION,
+    SCENE_VERSIONS,
+    generate_episode_scene,
+    load_scene_profile,
+    scene_profile_record,
+)
 from uav_ml.tools.expert_visual_qa import create_contact_sheet
 from uav_ml.tools.persistent_runtime import (
     FatalRuntimeError,
@@ -475,6 +481,8 @@ class SubprocessBackend:
         self._flight_stream = None
         self._job_started = False
         self._last_attempt_evidence: dict = {}
+        self.scene_version = DEFAULT_SCENE_VERSION
+        self.scene_profile_path: Path | None = None
 
     def preflight(self) -> None:
         """Verify dependencies and exclusive ownership before runtime."""
@@ -528,8 +536,11 @@ class SubprocessBackend:
         runtime_dir.mkdir(parents=True, exist_ok=True)
         self.runtime.prepare_attempt(index, runtime_dir)
         scene = self.runtime.prepare_scene(
-            index, episode_id, seed, runtime_dir
+            index, episode_id, seed, runtime_dir,
+            scene_version=self.scene_version,
+            scene_profile_path=self.scene_profile_path,
         )
+        _atomic_json(runtime_dir / "scene.json", scene["scene_configuration"])
         self.runtime.start_px4(index, runtime_dir)
         self.runtime.probe_px4(index, runtime_dir)
         flight_log = runtime_dir / "flight.log"
@@ -715,6 +726,7 @@ class ExpertCollector:
         max_attempts: int | None = None,
         base_seed: int = DEFAULT_BASE_SEED,
         fixed_seed: int | None = None,
+        scene_version: str = DEFAULT_SCENE_VERSION,
         resume: bool = False,
         autoencoder: Path = DEFAULT_AUTOENCODER,
         device: str = "auto",
@@ -749,10 +761,16 @@ class ExpertCollector:
         )
         self.base_seed = base_seed
         self.fixed_seed = fixed_seed
+        self.scene_profile = load_scene_profile(scene_version)
+        self.scene_record = scene_profile_record(self.scene_profile)
+        self.scene_profile_path = self.dataset_root / "scene_parameters.json"
         self.resume = resume
         self.autoencoder = autoencoder.resolve()
         self.device = device
         self.backend = backend or SubprocessBackend(self.repository_root)
+        if isinstance(self.backend, SubprocessBackend):
+            self.backend.scene_version = scene_version
+            self.backend.scene_profile_path = self.scene_profile_path
         self.runtime_root = (
             runtime_root.resolve() if runtime_root else
             self.repository_root / "run_logs" / f"expert-collection_{_stamp()}"
@@ -762,6 +780,8 @@ class ExpertCollector:
         self._manifest_prepared = False
 
     def _prepare(self) -> None:
+        if self.resume and self.store.path.is_file():
+            self._check_scene_resume()
         if self.store.path.is_file() or self.resume:
             data = self.store.load_for_collection(
                 self.episodes, self.resume, self.max_attempts
@@ -779,6 +799,13 @@ class ExpertCollector:
                 fixed_seed=self.fixed_seed,
             )
             self._manifest_prepared = True
+        _atomic_json(self.scene_profile_path, self.scene_record)
+        self.store.data.update({
+            "scene_version": self.scene_record["scene_version"],
+            "scene_profile_sha256": self.scene_record["scene_profile_sha256"],
+            "scene_parameters_file": "scene_parameters.json",
+        })
+        self.store.save()
         self.display = ProgressDisplay(
             int(self.store.data["target_episodes"])
         )
@@ -797,6 +824,41 @@ class ExpertCollector:
             })
             self.store.save()
         self.store.set_collection_state("collecting")
+
+    def _check_scene_resume(self) -> None:
+        """Reject incompatible settings before modifying the attempt history."""
+        if self.scene_profile_path.is_file():
+            if _read_json(self.scene_profile_path) != self.scene_record:
+                raise ValueError(
+                    "resume scene parameters differ from the recorded dataset; "
+                    "use its original --scene and profile"
+                )
+            return
+        # Older collections have per-episode scenes but no profile snapshot.
+        # Check their actual layouts before attaching a named profile.
+        data = _read_json(self.store.path)
+        for entry in data.get("episodes", []):
+            path = self.dataset_root / entry["episode_id"] / "episode.json"
+            if not path.is_file():
+                if self.backend.produces_dataset and entry.get("status") == "complete":
+                    raise ValueError(f"cannot verify legacy scene: {path}")
+                continue
+            metadata = _read_json(path)
+            if str(metadata.get("terminal_reason", "")).startswith("invalid_scene:"):
+                continue
+            recorded = metadata.get("scene_configuration") or {}
+            expected = generate_episode_scene(
+                entry["episode_id"], int(entry["seed"]), 0.0, 0.0,
+                scene_version=self.scene_record["scene_version"],
+                scene_profile=self.scene_profile,
+            )
+            if any(recorded.get(key) != expected[key] for key in (
+                "obstacles", "walls", "start", "goal", "lighting", "placement_contract",
+            )):
+                raise ValueError(
+                    f"{entry['episode_id']}: legacy scene does not match "
+                    f"--scene {self.scene_record['scene_version']}"
+                )
 
     def _update_runtime_job_evidence(self) -> None:
         """Persist the latest additive job-level lifecycle evidence."""
@@ -892,6 +954,9 @@ class ExpertCollector:
             return
         manifest = _read_json(path)
         manifest.update({
+            "scene_version": self.scene_record["scene_version"],
+            "scene_profile_sha256": self.scene_record["scene_profile_sha256"],
+            "scene_parameters_file": "scene_parameters.json",
             "episodes": [entry["episode_id"] for entry in accepted_entries],
             "episode_count": len(accepted_entries),
             "sample_count": sum(
@@ -1251,6 +1316,8 @@ class ExpertCollector:
         )
         summary = {
             "status": status,
+            "scene_version": self.scene_record["scene_version"],
+            "scene_profile_sha256": self.scene_record["scene_profile_sha256"],
             "complete": accepted >= self.episodes,
             "requested_accepted_episodes": self.episodes,
             "max_attempts": self.max_attempts,
@@ -1330,8 +1397,11 @@ class ExpertCollector:
                 scene = None
                 try:
                     scene = generate_episode_scene(
-                        episode_id, seed, 0.0, 0.0
+                        episode_id, seed, 0.0, 0.0,
+                        scene_version=self.scene_record["scene_version"],
+                        scene_profile=self.scene_profile,
                     )
+                    _atomic_json(runtime_dir / "expected_scene.json", scene)
                     validate_cylinder_scene(scene, episode_id, seed)
                 except (RuntimeError, ValueError) as scene_error:
                     outcome = self._record_invalid_scene(
@@ -1368,6 +1438,8 @@ class ExpertCollector:
                     continue
                 assert scene is not None
                 scene_summary = {
+                    "scene_version": scene["scene_version"],
+                    "scene_profile_sha256": scene["scene_profile_sha256"],
                     "generator": scene["generator"],
                     "obstacle_count": len(scene["obstacles"]),
                     "direct_path_blocker_count": scene[
@@ -1693,7 +1765,7 @@ def _parser() -> argparse.ArgumentParser:
         prog="./uav expert-collect",
         description=(
             "Collect a resumable canonical cylinder ASTAR_EXPERT BC dataset. "
-            "The default dataset is artifacts/datasets/bc_expert_cylinder_v1/."
+            "The default dataset is datasets/bc_expert_cylinder_v1/."
         ),
     )
     parser.add_argument(
@@ -1715,9 +1787,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dataset",
         help=(
-            "dataset name under artifacts/datasets, or an explicit relative/"
+            "dataset name under datasets, or an explicit relative/"
             "absolute path (default: bc_expert_cylinder_v1)"
         ),
+    )
+    parser.add_argument(
+        "--scene", choices=SCENE_VERSIONS, default=DEFAULT_SCENE_VERSION,
+        help="scene profile for collection (default: v4); independent of dataset name",
     )
     parser.add_argument(
         "--resume",
@@ -1799,6 +1875,7 @@ def main() -> int:
         max_attempts=args.max_attempts,
         base_seed=args.base_seed,
         fixed_seed=args.seed,
+        scene_version=args.scene,
         resume=args.resume,
         autoencoder=repository_root / DEFAULT_AUTOENCODER,
         device=args.device,

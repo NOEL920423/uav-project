@@ -48,8 +48,9 @@ START_MARKER_MATERIAL_NAME = "StartMarkerMatte"
 GOAL_MARKER_MATERIAL_NAME = "GoalMarkerMatte"
 
 
-def create_matte_material(stage, path: str, color):
+def create_matte_material(stage, path: str, color, parameters=None):
     """Create one texture-free UsdPreviewSurface matte material."""
+    p = parameters or scene_parameters()
     from pxr import Gf, Sdf, UsdShade
 
     material = UsdShade.Material.Define(stage, path)
@@ -60,58 +61,61 @@ def create_matte_material(stage, path: str, color):
     ).Set(Gf.Vec3f(*map(float, color)))
     shader.CreateInput(
         "roughness", Sdf.ValueTypeNames.Float
-    ).Set(float(MATERIAL_ROUGHNESS))
+    ).Set(float(p.MATERIAL_ROUGHNESS))
     shader.CreateInput(
         "metallic", Sdf.ValueTypeNames.Float
-    ).Set(float(MATERIAL_METALLIC))
+    ).Set(float(p.MATERIAL_METALLIC))
     shader.CreateInput(
         "useSpecularWorkflow", Sdf.ValueTypeNames.Int
     ).Set(1)
     shader.CreateInput(
         "specularColor", Sdf.ValueTypeNames.Color3f
-    ).Set(Gf.Vec3f(*map(float, MATERIAL_SPECULAR_COLOR)))
+    ).Set(Gf.Vec3f(*map(float, p.MATERIAL_SPECULAR_COLOR)))
     shader.CreateInput(
         "opacity", Sdf.ValueTypeNames.Float
-    ).Set(float(MATERIAL_OPACITY))
+    ).Set(float(p.MATERIAL_OPACITY))
     shader.CreateInput(
         "emissiveColor", Sdf.ValueTypeNames.Color3f
-    ).Set(Gf.Vec3f(*map(float, MATERIAL_EMISSIVE_COLOR)))
+    ).Set(Gf.Vec3f(*map(float, p.MATERIAL_EMISSIVE_COLOR)))
     material.CreateSurfaceOutput().ConnectToSource(
         shader.ConnectableAPI(), "surface"
     )
     return material
 
 
-def create_scene_materials(stage, scene_root: str):
+
+def create_scene_materials(stage, scene_root: str, parameters=None):
     """Create the shared scene materials once below ``scene_root``."""
+    p = parameters or scene_parameters()
     materials_root = f"{scene_root}/Materials"
     return {
         "obstacle": create_matte_material(
             stage,
-            f"{materials_root}/{OBSTACLE_MATERIAL_NAME}",
-            OBSTACLE_COLOR,
+            f"{materials_root}/{p.OBSTACLE_MATERIAL_NAME}",
+            p.OBSTACLE_COLOR, p,
         ),
         "floor": create_matte_material(
             stage,
-            f"{materials_root}/{FLOOR_MATERIAL_NAME}",
-            FLOOR_COLOR,
+            f"{materials_root}/{p.FLOOR_MATERIAL_NAME}",
+            p.FLOOR_COLOR, p,
         ),
         "wall": create_matte_material(
             stage,
-            f"{materials_root}/{WALL_MATERIAL_NAME}",
-            WALL_COLOR,
+            f"{materials_root}/{p.WALL_MATERIAL_NAME}",
+            p.WALL_COLOR, p,
         ),
         "start_marker": create_matte_material(
             stage,
-            f"{materials_root}/{START_MARKER_MATERIAL_NAME}",
-            START_MARKER_COLOR,
+            f"{materials_root}/{p.START_MARKER_MATERIAL_NAME}",
+            p.START_MARKER_COLOR, p,
         ),
         "goal_marker": create_matte_material(
             stage,
-            f"{materials_root}/{GOAL_MARKER_MATERIAL_NAME}",
-            GOAL_MARKER_COLOR,
+            f"{materials_root}/{p.GOAL_MARKER_MATERIAL_NAME}",
+            p.GOAL_MARKER_COLOR, p,
         ),
     }
+
 
 
 def bind_material(prim, material) -> None:
@@ -122,10 +126,13 @@ def bind_material(prim, material) -> None:
 
 
 import math
+import hashlib
+import json
 from pathlib import Path
 import random
 import re
 import sys
+from types import SimpleNamespace
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
@@ -260,6 +267,73 @@ LIGHTING_CONTRACT = {
     },
 }
 
+SCENE_VERSIONS = ("v3", "v4")
+DEFAULT_SCENE_VERSION = "v4"
+SCENE_PROFILE_ROOT = SCRIPT_ROOT.parents[1] / "config" / "scenes"
+# Freeze all generation and appearance settings, including derived constants.
+SCENE_PARAMETER_NAMES = tuple(
+    name for name in globals()
+    if name.isupper() and name not in {
+        "SCRIPT_ROOT", "TOP_RGB_COVERAGE_M", "SCENE_VERSIONS",
+        "DEFAULT_SCENE_VERSION", "SCENE_PROFILE_ROOT",
+    }
+)
+
+
+def scene_profile_sha256(profile: dict) -> str:
+    """Hash profile content independently of JSON formatting."""
+    return hashlib.sha256(json.dumps(
+        profile, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")).hexdigest()
+
+
+def scene_parameters(profile: dict | None = None) -> SimpleNamespace:
+    """Resolve immutable per-call settings without changing module globals."""
+    if profile is None:
+        return SimpleNamespace(**{
+            name: globals()[name] for name in SCENE_PARAMETER_NAMES
+        })
+    if (
+        profile.get("schema") != "uav_scene_profile/v1"
+        or profile.get("scene_version") not in SCENE_VERSIONS
+        or profile.get("generation") not in {"seeded", "fixed"}
+        or not isinstance(profile.get("parameters"), dict)
+        or set(profile["parameters"]) != set(SCENE_PARAMETER_NAMES)
+    ):
+        raise ValueError("invalid or incomplete scene profile")
+    scene_profile_sha256(profile)  # Reject nonfinite JSON settings.
+    return SimpleNamespace(**profile["parameters"])
+
+
+def load_scene_profile(
+    scene_version: str = DEFAULT_SCENE_VERSION,
+    path: str | Path | None = None,
+) -> dict:
+    """Load a named profile or the recorded snapshot of that profile."""
+    if scene_version not in SCENE_VERSIONS:
+        raise ValueError(f"unsupported scene version: {scene_version}")
+    source = Path(path) if path else SCENE_PROFILE_ROOT / f"{scene_version}.json"
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    profile = payload.get("scene_profile", payload)
+    scene_parameters(profile)
+    if profile["scene_version"] != scene_version:
+        raise ValueError("scene version does not match scene profile")
+    if "scene_profile_sha256" in payload and (
+        payload["scene_profile_sha256"] != scene_profile_sha256(profile)
+    ):
+        raise ValueError("scene profile snapshot checksum mismatch")
+    return profile
+
+
+def scene_profile_record(profile: dict) -> dict:
+    """Return the JSON snapshot shared by collection and evaluation."""
+    scene_parameters(profile)
+    return {
+        "scene_version": profile["scene_version"],
+        "scene_profile_sha256": scene_profile_sha256(profile),
+        "scene_profile": profile,
+    }
+
 # ===== 可調整相機、ROS 輸出與預覽參數 =====
 # 無人機本體 USD Prim 路徑。
 VEHICLE_BODY_PATH = "/World/quadrotor/body"
@@ -358,9 +432,10 @@ def _distance_2d(
     return math.hypot(left_x - right_x, left_y - right_y)
 
 
-def _point_to_direct_path_distance(x: float, y: float) -> float:
-    start_x, start_y = START_POS[:2]
-    target_x, target_y = TARGET_POS[:2]
+def _point_to_direct_path_distance(x: float, y: float, parameters=None) -> float:
+    p = parameters or scene_parameters()
+    start_x, start_y = p.START_POS[:2]
+    target_x, target_y = p.TARGET_POS[:2]
     dx = target_x - start_x
     dy = target_y - start_y
     length_squared = dx * dx + dy * dy
@@ -371,21 +446,21 @@ def _point_to_direct_path_distance(x: float, y: float) -> float:
     return _distance_2d(x, y, start_x + t * dx, start_y + t * dy)
 
 
+
 def _is_valid_obstacle_position(
-    x: float,
-    y: float,
-    radius: float,
-    placed: list[dict],
+    x: float, y: float, radius: float, placed: list[dict], parameters=None,
 ) -> bool:
-    if _distance_2d(x, y, *START_POS[:2]) < START_CLEAR_RADIUS + radius:
+    p = parameters or scene_parameters()
+    if _distance_2d(x, y, *p.START_POS[:2]) < p.START_CLEAR_RADIUS + radius:
         return False
-    if _distance_2d(x, y, *TARGET_POS[:2]) < TARGET_CLEAR_RADIUS + radius:
+    if _distance_2d(x, y, *p.TARGET_POS[:2]) < p.TARGET_CLEAR_RADIUS + radius:
         return False
     return all(
         _distance_2d(x, y, item["x"], item["y"])
-        >= radius + item["radius"] + MIN_OBSTACLE_GAP
+        >= radius + item["radius"] + p.MIN_OBSTACLE_GAP
         for item in placed
     )
+
 
 """
 目前沒有獨立的 CYLINDER_RADIUS_MIN/MAX。
@@ -393,32 +468,34 @@ Radius 是由 radius basis width/depth 計算：
 radius = 0.5 * math.hypot(radius_basis_width, radius_basis_depth)
 """
 def _random_cylinder_spec(
-    rng: random.Random, blocker: bool = False, special: bool = False
+    rng: random.Random, blocker: bool = False, special: bool = False,
+    parameters=None,
 ) -> dict:
+    p = parameters or scene_parameters()
     if special:
-        radius_basis_width = SPECIAL_BLOCKER_RADIUS_BASIS_WIDTH
-        radius_basis_depth = SPECIAL_BLOCKER_RADIUS_BASIS_DEPTH
-        height = SPECIAL_BLOCKER_HEIGHT
+        radius_basis_width = p.SPECIAL_BLOCKER_RADIUS_BASIS_WIDTH
+        radius_basis_depth = p.SPECIAL_BLOCKER_RADIUS_BASIS_DEPTH
+        height = p.SPECIAL_BLOCKER_HEIGHT
     else:
         radius_basis_width = rng.uniform(
-            BLOCKER_RADIUS_BASIS_WIDTH_MIN
-            if blocker else RADIUS_BASIS_WIDTH_MIN,
-            RADIUS_BASIS_WIDTH_MAX,
+            p.BLOCKER_RADIUS_BASIS_WIDTH_MIN
+            if blocker else p.RADIUS_BASIS_WIDTH_MIN,
+            p.RADIUS_BASIS_WIDTH_MAX,
         )
         radius_basis_depth = rng.uniform(
-            BLOCKER_RADIUS_BASIS_DEPTH_MIN
-            if blocker else RADIUS_BASIS_DEPTH_MIN,
-            RADIUS_BASIS_DEPTH_MAX,
+            p.BLOCKER_RADIUS_BASIS_DEPTH_MIN
+            if blocker else p.RADIUS_BASIS_DEPTH_MIN,
+            p.RADIUS_BASIS_DEPTH_MAX,
         )
         height = rng.uniform(
-            max(CYLINDER_HEIGHT_MIN, DIRECT_PATH_BLOCKER_HEIGHT_MIN)
-            if blocker else CYLINDER_HEIGHT_MIN,
-            CYLINDER_HEIGHT_MAX,
+            max(p.CYLINDER_HEIGHT_MIN, p.DIRECT_PATH_BLOCKER_HEIGHT_MIN)
+            if blocker else p.CYLINDER_HEIGHT_MIN,
+            p.CYLINDER_HEIGHT_MAX,
         )
-    yaw_deg = rng.uniform(OBSTACLE_YAW_MIN_DEG, OBSTACLE_YAW_MAX_DEG)
+    yaw_deg = rng.uniform(p.OBSTACLE_YAW_MIN_DEG, p.OBSTACLE_YAW_MAX_DEG)
     # Preserve this legacy draw so every seed keeps its exact geometry and
     # decoration RNG sequence even though obstacle color is now fixed.
-    rng.choice(LEGACY_CYLINDER_COLOR_DRAWS)
+    rng.choice(p.LEGACY_CYLINDER_COLOR_DRAWS)
     return {
         "shape": "cylinder",
         "radius_basis_width": radius_basis_width,
@@ -431,23 +508,25 @@ def _random_cylinder_spec(
             radius_basis_width, radius_basis_depth
         ),
         "yaw_deg": yaw_deg,
-        "color": list(OBSTACLE_COLOR),
-        "window_on_color": list(rng.choice(SCENE_DECORATION_WINDOW_ON_COLORS)),
-        "window_off_color": list(SCENE_DECORATION_WINDOW_OFF_COLOR),
-        "roof_style": rng.choice(SCENE_DECORATION_ROOF_STYLES),
+        "color": list(p.OBSTACLE_COLOR),
+        "window_on_color": list(rng.choice(p.SCENE_DECORATION_WINDOW_ON_COLORS)),
+        "window_off_color": list(p.SCENE_DECORATION_WINDOW_OFF_COLOR),
+        "roof_style": rng.choice(p.SCENE_DECORATION_ROOF_STYLES),
         "roof_height": rng.uniform(
-            SCENE_DECORATION_ROOF_HEIGHT_MIN,
-            SCENE_DECORATION_ROOF_HEIGHT_MAX,
+            p.SCENE_DECORATION_ROOF_HEIGHT_MIN,
+            p.SCENE_DECORATION_ROOF_HEIGHT_MAX,
         ),
         "antenna_height": rng.uniform(
-            SCENE_DECORATION_ANTENNA_HEIGHT_MIN,
-            SCENE_DECORATION_ANTENNA_HEIGHT_MAX,
+            p.SCENE_DECORATION_ANTENNA_HEIGHT_MIN,
+            p.SCENE_DECORATION_ANTENNA_HEIGHT_MAX,
         ),
         "collision": True, # 所有障礙物都要有碰撞
     }
 
 
-def _window_contract(spec: dict, rng: random.Random) -> dict:
+
+def _window_contract(spec: dict, rng: random.Random, parameters=None) -> dict:
+    p = parameters or scene_parameters()
     row_count = max(5, min(11, int(spec["height"] / 0.44)))
     columns_x = max(
         2, min(3, int(spec["radius_basis_width"] / 0.22))
@@ -460,26 +539,141 @@ def _window_contract(spec: dict, rng: random.Random) -> dict:
         "row_count": row_count,
         "columns_x": columns_x,
         "columns_y": columns_y,
-        "height_m": SCENE_DECORATION_WINDOW_HEIGHT_M,
-        "thickness_m": SCENE_DECORATION_WINDOW_THICKNESS_M,
-        "margin_m": SCENE_DECORATION_WINDOW_MARGIN_M,
+        "height_m": p.SCENE_DECORATION_WINDOW_HEIGHT_M,
+        "thickness_m": p.SCENE_DECORATION_WINDOW_THICKNESS_M,
+        "margin_m": p.SCENE_DECORATION_WINDOW_MARGIN_M,
         "on_pattern": [rng.random() < 0.72 for _ in range(window_count)],
     }
 
-# 強制生成有擋住的障礙物(blocked)
-def _generate_obstacles(rng: random.Random) -> list[dict]:
-    """Build the fixed obstacle geometry and seed-specific building details."""
+
+def _generate_seeded_obstacles(rng: random.Random, parameters=None) -> list[dict]:
+    """Run the canonical obstacle rejection sampler and random call order."""
+    p = parameters or scene_parameters()
     placed: list[dict] = []
-    if len(FIXED_OBSTACLE_LAYOUT) != NUM_OBSTACLES:
+    blocker_count = 0
+    if p.GUARANTEE_DIRECT_PATH_BLOCKERS:
+        blocker_count = min(
+            p.DIRECT_PATH_BLOCKER_COUNT,
+            p.NUM_OBSTACLES,
+            len(p.DIRECT_PATH_BLOCKER_T_RANGES),
+        )
+
+    start_x, start_y = p.START_POS[:2]
+    target_x, target_y = p.TARGET_POS[:2]
+    line_dx = target_x - start_x
+    line_dy = target_y - start_y
+    line_length = math.hypot(line_dx, line_dy)
+    if blocker_count and line_length < 1e-6:
+        raise RuntimeError("cannot place blockers when start and target coincide")
+    normal_x = -line_dy / max(line_length, 1e-6)
+    normal_y = line_dx / max(line_length, 1e-6)
+
+    for blocker_index in range(blocker_count):
+        t_min, t_max = p.DIRECT_PATH_BLOCKER_T_RANGES[blocker_index]
+        for _attempt in range(p.MAX_PLACEMENT_ATTEMPTS):
+            spec = _random_cylinder_spec(
+                rng,
+                blocker=True,
+                special=blocker_index == p.SPECIAL_BLOCKER_INDEX,
+                parameters=p,
+            )
+            radius = spec["radius"]
+            t = rng.uniform(t_min, t_max)
+            lateral_limit = min(
+                p.DIRECT_PATH_BLOCKER_LATERAL_JITTER_M,
+                spec["blocker_half_extent"] * 0.70,
+            )
+            lateral = rng.uniform(-lateral_limit, lateral_limit)
+            x = start_x + t * line_dx + lateral * normal_x
+            y = start_y + t * line_dy + lateral * normal_y
+            inside_bounds = (
+                p.X_MIN + radius <= x <= p.X_MAX - radius
+                and p.Y_MIN + radius <= y <= p.Y_MAX - radius
+            )
+            blocks_direct_path = (
+                _point_to_direct_path_distance(x, y, p)
+                <= spec["blocker_half_extent"]
+            )
+            if not (
+                inside_bounds
+                and blocks_direct_path
+                and _is_valid_obstacle_position(x, y, radius, placed, p)
+            ):
+                continue
+            spec.update({
+                "x": x,
+                "y": y,
+                "z": 0.5 * spec["height"],
+                "placement_mode": "guaranteed_direct_path_blocker",
+                "variant": (
+                    "special_large"
+                    if blocker_index == p.SPECIAL_BLOCKER_INDEX
+                    else "standard"
+                ),
+            })
+            placed.append(spec)
+            break
+        else:
+            raise RuntimeError(
+                "could not place a canonical guaranteed direct-path blocker"
+            )
+
+    for _index in range(p.NUM_OBSTACLES - blocker_count):
+        for _attempt in range(p.MAX_PLACEMENT_ATTEMPTS):
+            spec = _random_cylinder_spec(rng, parameters=p)
+            radius = spec["radius"]
+            x = rng.uniform(p.X_MIN + radius, p.X_MAX - radius)
+            y = rng.uniform(p.Y_MIN + radius, p.Y_MAX - radius)
+            if not _is_valid_obstacle_position(x, y, radius, placed, p):
+                continue
+            spec.update({
+                "x": x,
+                "y": y,
+                "z": 0.5 * spec["height"],
+                "placement_mode": "random",
+            })
+            placed.append(spec)
+            break
+        else:
+            raise RuntimeError(
+                f"could not place canonical obstacle {len(placed) + 1}"
+            )
+
+    physical_blockers = [
+        item for item in placed
+        if _point_to_direct_path_distance(item["x"], item["y"], p)
+        <= item["blocker_half_extent"]
+        and item["height"] >= p.DIRECT_PATH_BLOCKER_HEIGHT_MIN
+    ]
+    if len(physical_blockers) < blocker_count:
+        raise RuntimeError("canonical direct-path blocker validation failed")
+
+    for index, spec in enumerate(placed, start=1):
+        spec["name"] = f"Obstacle_{index:03d}"
+        spec["windows"] = _window_contract(spec, rng, p)
+        spec["hierarchy"] = ["Body", "Windows", "Roof/Crown"]
+        if spec["roof_style"] == "antenna":
+            spec["hierarchy"].append("Roof/Antenna")
+    return placed
+
+
+
+# Fixed v4 geometry shares the historical decoration draws.
+def _generate_obstacles(rng: random.Random, parameters=None) -> list[dict]:
+    """Build the fixed obstacle geometry and seed-specific building details."""
+    p = parameters or scene_parameters()
+    placed: list[dict] = []
+    if len(p.FIXED_OBSTACLE_LAYOUT) != p.NUM_OBSTACLES:
         raise RuntimeError(
             "fixed obstacle layout must define every configured obstacle"
         )
 
-    for index, layout in enumerate(FIXED_OBSTACLE_LAYOUT):
+    for index, layout in enumerate(p.FIXED_OBSTACLE_LAYOUT):
         spec = _random_cylinder_spec(
             rng,
             blocker=True,
-            special=index == SPECIAL_BLOCKER_INDEX,
+            special=index == p.SPECIAL_BLOCKER_INDEX,
+            parameters=p,
         )
         width = float(layout["radius_basis_width"])
         depth = float(layout["radius_basis_depth"])
@@ -489,11 +683,11 @@ def _generate_obstacles(rng: random.Random) -> list[dict]:
         x = float(layout["x"])
         y = float(layout["y"])
         if not (
-            X_MIN + radius <= x <= X_MAX - radius
-            and Y_MIN + radius <= y <= Y_MAX - radius
-            and _is_valid_obstacle_position(x, y, radius, placed)
-            and _point_to_direct_path_distance(x, y) <= half_extent
-            and height >= DIRECT_PATH_BLOCKER_HEIGHT_MIN
+            p.X_MIN + radius <= x <= p.X_MAX - radius
+            and p.Y_MIN + radius <= y <= p.Y_MAX - radius
+            and _is_valid_obstacle_position(x, y, radius, placed, p)
+            and _point_to_direct_path_distance(x, y, p) <= half_extent
+            and height >= p.DIRECT_PATH_BLOCKER_HEIGHT_MIN
         ):
             raise RuntimeError(f"invalid fixed obstacle layout entry {index}")
         spec.update({
@@ -513,30 +707,32 @@ def _generate_obstacles(rng: random.Random) -> list[dict]:
 
     physical_blockers = [
         item for item in placed
-        if _point_to_direct_path_distance(item["x"], item["y"])
+        if _point_to_direct_path_distance(item["x"], item["y"], p)
         <= item["blocker_half_extent"]
-        and item["height"] >= DIRECT_PATH_BLOCKER_HEIGHT_MIN
+        and item["height"] >= p.DIRECT_PATH_BLOCKER_HEIGHT_MIN
     ]
-    if len(physical_blockers) < DIRECT_PATH_BLOCKER_COUNT:
+    if len(physical_blockers) < p.DIRECT_PATH_BLOCKER_COUNT:
         raise RuntimeError("canonical direct-path blocker validation failed")
 
     for index, spec in enumerate(placed, start=1):
         spec["name"] = f"Obstacle_{index:03d}"
-        spec["windows"] = _window_contract(spec, rng)
+        spec["windows"] = _window_contract(spec, rng, p)
         spec["hierarchy"] = ["Body", "Windows", "Roof/Crown"]
         if spec["roof_style"] == "antenna":
             spec["hierarchy"].append("Roof/Antenna")
     return placed
 
 
-def _blocked_goal_fixture() -> dict:
+
+def _blocked_goal_fixture(parameters=None) -> dict:
+    p = parameters or scene_parameters()
     radius = 0.85
     side = radius * math.sqrt(2.0)
     spec = {
         "name": "Obstacle_blocked_goal",
         "shape": "cylinder",
-        "x": TARGET_POS[0],
-        "y": TARGET_POS[1],
+        "x": p.TARGET_POS[0],
+        "y": p.TARGET_POS[1],
         "z": 1.5,
         "radius_basis_width": side,
         "radius_basis_depth": side,
@@ -544,131 +740,141 @@ def _blocked_goal_fixture() -> dict:
         "radius": radius,
         "blocker_half_extent": 0.5 * side,
         "yaw_deg": 0.0,
-        "color": list(OBSTACLE_COLOR),
-        "window_on_color": list(SCENE_DECORATION_WINDOW_ON_COLORS[0]),
-        "window_off_color": list(SCENE_DECORATION_WINDOW_OFF_COLOR),
+        "color": list(p.OBSTACLE_COLOR),
+        "window_on_color": list(p.SCENE_DECORATION_WINDOW_ON_COLORS[0]),
+        "window_off_color": list(p.SCENE_DECORATION_WINDOW_OFF_COLOR),
         "roof_style": "flat",
-        "roof_height": SCENE_DECORATION_ROOF_HEIGHT_MIN,
-        "antenna_height": SCENE_DECORATION_ANTENNA_HEIGHT_MIN,
+        "roof_height": p.SCENE_DECORATION_ROOF_HEIGHT_MIN,
+        "antenna_height": p.SCENE_DECORATION_ANTENNA_HEIGHT_MIN,
         "collision": True,
         "placement_mode": "blocked_goal_safe_failure",
         "fixture": "blocked_goal_safe_failure",
         "hierarchy": ["Body", "Windows", "Roof/Crown"],
     }
-    spec["windows"] = _window_contract(spec, random.Random(0))
+    spec["windows"] = _window_contract(spec, random.Random(0), p)
     return spec
 
 
-def _collision_walls() -> list[dict]:
+
+def _collision_walls(parameters=None) -> list[dict]:
     """Return the four static walls enclosing the navigable mission area."""
-    half_thickness = 0.5 * WALL_THICKNESS_M
-    center_x = 0.5 * (X_MIN + X_MAX)
-    center_y = 0.5 * (Y_MIN + Y_MAX)
-    span_x = X_MAX - X_MIN + 2.0 * WALL_THICKNESS_M
-    span_y = Y_MAX - Y_MIN
+    p = parameters or scene_parameters()
+    half_thickness = 0.5 * p.WALL_THICKNESS_M
+    center_x = 0.5 * (p.X_MIN + p.X_MAX)
+    center_y = 0.5 * (p.Y_MIN + p.Y_MAX)
+    span_x = p.X_MAX - p.X_MIN + 2.0 * p.WALL_THICKNESS_M
+    span_y = p.Y_MAX - p.Y_MIN
     return [
         {
             "name": "Wall_West",
-            "position": [X_MIN - half_thickness, center_y, WALL_HEIGHT_M / 2.0],
-            "size": [WALL_THICKNESS_M, span_y, WALL_HEIGHT_M],
+            "position": [p.X_MIN - half_thickness, center_y, p.WALL_HEIGHT_M / 2.0],
+            "size": [p.WALL_THICKNESS_M, span_y, p.WALL_HEIGHT_M],
         },
         {
             "name": "Wall_East",
-            "position": [X_MAX + half_thickness, center_y, WALL_HEIGHT_M / 2.0],
-            "size": [WALL_THICKNESS_M, span_y, WALL_HEIGHT_M],
+            "position": [p.X_MAX + half_thickness, center_y, p.WALL_HEIGHT_M / 2.0],
+            "size": [p.WALL_THICKNESS_M, span_y, p.WALL_HEIGHT_M],
         },
         {
             "name": "Wall_South",
-            "position": [center_x, Y_MIN - half_thickness, WALL_HEIGHT_M / 2.0],
-            "size": [span_x, WALL_THICKNESS_M, WALL_HEIGHT_M],
+            "position": [center_x, p.Y_MIN - half_thickness, p.WALL_HEIGHT_M / 2.0],
+            "size": [span_x, p.WALL_THICKNESS_M, p.WALL_HEIGHT_M],
         },
         {
             "name": "Wall_North",
-            "position": [center_x, Y_MAX + half_thickness, WALL_HEIGHT_M / 2.0],
-            "size": [span_x, WALL_THICKNESS_M, WALL_HEIGHT_M],
+            "position": [center_x, p.Y_MAX + half_thickness, p.WALL_HEIGHT_M / 2.0],
+            "size": [span_x, p.WALL_THICKNESS_M, p.WALL_HEIGHT_M],
         },
     ]
 
 
-def build_environment_parameters(obstacles: list[dict]) -> dict:
+
+def build_environment_parameters(
+    obstacles: list[dict], parameters=None, *, generation="fixed", seed=None,
+) -> dict:
     """Return the explicit, reproducible scene parameter record."""
+    p = parameters or scene_parameters()
     random_obstacle_count = sum(
         obstacle.get("placement_mode") == "random"
         for obstacle in obstacles
     )
-    walls = _collision_walls()
+    walls = _collision_walls(p)
     return {
         "schema_version": 1,
         "obstacle_generation": {
             "random_obstacles_enabled": random_obstacle_count > 0,
             "random_obstacle_count": random_obstacle_count,
-            "fixed_obstacle_count": len(obstacles) - random_obstacle_count,
-            "decoration_seed": FIXED_OBSTACLE_DECORATION_SEED,
+            "fixed_obstacle_count": len(obstacles) if generation == "fixed" else 0,
+            "seeded_obstacle_count": len(obstacles) if generation == "seeded" else 0,
+            "layout_mode": generation,
+            "episode_seed_affects_obstacles": generation == "seeded",
+            "decoration_seed": seed if seed is not None else p.FIXED_OBSTACLE_DECORATION_SEED,
         },
         "arena": {
             "bounds_m": {
-                "x": [X_MIN, X_MAX],
-                "y": [Y_MIN, Y_MAX],
+                "x": [p.X_MIN, p.X_MAX],
+                "y": [p.Y_MIN, p.Y_MAX],
             },
-            "flight_altitude_m": FLIGHT_ALTITUDE_M,
+            "flight_altitude_m": p.FLIGHT_ALTITUDE_M,
             "floor": {
                 "shape": "box",
-                "position_m": list(FLOOR_POSITION),
-                "size_m": list(FLOOR_SIZE),
+                "position_m": list(p.FLOOR_POSITION),
+                "size_m": list(p.FLOOR_SIZE),
                 "collision": False,
-                "color_linear_rgb": list(FLOOR_COLOR),
+                "color_linear_rgb": list(p.FLOOR_COLOR),
             },
             "walls": {
                 "count": len(walls),
-                "thickness_m": WALL_THICKNESS_M,
-                "height_m": WALL_HEIGHT_M,
+                "thickness_m": p.WALL_THICKNESS_M,
+                "height_m": p.WALL_HEIGHT_M,
                 "collision": True,
-                "color_linear_rgb": list(WALL_COLOR),
+                "color_linear_rgb": list(p.WALL_COLOR),
                 "geometry": walls,
             },
         },
         "markers": {
             "shape": "cylinder",
-            "radius_m": DISK_RADIUS,
-            "height_m": MARKER_HEIGHT_M,
+            "radius_m": p.DISK_RADIUS,
+            "height_m": p.MARKER_HEIGHT_M,
             "start": {
                 "position_m": [
-                    START_POS[0], START_POS[1], MARKER_HEIGHT_M / 2.0
+                    p.START_POS[0], p.START_POS[1], p.MARKER_HEIGHT_M / 2.0
                 ],
-                "color_linear_rgb": list(START_MARKER_COLOR),
+                "color_linear_rgb": list(p.START_MARKER_COLOR),
             },
             "target": {
                 "position_m": [
-                    TARGET_POS[0], TARGET_POS[1], MARKER_HEIGHT_M / 2.0
+                    p.TARGET_POS[0], p.TARGET_POS[1], p.MARKER_HEIGHT_M / 2.0
                 ],
-                "color_linear_rgb": list(GOAL_MARKER_COLOR),
+                "color_linear_rgb": list(p.GOAL_MARKER_COLOR),
             },
         },
         "lighting": {
-            **LIGHTING_CONTRACT,
-            "environment_lights_disabled": DISABLE_ENVIRONMENT_LIGHTS,
+            **p.LIGHTING_CONTRACT,
+            "environment_lights_disabled": p.DISABLE_ENVIRONMENT_LIGHTS,
             "renderer": {
-                "rtx_shadows_enabled": RTX_SHADOWS_ENABLED,
+                "rtx_shadows_enabled": p.RTX_SHADOWS_ENABLED,
                 "rtx_ambient_occlusion_enabled": (
-                    RTX_AMBIENT_OCCLUSION_ENABLED
+                    p.RTX_AMBIENT_OCCLUSION_ENABLED
                 ),
             },
             "brightness": {
-                "dome_intensity": DOME_LIGHT_INTENSITY,
+                "dome_intensity": p.DOME_LIGHT_INTENSITY,
                 "exposure_stops": 0.0,
             },
         },
         "materials": {
-            "roughness": MATERIAL_ROUGHNESS,
-            "metallic": MATERIAL_METALLIC,
-            "specular_color_linear_rgb": list(MATERIAL_SPECULAR_COLOR),
-            "opacity": MATERIAL_OPACITY,
-            "emissive_color_linear_rgb": list(MATERIAL_EMISSIVE_COLOR),
-            "obstacle_color_linear_rgb": list(OBSTACLE_COLOR),
-            "start_marker_color_linear_rgb": list(START_MARKER_COLOR),
-            "target_marker_color_linear_rgb": list(GOAL_MARKER_COLOR),
+            "roughness": p.MATERIAL_ROUGHNESS,
+            "metallic": p.MATERIAL_METALLIC,
+            "specular_color_linear_rgb": list(p.MATERIAL_SPECULAR_COLOR),
+            "opacity": p.MATERIAL_OPACITY,
+            "emissive_color_linear_rgb": list(p.MATERIAL_EMISSIVE_COLOR),
+            "obstacle_color_linear_rgb": list(p.OBSTACLE_COLOR),
+            "start_marker_color_linear_rgb": list(p.START_MARKER_COLOR),
+            "target_marker_color_linear_rgb": list(p.GOAL_MARKER_COLOR),
         },
     }
+
 
 
 def generate_episode_scene(
@@ -677,8 +883,15 @@ def generate_episode_scene(
     reset_east_m: float,
     reset_north_m: float,
     mode: str = "normal",
+    *,
+    scene_version: str = DEFAULT_SCENE_VERSION,
+    scene_profile: dict | None = None,
 ) -> dict:
     """Generate the configured obstacle distribution for one safe reset."""
+    profile = scene_profile or load_scene_profile(scene_version)
+    if profile["scene_version"] != scene_version:
+        raise ValueError("scene version does not match scene profile")
+    p = scene_parameters(profile)
     if not re.fullmatch(r"episode_[0-9]{6,}", episode_id):
         raise ValueError(
             "episode_id must use episode_ followed by at least six digits"
@@ -688,18 +901,18 @@ def generate_episode_scene(
     reset = (float(reset_east_m), float(reset_north_m))
     if not all(math.isfinite(value) for value in reset):
         raise ValueError("scene reset pose must be finite")
-    if _distance_2d(*reset, *START_POS[:2]) > RESET_POSITION_TOLERANCE_M:
+    if _distance_2d(*reset, *p.START_POS[:2]) > p.RESET_POSITION_TOLERANCE_M:
         raise ValueError("vehicle reset pose is outside the canonical start margin")
 
-    obstacles = _generate_obstacles(
-        random.Random(FIXED_OBSTACLE_DECORATION_SEED)
-    )
+    decoration_seed = int(seed) if profile["generation"] == "seeded" else p.FIXED_OBSTACLE_DECORATION_SEED
+    sampler = _generate_seeded_obstacles if profile["generation"] == "seeded" else _generate_obstacles
+    obstacles = sampler(random.Random(decoration_seed), p)
     direct_blocker_count = sum(
         item["placement_mode"] == "guaranteed_direct_path_blocker"
         for item in obstacles
     )
     if mode == "blocked_goal":
-        obstacles.append(_blocked_goal_fixture())
+        obstacles.append(_blocked_goal_fixture(p))
 
     scene = {
         "episode_id": episode_id,
@@ -711,51 +924,55 @@ def generate_episode_scene(
         "mode": mode,
         "reset_kind": "full_isaac_pegasus_px4_restart",
         "observed_reset_pose": [reset[0], reset[1], 0.0],
-        "start": list(START_POS),
-        "target_marker": list(TARGET_POS),
-        "goal": [TARGET_POS[0], TARGET_POS[1], FLIGHT_ALTITUDE_M],
+        "start": list(p.START_POS),
+        "target_marker": list(p.TARGET_POS),
+        "goal": [p.TARGET_POS[0], p.TARGET_POS[1], p.FLIGHT_ALTITUDE_M],
         "obstacle_count": len(obstacles),
-        "normal_obstacle_count": NUM_OBSTACLES,
+        "normal_obstacle_count": p.NUM_OBSTACLES,
         "direct_path_blocker_count": direct_blocker_count,
         "obstacles": obstacles,
-        "walls": _collision_walls(),
-        "environment_parameters": build_environment_parameters(obstacles),
+        "walls": _collision_walls(p),
+        "environment_parameters": build_environment_parameters(
+            obstacles, p, generation=profile["generation"], seed=decoration_seed,
+        ),
+        **scene_profile_record(profile),
         "wall_collision_bounds": {
-            "east": [X_MIN, X_MAX],
-            "north": [Y_MIN, Y_MAX],
+            "east": [p.X_MIN, p.X_MAX],
+            "north": [p.Y_MIN, p.Y_MAX],
         },
-        "lighting": LIGHTING_CONTRACT,
+        "lighting": p.LIGHTING_CONTRACT,
         "placement_contract": {
-            "area": {"x": [X_MIN, X_MAX], "y": [Y_MIN, Y_MAX]},
+            "area": {"x": [p.X_MIN, p.X_MAX], "y": [p.Y_MIN, p.Y_MAX]},
             "radius_basis_width_m": [
-                RADIUS_BASIS_WIDTH_MIN, RADIUS_BASIS_WIDTH_MAX
+                p.RADIUS_BASIS_WIDTH_MIN, p.RADIUS_BASIS_WIDTH_MAX
             ],
             "radius_basis_depth_m": [
-                RADIUS_BASIS_DEPTH_MIN, RADIUS_BASIS_DEPTH_MAX
+                p.RADIUS_BASIS_DEPTH_MIN, p.RADIUS_BASIS_DEPTH_MAX
             ],
-            "height_m": [CYLINDER_HEIGHT_MIN, CYLINDER_HEIGHT_MAX],
-            "yaw_deg": [OBSTACLE_YAW_MIN_DEG, OBSTACLE_YAW_MAX_DEG],
-            "minimum_gap_m": MIN_OBSTACLE_GAP,
-            "disk_radius_m": DISK_RADIUS,
-            "disk_safe_margin_m": DISK_SAFE_MARGIN,
-            "start_clear_radius_m": START_CLEAR_RADIUS,
-            "target_clear_radius_m": TARGET_CLEAR_RADIUS,
+            "height_m": [p.CYLINDER_HEIGHT_MIN, p.CYLINDER_HEIGHT_MAX],
+            "yaw_deg": [p.OBSTACLE_YAW_MIN_DEG, p.OBSTACLE_YAW_MAX_DEG],
+            "minimum_gap_m": p.MIN_OBSTACLE_GAP,
+            "disk_radius_m": p.DISK_RADIUS,
+            "disk_safe_margin_m": p.DISK_SAFE_MARGIN,
+            "start_clear_radius_m": p.START_CLEAR_RADIUS,
+            "target_clear_radius_m": p.TARGET_CLEAR_RADIUS,
             "guarantee_direct_path_blockers": (
-                GUARANTEE_DIRECT_PATH_BLOCKERS
+                p.GUARANTEE_DIRECT_PATH_BLOCKERS
             ),
-            "direct_path_blocker_count": DIRECT_PATH_BLOCKER_COUNT,
+            "direct_path_blocker_count": p.DIRECT_PATH_BLOCKER_COUNT,
             "direct_path_blocker_t_ranges": [
-                list(values) for values in DIRECT_PATH_BLOCKER_T_RANGES
+                list(values) for values in p.DIRECT_PATH_BLOCKER_T_RANGES
             ],
             "direct_path_blocker_lateral_jitter_m": (
-                DIRECT_PATH_BLOCKER_LATERAL_JITTER_M
+                p.DIRECT_PATH_BLOCKER_LATERAL_JITTER_M
             ),
             "direct_path_blocker_height_min_m": (
-                DIRECT_PATH_BLOCKER_HEIGHT_MIN
+                p.DIRECT_PATH_BLOCKER_HEIGHT_MIN
             ),
         },
     }
     return scene
+
 
 
 # Isaac Sim and ROS 2 are optional for offline scene generation and validation.
@@ -1099,11 +1316,17 @@ if ISAAC_RUNTIME_AVAILABLE:
                 episode_id = str(command["episode_id"])
                 random_seed = int(command["random_seed"])
                 mode = str(command.get("mode", "normal"))
+                scene_version = str(command.get("scene_version", DEFAULT_SCENE_VERSION))
+                profile = command.get("scene_profile") or load_scene_profile(scene_version)
+                scene_parameters(profile)
+                profile_hash = scene_profile_sha256(profile)
                 if (
                     self._episode_id == episode_id
                     and self._random_seed == random_seed
                     and isinstance(self._scene_configuration, dict)
                     and self._scene_configuration.get("mode") == mode
+                    and self._scene_configuration.get("scene_version") == scene_version
+                    and self._scene_configuration.get("scene_profile_sha256") == profile_hash
                 ):
                     self._episode_command_error = ""
                     return
@@ -1116,6 +1339,8 @@ if ISAAC_RUNTIME_AVAILABLE:
                     pose[0],
                     pose[1],
                     mode,
+                    scene_version=scene_version,
+                    scene_profile=profile,
                 )
                 self._apply_scene(scene)
                 self._scene_revision += 1
@@ -1236,16 +1461,25 @@ if ISAAC_RUNTIME_AVAILABLE:
             root.GetPrim().SetCustomDataByKey(
                 "episode:generator", scene["generator"]
             )
-            materials = create_scene_materials(self._stage, SCENE_ROOT)
+            p = scene_parameters(scene.get("scene_profile"))
+            import carb.settings
+
+            renderer = carb.settings.get_settings()
+            renderer.set_bool("/rtx/shadows/enabled", p.RTX_SHADOWS_ENABLED)
+            renderer.set_bool("/rtx/ambientOcclusion/enabled", p.RTX_AMBIENT_OCCLUSION_ENABLED)
+            for prim in self._stage.TraverseAll():
+                if str(prim.GetPath()).startswith("/World/layout") and prim.HasAPI(UsdLux.LightAPI):
+                    prim.SetActive(not p.DISABLE_ENVIRONMENT_LIGHTS)
+            materials = create_scene_materials(self._stage, SCENE_ROOT, p)
             # ------------------------------------------------------------
             # Plain visual floor
             # ------------------------------------------------------------
             # 地板方形墊子的參數(僅外型，沒有碰撞)
             floor = self._create_box(
                 f"{SCENE_ROOT}/PlainFloor",
-                FLOOR_SIZE,
-                FLOOR_POSITION,
-                FLOOR_COLOR,
+                p.FLOOR_SIZE,
+                p.FLOOR_POSITION,
+                p.FLOOR_COLOR,
                 collision=False,
             )
             bind_material(floor, materials["floor"])
@@ -1256,7 +1490,7 @@ if ISAAC_RUNTIME_AVAILABLE:
                     f"{SCENE_ROOT}/Walls/{source['name']}",
                     source["size"],
                     source["position"],
-                    WALL_COLOR,
+                    p.WALL_COLOR,
                     collision=True,
                 )
                 bind_material(wall, materials["wall"])
@@ -1292,24 +1526,24 @@ if ISAAC_RUNTIME_AVAILABLE:
             start = UsdGeom.Cylinder.Define(
                 self._stage, f"{SCENE_ROOT}/Start/StartDisk"
             )
-            start.CreateRadiusAttr(DISK_RADIUS)
-            start.CreateHeightAttr(MARKER_HEIGHT_M)
+            start.CreateRadiusAttr(p.DISK_RADIUS)
+            start.CreateHeightAttr(p.MARKER_HEIGHT_M)
             start.AddTranslateOp().Set(Gf.Vec3d(
                 scene["start"][0], scene["start"][1],
-                MARKER_HEIGHT_M / 2.0,
+                p.MARKER_HEIGHT_M / 2.0,
             ))
-            start.CreateDisplayColorAttr([Gf.Vec3f(*START_MARKER_COLOR)])
+            start.CreateDisplayColorAttr([Gf.Vec3f(*p.START_MARKER_COLOR)])
             bind_material(start.GetPrim(), materials["start_marker"])
             goal = UsdGeom.Cylinder.Define(
                 self._stage, f"{SCENE_ROOT}/Target/TargetDisk"
             )
-            goal.CreateRadiusAttr(DISK_RADIUS)
-            goal.CreateHeightAttr(MARKER_HEIGHT_M)
+            goal.CreateRadiusAttr(p.DISK_RADIUS)
+            goal.CreateHeightAttr(p.MARKER_HEIGHT_M)
             goal.AddTranslateOp().Set(Gf.Vec3d(
                 scene["target_marker"][0], scene["target_marker"][1],
-                MARKER_HEIGHT_M / 2.0,
+                p.MARKER_HEIGHT_M / 2.0,
             ))
-            goal.CreateDisplayColorAttr([Gf.Vec3f(*GOAL_MARKER_COLOR)])
+            goal.CreateDisplayColorAttr([Gf.Vec3f(*p.GOAL_MARKER_COLOR)])
             bind_material(goal.GetPrim(), materials["goal_marker"])
 
         def apply_gui_preview(self, settings):
@@ -1374,7 +1608,7 @@ if ISAAC_RUNTIME_AVAILABLE:
                 prim,
                 (source["x"], source["y"], source["z"]),
             )
-            self._set_display_color(prim, OBSTACLE_COLOR)
+            self._set_display_color(prim, source["color"])
             bind_material(prim, material)
             if bool(source["collision"]):
                 UsdPhysics.CollisionAPI.Apply(prim)

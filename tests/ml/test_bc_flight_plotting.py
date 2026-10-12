@@ -164,7 +164,18 @@ class BcFlightPlottingTests(unittest.TestCase):
             captured = []
 
             def capture(figure, path):
-                lines = figure.axes[0].lines
+                axis = figure.axes[0]
+                lines = axis.lines
+                decision_nodes = [collection for collection in axis.collections
+                                  if len(collection.get_offsets()) > 1]
+                self.assertEqual(len(decision_nodes), 4)
+                for line, nodes in zip(lines, decision_nodes):
+                    self.assertEqual(nodes.get_offsets().tolist(),
+                                     [[east, north] for east, north in
+                                      zip(line.get_xdata(), line.get_ydata())])
+                    self.assertEqual(nodes.get_facecolors()[0].tolist(),
+                                     list(colors.to_rgba(line.get_color())))
+                    self.assertEqual(nodes.get_sizes().tolist(), [plotting.MARKER_SIZE])
                 captured.append((
                     [line.get_label() for line in lines],
                     [line.get_color() for line in lines],

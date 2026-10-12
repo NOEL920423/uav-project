@@ -23,6 +23,9 @@ VIDEO_SCALE = 2
 VIDEO_SIZE = (1280 * VIDEO_SCALE, 720 * VIDEO_SCALE)
 HUD_SUPERSAMPLING = 2
 VIDEO_CRF = 16
+ACTION_HISTORY_LENGTH = 10
+POINTER_STYLE = "needle"
+POINTER_STYLES = ("arrow", "triangle", "chevron", "needle")
 
 
 @dataclass(frozen=True)
@@ -121,9 +124,10 @@ def _load_frames(spool_dir: Path) -> tuple[str, list[PolicyInputFrame]]:
     return source, frames
 
 
-@lru_cache(maxsize=8)
-def _font(size: int, bold: bool = False):
-    name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+@lru_cache(maxsize=16)
+def _font(size: int, bold: bool = False, monospace: bool = False):
+    family = "DejaVuSansMono" if monospace else "DejaVuSans"
+    name = f"{family}-Bold.ttf" if bold else f"{family}.ttf"
     try:
         return ImageFont.truetype(name, size)
     except OSError:
@@ -160,8 +164,12 @@ def _paste_view(
 def _annotate_frame(
     source: Path, target: Path, frame: PolicyInputFrame,
     *, image_source: str = "top_rgb", top_source: Path | None = None,
+    action_history: list[PolicyInputFrame] | None = None,
+    pointer_style: str = POINTER_STYLE,
 ) -> None:
     """Compose model input, TOP view, direction pointer, and physical actions."""
+    if pointer_style not in POINTER_STYLES:
+        raise ValueError(f"unsupported pointer style: {pointer_style}")
     render_scale = VIDEO_SCALE * HUD_SUPERSAMPLING
 
     def scaled(values, factor=render_scale):
@@ -169,7 +177,7 @@ def _annotate_frame(
 
     canvas = Image.new("RGB", tuple(value * HUD_SUPERSAMPLING for value in VIDEO_SIZE), "#070d16")
     draw = ImageDraw.Draw(canvas)
-    for box in ((16, 16, 772, 704), (788, 16, 1264, 492), (788, 508, 1264, 704)):
+    for box in ((16, 16, 772, 704), (788, 16, 1264, 400), (788, 416, 1264, 704)):
         draw.rounded_rectangle(scaled(box), radius=12 * render_scale, fill="#101d2e",
                                outline="#36516b", width=render_scale)
     label = {"fpv_rgb": "FPV RGB", "fpv_depth": "FPV DEPTH", "top_rgb": "TOP RGB"}.get(
@@ -184,17 +192,23 @@ def _annotate_frame(
     draw.text(scaled((804, 30)), "TOP VIEW", font=_font(24 * render_scale, True), fill="#edf3fb")
     draw.text(scaled((804, 66)), "Observer camera", font=_font(16 * render_scale), fill="#9bb1c9")
 
-    draw.text(scaled((804, 524)), "BODY-FRAME ACTION", font=_font(20 * render_scale, True), fill="#edf3fb")
+    draw.text(scaled((804, 432)), "RECENT ACTIONS", font=_font(20 * render_scale, True), fill="#edf3fb")
+    draw.text(scaled((804, 468)), "[forward m/s, right m/s, yaw rad/s]",
+              font=_font(12 * render_scale), fill="#9bb1c9")
+    history = (action_history or [frame])[-ACTION_HISTORY_LENGTH:]
+    for index, entry in enumerate(history):
+        forward, right, _, yaw_rate = body_action_to_ned(entry.action_body, 0.0)
+        y = 496 + index * 18
+        current = entry.inference_count == frame.inference_count
+        if current:
+            draw.rounded_rectangle(scaled((800, y - 2, 1110, y + 16)),
+                                   radius=3 * render_scale, fill="#173d4a")
+        label = f"step{entry.inference_count}: [{forward:.2f}, {right:.2f}, {yaw_rate:.2f}]"
+        draw.text(scaled((804, y)), label,
+                  font=_font(14 * render_scale, bold=current, monospace=True),
+                  fill="#36d5f4" if current else "#9bb1c9")
     forward, right, _, yaw_rate = body_action_to_ned(frame.action_body, 0.0)
-    for y, label, value, unit in (
-        (564, "Forward", forward, "m/s"),
-        (606, "Right", right, "m/s"),
-        (648, "Yaw rate", yaw_rate, "rad/s"),
-    ):
-        draw.text(scaled((804, y)), label, font=_font(18 * render_scale), fill="#9bb1c9")
-        draw.text(scaled((918, y)), f"{value:+.2f} {unit}",
-                  font=_font(20 * render_scale, True), fill="#36d5f4")
-    center_x, center_y, radius = 1180, 619, 54
+    center_x, center_y, radius = 1180, 585, 54
     draw.ellipse(scaled((center_x - radius, center_y - radius,
                          center_x + radius, center_y + radius)),
                  outline="#9bb1c9", width=2 * render_scale)
@@ -210,27 +224,32 @@ def _annotate_frame(
         scale = 43.0 / magnitude
         end_x = center_x + right * scale
         end_y = center_y - forward * scale
-        draw.line(
-            scaled((center_x, center_y, end_x, end_y)),
-            fill=(255, 220, 0),
-            width=6 * render_scale,
-        )
         angle_x = end_x - center_x
         angle_y = end_y - center_y
         length = (angle_x**2 + angle_y**2) ** 0.5
-        head_length = 11.0
-        base_x = end_x - head_length * angle_x / length
-        base_y = end_y - head_length * angle_y / length
-        wing_x = 5.0 * -angle_y / length
-        wing_y = 5.0 * angle_x / length
-        draw.polygon(
-            [
-                scaled((end_x, end_y)),
-                scaled((base_x + wing_x, base_y + wing_y)),
-                scaled((base_x - wing_x, base_y - wing_y)),
-            ],
-            fill=(255, 220, 0),
-        )
+        direction_x, direction_y = angle_x / length, angle_y / length
+        side_x, side_y = -direction_y, direction_x
+
+        def pointer_point(along, across=0.0):
+            return scaled((center_x + along * direction_x + across * side_x,
+                           center_y + along * direction_y + across * side_y))
+
+        if pointer_style == "arrow":
+            draw.line(scaled((center_x, center_y, end_x, end_y)),
+                      fill=(255, 220, 0), width=6 * render_scale)
+            draw.polygon([pointer_point(43), pointer_point(32, 5), pointer_point(32, -5)],
+                         fill=(255, 220, 0))
+        elif pointer_style == "triangle":
+            draw.polygon([pointer_point(43), pointer_point(-14, 18), pointer_point(-14, -18)],
+                         fill=(255, 220, 0))
+        elif pointer_style == "chevron":
+            draw.polygon([pointer_point(43), pointer_point(-16, 23),
+                          pointer_point(3), pointer_point(-16, -23)], fill=(255, 220, 0))
+        else:
+            draw.polygon([pointer_point(-43), pointer_point(0, 8), pointer_point(0, -8)],
+                         fill="#687c91")
+            draw.polygon([pointer_point(43), pointer_point(0, 8), pointer_point(0, -8)],
+                         fill=(255, 220, 0))
     else:
         draw.ellipse(
             scaled((center_x - 4, center_y - 4, center_x + 4, center_y + 4)),
@@ -241,7 +260,7 @@ def _annotate_frame(
     # input's existing display interpolation and its exact saved source bytes.
     _paste_view(canvas, source, scaled((32, 112, 756, 672), VIDEO_SCALE),
                 depth=image_source == "fpv_depth")
-    _paste_view(canvas, top_source, scaled((804, 92, 1248, 476), VIDEO_SCALE),
+    _paste_view(canvas, top_source, scaled((804, 92, 1248, 384), VIDEO_SCALE),
                 resampling=Image.Resampling.LANCZOS)
     canvas.save(target, format="PNG")
 
@@ -249,6 +268,7 @@ def _annotate_frame(
 def render_policy_input_video(
     spool_dir: Path, output_path: Path, *, fps: float = 20.0,
     metadata_path: Path | None = None,
+    pointer_style: str = POINTER_STYLE,
 ) -> dict:
     """Render the four-part dashboard into an H.264 MP4 on local storage."""
     if fps <= 0.0:
@@ -272,6 +292,8 @@ def render_policy_input_video(
                 spool_dir / "frames" / frame.image_filename,
                 rendered / f"{index:06d}.png", frame,
                 image_source=image_source, top_source=top_source,
+                action_history=frames[max(0, index - ACTION_HISTORY_LENGTH + 1):index + 1],
+                pointer_style=pointer_style,
             )
         concat = rendered / "frames.txt"
         lines = []
@@ -320,6 +342,9 @@ def render_policy_input_video(
         "h264_crf": VIDEO_CRF,
         "top_frame_count": sum(frame.top_image_filename is not None for frame in frames),
         "pointer_frame": "body: forward up, right right; direction only",
+        "pointer_style": pointer_style,
+        "action_history_length": ACTION_HISTORY_LENGTH,
+        "action_history_order": "oldest to newest; current step highlighted",
         "action_units": ["m/s", "m/s", "rad/s"],
         "displayed_action": "clipped policy output scaled by runtime action limits",
         "timing": "inference completion timestamps; one composite frame per recorded inference",

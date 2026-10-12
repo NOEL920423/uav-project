@@ -135,6 +135,19 @@ class MlRegressionTest(unittest.TestCase):
         loss.backward()
         self.assertTrue(torch.isfinite(loss))
 
+    def test_legacy_bc_persists_total_training_duration(self) -> None:
+        from uav_ml.train_bc import train
+
+        root = Path(self.temporary.name)
+        summary = train(
+            dataset_path=self.dataset_path, epochs=1, batch_size=32,
+            learning_rate=1e-3, device_name="cpu", seed=7,
+            checkpoint_path=root / "timed_bc.pt", history_path=root / "timed_history.csv",
+        )
+        _, _, payload = load_checkpoint(root / "timed_bc.pt")
+        self.assertGreater(summary["training_duration_s"], 0.0)
+        self.assertEqual(payload["training_metadata"]["training_duration_s"], summary["training_duration_s"])
+
 
 if __name__ == "__main__":
     unittest.main()

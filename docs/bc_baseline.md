@@ -48,6 +48,53 @@ preprocessing；飛行端依 checkpoint 訂閱所有來源，並在任一路影�
 
 舊有 `--image-source` 單來源指令仍可使用。
 
+### 純 ResNet18 訓練與 64D encoder
+
+`resnet-train` 直接使用指定資料集的影像、state8 和專家動作，從隨機權重訓練
+ResNet18、64D 投影層及動作預測 head。訓練目標是三個 normalized actions 的 MSE；
+此流程沒有 decoder，也不計算 reconstruction loss。沿用 episode split、最佳 validation
+checkpoint、early stopping、TensorBoard 和 action-error plots。
+
+```bash
+./uav resnet-train --dataset cylinder_v3 --image-source top \
+  --epochs 100 --no-tensorboard
+
+./uav resnet-train --dataset cylinder_v4 --image-source top \
+  --epochs 100 --no-tensorboard
+```
+
+`--dataset` 接受 datasets 下的名稱或完整路徑；每次 run 使用一個資料集。
+預設 output 為 `experiments/resnet/<dataset>/<source>/run_<timestamp>`，也可指定
+`--output`。影像沿用完整 128x72 preprocessing，encoder 內套用 ImageNet mean/std，
+不下載 pretrained weights。state8 的 normalization 只由 train split 計算；訓練時的
+64D latent 不使用會隨 encoder 權重變動的資料統計。
+
+最佳 encoder 寫入 `resnet18_encoder.pt`；`resnet18_encoder_last.pt` 保存最後一個 epoch。
+兩者均包含 ResNet18 和 64D 投影層，不包含 AE decoder。`best.pt`、`last.pt` 保存相符的
+動作 head、normalization 和 encoder 路徑/hash，供離線或既有 evaluator 使用。
+純 ResNet run 不會更新 BC 的全域 latest pointer。
+
+若要維持先訓練 ResNet，再固定 encoder 訓練 BC 的兩階段流程：
+
+```bash
+./uav bc-train --dataset cylinder_v3 --image-source top \
+  --encoder experiments/resnet/cylinder_v3/top/run_<timestamp>/resnet18_encoder.pt \
+  --epochs 100 --no-tensorboard
+```
+
+BC 會使用固定的 `latent64 + state8`，輸入維度仍為 72。
+請讓兩階段使用相同 dataset、image source、seed 和 episode subset。
+BC 的 `--encoder` 同時接受訓練完成的 64D AE 或純 ResNet checkpoint。
+
+### 總訓練時長
+
+AE、BC 和純 ResNet 的 completed runs 都在 `summary.json` 和 `training_config.json`
+記錄 `training_duration_s`（秒）；BC/ResNet 也寫入 `metrics.json`。此時長以 monotonic
+clock 計算，包含資料準備、訓練、評估和圖表產生，不包含訓練結束後等待 TensorBoard
+或 Ctrl+C 的時間。完成訊息會直接顯示總秒數。
+舊版 `python -m uav_ml.train_bc` 也會在 checkpoint 的
+`training_metadata.training_duration_s` 和 terminal 結果記錄時長。
+
 ### 選用的 frozen ResNet18
 
 預設仍使用 AE；既有 `ae-train`、`bc-train --encoder <path>` 和 AE checkpoints 均維持可用。
@@ -77,10 +124,10 @@ experiment weights，不會再次下載。
 ```bash
 ./uav bc-train --dataset bc_expert_cube --image-source top \
   --encoder-type resnet18 --epochs 100 --batch-size 64 --learning-rate 0.001 --no-tensorboard \
-  --output artifacts/experiments/bc/bc_expert_cube/top/resnet18/run_01
+  --output experiments/bc/bc_expert_cube/top/resnet18/run_01
 
 ./uav bc-eval --image-source top_rgb --episodes 1 --visible \
-  --checkpoint artifacts/experiments/bc/bc_expert_cube/top/resnet18/run_01/best.pt
+  --checkpoint experiments/bc/bc_expert_cube/top/resnet18/run_01/best.pt
 ```
 
 基本 BC 參數為 `--epochs`、`--batch-size` 和 `--learning-rate`。使用
@@ -88,7 +135,7 @@ experiment weights，不會再次下載。
 TensorBoard server 持續執行，直到按下 Ctrl+C。`--encode-batch-size` 可獨立控制 encoder
 記憶體用量（預設 128）。每次 run 請使用新的 output directory；現有 experiments 不會被
 覆寫。未指定 `--output` 時，ResNet runs 會自動寫入
-`artifacts/experiments/bc/<dataset>/<image_source>/resnet18/run_<timestamp>`；預設 AE
+`experiments/bc/<dataset>/<image_source>/resnet18/run_<timestamp>`；預設 AE
 latest pointer 不變。請將 ResNet 的 `best.pt` 明確傳給 `bc-eval`；它會自動從 checkpoint
 讀取 encoder 選擇。請將 `resnet18_encoder.pt` 留在原始 run 目錄：BC checkpoint 和既有 AE
 checkpoint 一樣，會記錄其絕對路徑與 SHA-256。
@@ -107,7 +154,7 @@ ResNet runs 會產生既有 BC loss curves 和 action-error plots；closed-loop 
 及 metadata 更新：
 
 ```bash
-./uav expert-validate --dataset artifacts/datasets/bc_expert_cylinder_v2 --finalize
+./uav expert-validate --dataset datasets/bc_expert_cylinder_v2 --finalize
 ```
 
 此步驟會重新驗證每個 accepted episode，通過後才將 collection 標記為 complete。它不會啟動
@@ -125,7 +172,7 @@ Isaac Sim，也不會額外收集 episodes。若 episodes 缺漏或資料無效�
 ./uav bc-train --help
 ```
 
-預設值為正式 dataset `artifacts/datasets/bc_expert_cylinder_v1`、既有 frozen encoder
+預設值為正式 dataset `datasets/bc_expert_cylinder_v1`、既有 frozen encoder
 `autoencoder_runs/rgb_ae_v0_baseline_20260811/best.pt`、learning rate `1e-3` 的 Adam、
 batch size 64、最多 100 epochs、patience 12 和固定 seed。預設 image source 為 TOP。未指定
 `--encoder` 時，BC 只讀取相同 dataset/source 已完成且相符的 AE provenance index，並驗證
@@ -146,7 +193,7 @@ train、validation 和 test。選定 validation 表現最佳的 checkpoint 後�
 每次 run 會寫入以下目錄：
 
 ```text
-artifacts/experiments/bc_baseline/run_<UTC timestamp>/
+experiments/bc/<dataset>/<source>/run_<timestamp>/
   best.pt
   last.pt
   dataset_audit.json
@@ -164,14 +211,15 @@ artifacts/experiments/bc_baseline/run_<UTC timestamp>/
 `best.pt` 和 `last.pt` 包含 model 與 optimizer states、normalization、configuration、
 random seed、dataset manifest reference/hash、完整 split、encoder path/hash，以及
 observation/action contracts。Policy 訓練期間 encoder 會維持 eval mode 並停用 gradients。
-成功的 run 也會更新 Git 忽略的 `artifacts/experiments/bc_baseline/latest.json`；evaluation
-預設會使用此索引。
+成功的 run 也會更新 Git 忽略的 `experiments/bc/latest.json`；evaluation
+預設會比較新目錄內各個已完成 run 的索引。舊的 `artifacts/experiments/bc_baseline/`
+保留原位，不參與這次搬移。
 
 Offline metrics 包含各 action component 權重相同的 normalized action MSE，以及各 action
 的 MSE、MAE 和 RMSE。它們回答的是：**BC 能否模仿保留測試集中的 expert actions？**這些
 指標不能證明 UAV 能成功導航。
 
-BC output 會自動寫入 `artifacts/experiments/bc/<dataset>/<source>/run_<timestamp>`。CLI
+BC output 會自動寫入 `experiments/bc/<dataset>/<source>/run_<timestamp>`。CLI
 預設會啟動受管理的 TensorBoard server，並在成功訓練後持續執行直到按下 Ctrl+C。
 `--no-tensorboard` 只停用 server，不會停用 event-file 記錄。TensorBoard 會記錄
 `bc/train_action_loss` 和 `bc/validation_action_loss`（每個 epoch 各一筆）。重新載入
@@ -198,10 +246,10 @@ BC output 會自動寫入 `artifacts/experiments/bc/<dataset>/<source>/run_<time
 其 SHA-256、沿用訓練時的 preprocessing 和 normalization，並啟動受管理的 Isaac Sim、
 Pegasus、PX4 SITL 與 ROS 2 flight stack。
 
-未指定 `--checkpoint` 時，會比較 `artifacts/experiments/bc/` 中各 `latest.json` 的
+未指定 `--checkpoint` 時，會比較 `experiments/bc/` 中各 `latest.json` 的
 `updated_utc`，選取最近完成且 checkpoint 仍存在的 BC 訓練，涵蓋各 dataset、AE、ResNet18
 與影像來源。`./uav bc-train` 成功完成後會原子更新全域的
-`artifacts/experiments/bc/latest.json`，即使訓練使用自訂 `--output` 也能供下次評估選取。
+`experiments/bc/latest.json`，即使訓練使用自訂 `--output` 也能供下次評估選取。
 未完成的訓練不會取代預設模型；不可用的 pointer 會在 terminal 顯示原因。
 未指定 `--image-source` 時，會沿用所選 checkpoint 的主要影像來源與其餘必要來源；
 明確指定來源時仍會驗證是否符合 checkpoint。啟動時 terminal 會顯示 checkpoint 路徑與
@@ -256,8 +304,13 @@ metrics 包含數量/比例，以及平均距離、時間和 path length。這�
 
 `videos/episode_XXXXXX.mp4` 使用四項資訊同框的 2560×1440 版面：左側為 BC 成功推論
 實際使用的主要來源影像，右上為 Isaac TOP 相機，右下為機體座標方向指針與
-forward/right/yaw rate 動作數值（m/s、m/s、rad/s）。數值與指針沿用 runtime 的動作
+最近十步動作，格式為 `step7: [0.50, 0.20, -0.10]`，依舊到新由上而下排列，最新一步
+高亮；不足十步時顯示已有紀錄，第十一筆起移除最舊一筆。step 保留原始成功推論編號。
+三個數值依序為 forward/right/yaw rate（m/s、m/s、rad/s），沿用 runtime 的動作
 裁切與縮放；指針表示平移命令方向，yaw rate 另外以數值顯示，並非實測飛行速度。
+指針預設為實心三角形；修改 `uav_ml/tools/bc_flight_video.py` 的 `POINTER_STYLE` 可切換
+`arrow`（細線箭頭）、`triangle`（實心三角形）、`chevron`（V 形導航尖頭）或
+`needle`（雙色羅盤指針），不改變動作或模型輸入。
 TOP 依主要輸入影像的時間戳在 1 ms 內配對；缺少同期 TOP 時明確顯示缺圖，不等待或
 影響 policy readiness。錄影 TOP 使用同一 ObserverCamera 的獨立 1024×1024 輸出，JPEG
 quality 95、4:4:4，僅在 BC 錄影時啟用。模型仍使用既有 FPV 320×180／TOP 640×640、
@@ -265,7 +318,7 @@ JPEG quality 85 與既有前處理。指針與文字以 2 倍 supersampling 抗�
 Lanczos，H.264 編碼使用 CRF 16。舊 runtime 沒有高解析度 TOP 時，可沿用同期的模型
 TOP；舊影像不會因提高影片解析度而增加原始細節。多影像模型左側顯示
 主要來源；FPV depth 僅在影片中轉為 0–30 m 灰階。影片標示實際來源，不將 TOP 標成 FPV。
-旁邊的 JSON 保存版面、動作單位與具備 TOP 畫面的 frame 數；舊錄影來源缺少 TOP 時
+旁邊的 JSON 保存版面、指針樣式、動作歷史長度、動作單位與具備 TOP 畫面的 frame 數；舊錄影來源缺少 TOP 時
 仍可合成，舊 MP4 不會自動重製。
 
 `trajectory_plots/` 保留每航次的 `trajectory_1.png` 至 `trajectory_20.png`，另外依固定

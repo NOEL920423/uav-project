@@ -17,7 +17,7 @@ from uav_ml.tools.expert_collect import (
     _parser as expert_parser,
     main as expert_main,
 )
-from uav_ml.tools.bc_baseline import _parser as bc_parser
+from uav_ml.tools.bc_baseline import _parser as bc_parser, main as bc_main
 from uav_ml.tools.training_cli import (
     TensorBoardServer,
     autoencoder_latest_path,
@@ -54,6 +54,49 @@ class _FakeProcess:
 
 
 class TrainingCliTests(unittest.TestCase):
+    def test_resnet_training_uses_requested_dataset_and_its_own_experiment_path(self) -> None:
+        defaults = bc_parser(resnet_training=True).parse_args([])
+        self.assertEqual(defaults.encoder_type, "resnet18_trainable")
+        self.assertNotIn("--encoder-type", bc_parser(resnet_training=True).format_help())
+        with tempfile.TemporaryDirectory(prefix="resnet-cli-") as temporary:
+            dataset = resolve_dataset(temporary, must_exist=True)
+            with mock.patch("sys.argv", [
+                "resnet-train", "--dataset", temporary, "--epochs", "3",
+                "--no-tensorboard", "--encoder-type", "resnet18_trainable",
+            ]), mock.patch("uav_ml.tools.bc_baseline.TensorBoardServer"), mock.patch(
+                "uav_ml.tools.bc_baseline.train_baseline", side_effect=KeyboardInterrupt,
+            ) as train:
+                self.assertEqual(bc_main(), 130)
+            self.assertEqual(train.call_args.args[0], dataset.path)
+            self.assertIsNone(train.call_args.args[1])
+            self.assertEqual(train.call_args.args[2].parts[-4], "resnet")
+            self.assertEqual(train.call_args.args[3].epochs, 3)
+            self.assertEqual(train.call_args.kwargs["encoder_type"], "resnet18_trainable")
+
+    def test_resnet_autoencoder_cli_keeps_original_defaults_and_separate_latest_index(self) -> None:
+        self.assertEqual(autoencoder_parser().parse_args([]).encoder_backbone, "cnn")
+        args = autoencoder_parser().parse_args(["--encoder-backbone", "resnet18"])
+        self.assertEqual(args.encoder_backbone, "resnet18")
+        self.assertEqual(args.latent_dimension, 64)
+        with tempfile.TemporaryDirectory(prefix="resnet-ae-cli-") as temporary:
+            dataset = resolve_dataset(temporary, must_exist=True)
+            with mock.patch(
+                "sys.argv", ["ae-train", "--dataset", temporary,
+                             "--encoder-backbone", "resnet18", "--no-tensorboard"],
+            ), mock.patch("uav_ml.train_autoencoder.TensorBoardServer"), mock.patch(
+                "uav_ml.train_autoencoder.train", side_effect=KeyboardInterrupt,
+            ) as train:
+                self.assertEqual(autoencoder_main(), 130)
+            options = train.call_args.kwargs
+            self.assertEqual(options["encoder_backbone"], "resnet18")
+            self.assertEqual(options["output_dir"].parent.name, "resnet18")
+            original_index = autoencoder_latest_path(dataset, "top")
+            self.assertEqual(
+                options["latest_index_path"],
+                original_index.parent / "resnet18" / "latest.json",
+            )
+            self.assertFalse(original_index.exists())
+
     def test_ae_and_bc_accept_the_same_episode_subset_arguments(self) -> None:
         arguments = [
             "--episodes", "50", "--train-episodes", "30",
@@ -75,13 +118,13 @@ class TrainingCliTests(unittest.TestCase):
     def test_short_and_explicit_dataset_paths_resolve_identically(self) -> None:
         with tempfile.TemporaryDirectory(prefix="dataset-resolution-") as temporary:
             project = Path(temporary)
-            expected = project / "artifacts" / "datasets" / "bc_expert_cube"
+            expected = project / "datasets" / "bc_expert_cube"
             expected.mkdir(parents=True)
             short = resolve_dataset(
                 "bc_expert_cube", must_exist=True, project_root=project
             )
             relative = resolve_dataset(
-                "artifacts/datasets/bc_expert_cube",
+                "datasets/bc_expert_cube",
                 must_exist=True,
                 project_root=project,
             )
@@ -103,7 +146,7 @@ class TrainingCliTests(unittest.TestCase):
             )
             self.assertEqual(
                 run,
-                project / "artifacts" / "experiments" / "autoencoder"
+                project / "experiments" / "autoencoder"
                 / "bc_expert_cube" / "top" / "run_STAMP",
             )
 
@@ -115,7 +158,7 @@ class TrainingCliTests(unittest.TestCase):
             )
             self.assertEqual(
                 location.path,
-                (project / "artifacts" / "datasets" / "new_collection").resolve(),
+                (project / "datasets" / "new_collection").resolve(),
             )
             self.assertFalse(location.path.exists())
             with self.assertRaisesRegex(FileNotFoundError, "does not exist"):
@@ -140,7 +183,7 @@ class TrainingCliTests(unittest.TestCase):
         repository_root = Path(__file__).resolve().parents[2]
         self.assertEqual(
             dataset_root,
-            repository_root / "artifacts" / "datasets" / "bc_expert_cube",
+            repository_root / "datasets" / "bc_expert_cube",
         )
 
     def test_legacy_dataset_root_remains_an_explicit_path_alias(self) -> None:
@@ -168,7 +211,7 @@ class TrainingCliTests(unittest.TestCase):
     def test_matching_autoencoder_uses_only_completed_provenance_index(self) -> None:
         with tempfile.TemporaryDirectory(prefix="ae-selection-") as temporary:
             project = Path(temporary)
-            dataset_path = project / "artifacts" / "datasets" / "cube"
+            dataset_path = project / "datasets" / "cube"
             dataset_path.mkdir(parents=True)
             dataset = resolve_dataset(
                 "cube", must_exist=True, project_root=project
@@ -233,7 +276,7 @@ class TrainingCliTests(unittest.TestCase):
                     explicit=checkpoint,
                     project_root=project,
                 )
-            wrong_path = project / "artifacts" / "datasets" / "other"
+            wrong_path = project / "datasets" / "other"
             wrong_path.mkdir()
             wrong_dataset = resolve_dataset(
                 "other", must_exist=True, project_root=project

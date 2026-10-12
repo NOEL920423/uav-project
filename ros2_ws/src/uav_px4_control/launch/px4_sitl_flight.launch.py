@@ -1,5 +1,7 @@
 """Launch A* acceptance or an explicitly enabled physical joystick flight."""
 
+from pathlib import Path
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction, Shutdown
 from launch.conditions import IfCondition, UnlessCondition
@@ -94,7 +96,9 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "dataset_root",
-            default_value="artifacts/datasets/bc_expert_v1",
+            default_value=str(
+                Path(__file__).resolve().parents[4] / "datasets/bc_expert_v1"
+            ),
         ),
         DeclareLaunchArgument("episode_id", default_value="episode_000001"),
         DeclareLaunchArgument("collection_mode", default_value="single"),

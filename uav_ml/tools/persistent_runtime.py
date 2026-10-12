@@ -559,15 +559,24 @@ class PersistentRuntimeManager:
         episode_id: str,
         seed: int,
         directory: Path,
+        *,
+        scene_version: str = "v4",
+        scene_profile_path: Path | None = None,
     ) -> dict:
         """Apply a scene after reset without requiring old PX4 telemetry."""
         evidence_path = directory / "scene_status.json"
+        profile_arguments = (
+            ["-p", f"scene_profile_path:={scene_profile_path}"]
+            if scene_profile_path else []
+        )
         status = self.run_ros([
             "ros2", "run", "uav_data_recorder", "episode_scene_client",
             "--ros-args",
             "-p", f"episode_id:={episode_id}",
             "-p", f"random_seed:={seed}",
             "-p", "scene_mode:=normal",
+            "-p", f"scene_version:={scene_version}",
+            *profile_arguments,
             "-p", f"timeout_s:={min(30.0, self.runtime_timeout_s)}",
             "-p", "require_px4_safe_state:=false",
             "-p", f"expected_runtime_generation:={generation}",
@@ -582,6 +591,15 @@ class PersistentRuntimeManager:
                 f"scene preparation failed with status {status}"
             )
         evidence = read_json(evidence_path)
+        configuration = evidence.get("scene_configuration") or {}
+        if configuration.get("scene_version") != scene_version:
+            raise FatalRuntimeError("Isaac acknowledged a different collection scene version")
+        if scene_profile_path is not None:
+            from isaac.runtime.environment import load_scene_profile, scene_profile_sha256
+
+            profile = load_scene_profile(scene_version, scene_profile_path)
+            if configuration.get("scene_profile_sha256") != scene_profile_sha256(profile):
+                raise FatalRuntimeError("Isaac acknowledged different collection scene parameters")
         revision = int(evidence.get("scene_revision", 0))
         if revision <= self._scene_revision:
             raise RecoverableAttemptError("scene revision did not advance")

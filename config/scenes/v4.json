@@ -1,0 +1,226 @@
+{
+  "schema": "uav_scene_profile/v1",
+  "scene_version": "v4",
+  "generation": "fixed",
+  "provenance": {
+    "generator_commit": "f163f72",
+    "dataset": "datasets/cylinder_v4",
+    "notes": "Fixed layout and decoration checked against historical v4 episodes."
+  },
+  "parameters": {
+    "OBSTACLE_COLOR": [
+      0.03,
+      0.08,
+      0.18
+    ],
+    "FLOOR_COLOR": [
+      0.6,
+      0.6,
+      0.6
+    ],
+    "WALL_COLOR": [
+      0.45,
+      0.45,
+      0.45
+    ],
+    "START_MARKER_COLOR": [
+      0.0,
+      0.3,
+      1.0
+    ],
+    "GOAL_MARKER_COLOR": [
+      1.0,
+      0.0,
+      0.0
+    ],
+    "MATERIAL_ROUGHNESS": 1.0,
+    "MATERIAL_METALLIC": 0.0,
+    "MATERIAL_SPECULAR_COLOR": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "MATERIAL_OPACITY": 1.0,
+    "MATERIAL_EMISSIVE_COLOR": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "FLOOR_SIZE": [
+      100.0,
+      100.0,
+      0.01
+    ],
+    "FLOOR_POSITION": [
+      0.0,
+      0.0,
+      0.01
+    ],
+    "MARKER_HEIGHT_M": 0.05,
+    "DISABLE_ENVIRONMENT_LIGHTS": true,
+    "DOME_LIGHT_INTENSITY": 800.0,
+    "DOME_LIGHT_COLOR": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "RTX_SHADOWS_ENABLED": false,
+    "RTX_AMBIENT_OCCLUSION_ENABLED": false,
+    "OBSTACLE_MATERIAL_NAME": "ObstacleMatte",
+    "FLOOR_MATERIAL_NAME": "FloorMatte",
+    "WALL_MATERIAL_NAME": "WallMatte",
+    "START_MARKER_MATERIAL_NAME": "StartMarkerMatte",
+    "GOAL_MARKER_MATERIAL_NAME": "GoalMarkerMatte",
+    "GUARANTEE_DIRECT_PATH_BLOCKERS": true,
+    "DIRECT_PATH_BLOCKER_COUNT": 2,
+    "RANDOM_OBSTACLE_COUNT": 0,
+    "NUM_OBSTACLES": 2,
+    "DIRECT_PATH_BLOCKER_T_RANGES": [
+      [
+        0.34,
+        0.38
+      ],
+      [
+        0.62,
+        0.66
+      ]
+    ],
+    "DIRECT_PATH_BLOCKER_LATERAL_JITTER_M": 0.08,
+    "DIRECT_PATH_BLOCKER_HEIGHT_MIN": 3.2,
+    "SPECIAL_BLOCKER_INDEX": 0,
+    "SPECIAL_BLOCKER_RADIUS_BASIS_WIDTH": 0.72,
+    "SPECIAL_BLOCKER_RADIUS_BASIS_DEPTH": 0.72,
+    "SPECIAL_BLOCKER_HEIGHT": 5.2,
+    "FIXED_OBSTACLE_DECORATION_SEED": 0,
+    "FIXED_OBSTACLE_LAYOUT": [
+      {
+        "x": 1.08,
+        "y": 1.8,
+        "radius_basis_width": 0.72,
+        "radius_basis_depth": 0.72,
+        "height": 5.2,
+        "yaw_deg": 0.0,
+        "placement_mode": "guaranteed_direct_path_blocker",
+        "variant": "special_large"
+      },
+      {
+        "x": 1.92,
+        "y": 3.2,
+        "radius_basis_width": 0.64,
+        "radius_basis_depth": 0.64,
+        "height": 4.0,
+        "yaw_deg": 0.0,
+        "placement_mode": "guaranteed_direct_path_blocker",
+        "variant": "standard"
+      }
+    ],
+    "X_MIN": -5.0,
+    "X_MAX": 5.0,
+    "Y_MIN": -2.0,
+    "Y_MAX": 7.0,
+    "WALL_THICKNESS_M": 0.25,
+    "WALL_HEIGHT_M": 5.5,
+    "START_POS": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "TARGET_POS": [
+      3.0,
+      5.0,
+      0.0
+    ],
+    "FLIGHT_ALTITUDE_M": 1.5,
+    "DISK_RADIUS": 0.5,
+    "DISK_SAFE_MARGIN": 1.0,
+    "START_CLEAR_RADIUS": 1.5,
+    "TARGET_CLEAR_RADIUS": 1.5,
+    "RADIUS_BASIS_WIDTH_MIN": 0.46,
+    "RADIUS_BASIS_WIDTH_MAX": 0.72,
+    "RADIUS_BASIS_DEPTH_MIN": 0.46,
+    "RADIUS_BASIS_DEPTH_MAX": 0.72,
+    "CYLINDER_HEIGHT_MIN": 2.8,
+    "CYLINDER_HEIGHT_MAX": 5.2,
+    "BLOCKER_RADIUS_BASIS_WIDTH_MIN": 0.56,
+    "BLOCKER_RADIUS_BASIS_DEPTH_MIN": 0.56,
+    "OBSTACLE_YAW_MIN_DEG": -35.0,
+    "OBSTACLE_YAW_MAX_DEG": 35.0,
+    "SCENE_DECORATION_WINDOW_THICKNESS_M": 0.018,
+    "SCENE_DECORATION_WINDOW_HEIGHT_M": 0.16,
+    "SCENE_DECORATION_WINDOW_MARGIN_M": 0.08,
+    "SCENE_DECORATION_ROOF_HEIGHT_MIN": 0.1,
+    "SCENE_DECORATION_ROOF_HEIGHT_MAX": 0.28,
+    "SCENE_DECORATION_ANTENNA_HEIGHT_MIN": 0.25,
+    "SCENE_DECORATION_ANTENNA_HEIGHT_MAX": 0.55,
+    "LEGACY_CYLINDER_COLOR_DRAWS": [
+      [
+        0.12,
+        0.18,
+        0.24
+      ],
+      [
+        0.2,
+        0.27,
+        0.31
+      ],
+      [
+        0.3,
+        0.31,
+        0.34
+      ],
+      [
+        0.27,
+        0.22,
+        0.2
+      ],
+      [
+        0.18,
+        0.22,
+        0.3
+      ]
+    ],
+    "SCENE_DECORATION_WINDOW_ON_COLORS": [
+      [
+        0.38,
+        0.72,
+        1.0
+      ],
+      [
+        0.62,
+        0.86,
+        1.0
+      ],
+      [
+        1.0,
+        0.78,
+        0.36
+      ]
+    ],
+    "SCENE_DECORATION_WINDOW_OFF_COLOR": [
+      0.035,
+      0.055,
+      0.075
+    ],
+    "SCENE_DECORATION_ROOF_STYLES": [
+      "flat",
+      "crown",
+      "antenna"
+    ],
+    "MIN_OBSTACLE_GAP": 0.5,
+    "MAX_PLACEMENT_ATTEMPTS": 1000,
+    "RESET_POSITION_TOLERANCE_M": 0.5,
+    "LIGHTING_CONTRACT": {
+      "mode": "neutral_dome_only",
+      "root": "/World/GeneratedEpisode/Lights",
+      "dome": {
+        "intensity": 800.0,
+        "exposure": 0.0,
+        "color": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    }
+  }
+}

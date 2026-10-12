@@ -12,6 +12,7 @@ import json
 import math
 from pathlib import Path
 import random
+import sys
 import time
 from zoneinfo import ZoneInfo
 
@@ -26,6 +27,7 @@ except ModuleNotFoundError:  # Keep --help usable before optional install.
     SummaryWriter = None  # type: ignore[assignment,misc]
 
 from uav_ml.datasets.expert_image_dataset import (
+    ExpertImageDataset,
     IMAGE_PREPROCESSING,
     IMAGE_SOURCES,
     normalize_image_sources,
@@ -111,7 +113,7 @@ def _publish_latest_bc(repository_root: Path, summary: dict) -> None:
     checkpoint = Path(summary["best_checkpoint"]).resolve()
     if not checkpoint.is_file() or not (checkpoint.parent / "summary.json").is_file():
         raise FileNotFoundError(f"completed BC artifacts are missing: {checkpoint}")
-    pointer = repository_root / "artifacts/experiments/bc/latest.json"
+    pointer = repository_root / "experiments/bc/latest.json"
     temporary = pointer.with_suffix(".json.tmp")
     _write_json(temporary, {
         "format_version": FORMAT_VERSION,
@@ -545,22 +547,43 @@ def _run_loader(
     loader: DataLoader,
     device: torch.device,
     optimizer: torch.optim.Optimizer | None = None,
+    encoder: ResNet18Encoder | None = None,
+    observation_mean: torch.Tensor | None = None,
+    observation_std: torch.Tensor | None = None,
 ) -> tuple[dict, torch.Tensor, torch.Tensor]:
     training = optimizer is not None
     model.train(training)
+    if encoder is not None:
+        encoder.train(training)
+        if observation_mean is None or observation_std is None:
+            raise ValueError("image training requires observation normalization")
+    parameters = list(model.parameters())
+    if encoder is not None:
+        parameters.extend(encoder.parameters())
     predictions = []
     targets = []
-    for observation, target in loader:
-        observation = observation.to(device)
-        target = target.to(device)
+    for batch in loader:
+        if encoder is None:
+            observation, target = (value.to(device) for value in batch)
+        else:
+            values = batch["sample_values"].to(device)
+            state, target = values[:, :8], values[:, 8:]
+            images = (
+                {source: image.to(device) for source, image in batch["images"].items()}
+                if "images" in batch else batch["image"].to(device)
+            )
         if training:
             optimizer.zero_grad(set_to_none=True)
         with torch.set_grad_enabled(training):
+            if encoder is not None:
+                observation = (
+                    torch.cat((encoder.encode(images), state), dim=1) - observation_mean
+                ) / observation_std
             prediction = model(observation)
             loss = nn.functional.mse_loss(prediction, target)
             if training:
                 loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                nn.utils.clip_grad_norm_(parameters, 5.0)
                 optimizer.step()
         predictions.append(prediction.detach().cpu())
         targets.append(target.detach().cpu())
@@ -644,13 +667,14 @@ def _progress(
     best_loss: float,
     learning_rate: float,
     started: float,
+    stage: str = "BC",
 ) -> None:
     elapsed = time.monotonic() - started
     eta = elapsed / epoch * (epochs - epoch) if epoch else None
     filled = int(30 * epoch / epochs)
     bar = "█" * filled + "-" * (30 - filled)
     print(
-        "\nBC Baseline Training\n\n"
+        f"\n{stage} Baseline Training\n\n"
         f"Epoch {epoch} / {epochs} [{bar}] {100 * epoch // epochs}%\n\n"
         f"Train loss : {train_loss:.6f}\n"
         f"Val loss   : {validation_loss:.6f}\n"
@@ -765,8 +789,11 @@ def train_baseline(
         raise ValueError("training counts and learning rate must be positive")
     if config.min_epochs < 0 or config.min_epochs > config.epochs:
         raise ValueError("min_epochs must be nonnegative and cannot exceed epochs")
-    if encoder_type not in ("autoencoder", "resnet18"):
-        raise ValueError("encoder_type must be autoencoder or resnet18")
+    if encoder_type not in ("autoencoder", "resnet18", "resnet18_trainable"):
+        raise ValueError("encoder_type must be autoencoder, resnet18, or resnet18_trainable")
+    train_encoder = encoder_type == "resnet18_trainable"
+    stage = "ResNet18" if train_encoder else "BC"
+    scalar_prefix = "resnet" if train_encoder else "bc"
     sources = normalize_image_sources(
         image_sources if image_sources is not None else (image_source,)
     )
@@ -776,7 +803,7 @@ def train_baseline(
         {source: IMAGE_PREPROCESSING[source] for source in sources}
         if multi_image else IMAGE_PREPROCESSING[sources[0]]
     )
-    if encoder_type == "resnet18" and encoder_checkpoint is not None:
+    if encoder_type != "autoencoder" and encoder_checkpoint is not None:
         raise ValueError("ResNet18 does not accept an --encoder override")
     if encoder_type == "autoencoder" and encoder_checkpoint is None:
         raise ValueError("autoencoder requires an encoder checkpoint")
@@ -804,21 +831,30 @@ def train_baseline(
             raise FileExistsError(f"refusing to overwrite experiment: {output_dir}")
     else:
         output_dir.mkdir(parents=True)
-    if encoder_type == "resnet18":
-        pretrained = ResNet18Encoder(pretrained=True, image_sources=sources)
+    if encoder_type in ("resnet18", "resnet18_trainable"):
+        set_seeds(config.seed)
+        initial_encoder = ResNet18Encoder(
+            pretrained=not train_encoder, image_sources=sources,
+            latent_dimension=64 if train_encoder else 512,
+        )
         encoder_checkpoint = output_dir / "resnet18_encoder.pt"
         torch.save({
             "model_class": "ResNet18Encoder",
-            "model_config": pretrained.checkpoint_config,
-            "model_state": pretrained.state_dict(),
-            "preprocessing": pretrained.preprocessing,
+            "model_config": initial_encoder.checkpoint_config,
+            "model_state": initial_encoder.state_dict(),
+            "preprocessing": initial_encoder.preprocessing,
             "metadata": {
                 "image_source": source_label,
                 "image_sources": list(sources),
-                "weights": "IMAGENET1K_V1",
+                "weights": "random_initialization" if train_encoder else "IMAGENET1K_V1",
+                "dataset_root": audit["dataset_root"],
+                "image_preprocessing": image_preprocessing,
+                "training_objective": (
+                    "expert_normalized_action_mse" if train_encoder else "none"
+                ),
             },
         }, encoder_checkpoint)
-        del pretrained
+        del initial_encoder
         audit["encoder_checkpoint"] = str(encoder_checkpoint.resolve())
         audit["encoder_sha256"] = _sha256(encoder_checkpoint)
     _write_json(output_dir / "dataset_audit.json", audit)
@@ -836,6 +872,8 @@ def train_baseline(
         "encoder_checkpoint": str(encoder_checkpoint.resolve()),
         "encoder_selection": encoder_selection,
         "encoder_type": encoder_type,
+        "encoder_trainable": train_encoder,
+        "training_stage": "resnet" if train_encoder else "bc",
         "initialized_policy": (
             str(initialize_policy.expanduser().resolve())
             if initialize_policy is not None else None
@@ -843,7 +881,7 @@ def train_baseline(
     }
     _write_json(output_dir / "training_config.json", training_config)
     print(
-        "BC Dataset Eligibility\n"
+        f"{stage} Dataset Eligibility\n"
         f"Total episodes     : {audit['total_episodes']}\n"
         f"Usable episodes    : {audit['usable_episodes']}\n"
         f"Selected episodes  : {split_manifest['selected_episode_count']}\n"
@@ -882,7 +920,7 @@ def train_baseline(
     if encoder.config.latent_dimension != (512 if encoder_type == "resnet18" else 64):
         raise ValueError("encoder latent dimension does not match selected encoder type")
     print(
-        "========== BC Training ==========\n\n"
+        f"========== {stage} Training ==========\n\n"
         f"Dataset:\n{resolved_dataset_name}\n\n"
         f"Resolved path:\n{audit['dataset_root']}\n\n"
         f"Image sources:\n{', '.join(sources)}\n\n"
@@ -907,37 +945,59 @@ def train_baseline(
         "=================================",
         flush=True,
     )
-    tensors = encode_splits(
-        dataset_root.resolve(),
-        split_manifest,
-        encoder,
-        device,
-        encode_batch_size,
-        source_label,
-        image_sources=sources if multi_image else None,
-    )
-    if any(parameter.requires_grad for parameter in encoder.parameters()):
-        raise RuntimeError("encoder freeze contract was violated")
-    train_observation = tensors["train"][0]
-    mean = train_observation.double().mean(dim=0).float().numpy()
-    std = train_observation.double().std(dim=0, unbiased=False).float().numpy()
-    std = np.maximum(std, 1e-6).astype(np.float32)
-    normalized = {
-        split: (
-            (observation - torch.from_numpy(mean)) / torch.from_numpy(std),
-            action,
+    loader_options = {}
+    if train_encoder:
+        encoder.requires_grad_(True)
+        datasets = {
+            split: ExpertImageDataset(
+                dataset_root, split_manifest, split, image_sources=sources,
+                sample_fields=STATE_FIELDS + TARGET_FIELDS,
+            )
+            for split in split_manifest["splits"]
+        }
+        train_states = torch.tensor([
+            sample["sample_values"][:8] for sample in datasets["train"].samples
+        ], dtype=torch.float64)
+        # Learned latents change during training; only normalize the fixed state8.
+        mean = np.concatenate((
+            np.zeros(64, dtype=np.float32), train_states.mean(dim=0).float().numpy(),
+        ))
+        std = np.concatenate((
+            np.ones(64, dtype=np.float32),
+            train_states.std(dim=0, unbiased=False).float().clamp_min(1e-6).numpy(),
+        ))
+        loader_options = {
+            "encoder": encoder,
+            "observation_mean": torch.from_numpy(mean).to(device),
+            "observation_std": torch.from_numpy(std).to(device),
+        }
+    else:
+        tensors = encode_splits(
+            dataset_root.resolve(), split_manifest, encoder, device,
+            encode_batch_size, source_label,
+            image_sources=sources if multi_image else None,
         )
-        for split, (observation, action) in tensors.items()
-    }
+        if any(parameter.requires_grad for parameter in encoder.parameters()):
+            raise RuntimeError("encoder freeze contract was violated")
+        train_observation = tensors["train"][0]
+        mean = train_observation.double().mean(dim=0).float().numpy()
+        std = train_observation.double().std(dim=0, unbiased=False).float().numpy()
+        std = np.maximum(std, 1e-6).astype(np.float32)
+        datasets = {
+            split: TensorDataset(
+                (observation - torch.from_numpy(mean)) / torch.from_numpy(std), action,
+            )
+            for split, (observation, action) in tensors.items()
+        }
     generator = torch.Generator().manual_seed(config.seed)
     loaders = {
         split: DataLoader(
-            TensorDataset(*values),
+            dataset,
             batch_size=config.batch_size,
             shuffle=split == "train",
             generator=generator if split == "train" else None,
         )
-        for split, values in normalized.items()
+        for split, dataset in datasets.items()
     }
     model = LatentBcPolicy(LatentBcPolicyConfig(
         observation_dimension=encoder.config.latent_dimension + 8
@@ -964,9 +1024,10 @@ def train_baseline(
             raise ValueError("initial BC policy observation architecture mismatch")
         model.load_state_dict(initial["model_state"])
         print(f"Initialized BC actor from {initial_path}", flush=True)
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=config.learning_rate
-    )
+    parameters = list(model.parameters())
+    if train_encoder:
+        parameters.extend(encoder.parameters())
+    optimizer = torch.optim.Adam(parameters, lr=config.learning_rate)
     best_loss = math.inf
     best_epoch = 0
     stale_epochs = 0
@@ -977,17 +1038,26 @@ def train_baseline(
     try:
         for epoch in range(1, config.epochs + 1):
             _run_loader(
-                model, loaders["train"], device, optimizer
+                model, loaders["train"], device, optimizer, **loader_options
             )
             train_metrics, _, _ = _run_loader(
-                model, loaders["train"], device
+                model, loaders["train"], device, **loader_options
             )
             validation_metrics, _, _ = _run_loader(
-                model, loaders["validation"], device
+                model, loaders["validation"], device, **loader_options
             )
             history.append(_history_row(
                 epoch, train_metrics, validation_metrics
             ))
+            epoch_audit = audit
+            if train_encoder:
+                encoder_payload["model_state"] = encoder.state_dict()
+                last_encoder = output_dir / "resnet18_encoder_last.pt"
+                torch.save(encoder_payload, last_encoder)
+                epoch_audit = {
+                    **audit, "encoder_checkpoint": str(last_encoder.resolve()),
+                    "encoder_sha256": _sha256(last_encoder),
+                }
             payload = _checkpoint(
                 model,
                 optimizer,
@@ -996,7 +1066,7 @@ def train_baseline(
                 mean,
                 std,
                 config,
-                audit,
+                epoch_audit,
                 split_manifest,
                 image_source,
                 encoder,
@@ -1006,14 +1076,21 @@ def train_baseline(
                 best_loss = validation_metrics["mse"]
                 best_epoch = epoch
                 stale_epochs = 0
+                if train_encoder:
+                    torch.save(encoder_payload, encoder_checkpoint)
+                    audit["encoder_sha256"] = _sha256(encoder_checkpoint)
+                    payload = {
+                        **payload, "autoencoder_checkpoint": str(encoder_checkpoint.resolve()),
+                        "autoencoder_checkpoint_sha256": audit["encoder_sha256"],
+                    }
                 torch.save(payload, output_dir / "best.pt")
             else:
                 stale_epochs += 1
             writer.add_scalar(
-                "bc/train_action_loss", train_metrics["mse"], epoch
+                f"{scalar_prefix}/train_action_loss", train_metrics["mse"], epoch
             )
             writer.add_scalar(
-                "bc/validation_action_loss", validation_metrics["mse"], epoch
+                f"{scalar_prefix}/validation_action_loss", validation_metrics["mse"], epoch
             )
             _progress(
                 epoch,
@@ -1023,6 +1100,7 @@ def train_baseline(
                 best_loss,
                 optimizer.param_groups[0]["lr"],
                 started,
+                stage=stage,
             )
             if (
                 epoch >= config.min_epochs
@@ -1044,8 +1122,12 @@ def train_baseline(
         ).to(device)
         best_model.load_state_dict(best["model_state"])
         best_model.eval()
+        if train_encoder:
+            encoder, encoder_payload = _load_frozen_encoder(encoder_checkpoint, device)
+            loader_options["encoder"] = encoder
+            _write_json(output_dir / "dataset_audit.json", audit)
         test_metrics, prediction, target = _run_loader(
-            best_model, loaders["test"], device
+            best_model, loaders["test"], device, **loader_options
         )
         tensorboard_action_names = {
             "v_forward": "forward",
@@ -1054,7 +1136,7 @@ def train_baseline(
         }
         for name in ACTION_NAMES:
             writer.add_scalar(
-                f"bc/test_{tensorboard_action_names[name]}_rmse",
+                f"{scalar_prefix}/test_{tensorboard_action_names[name]}_rmse",
                 test_metrics["per_action"][name]["rmse"],
                 best_epoch,
             )
@@ -1088,6 +1170,7 @@ def train_baseline(
         "tensorboard_enabled": tensorboard_enabled,
         "tensorboard_port": tensorboard_port,
         "encoder_selection": encoder_selection,
+        "training_stage": "resnet" if train_encoder else "bc",
     }
     plots = create_training_plots(
         output_dir, history, test_metrics, prediction, target
@@ -1101,6 +1184,10 @@ def train_baseline(
         "output_dir": str(output_dir.resolve()),
         "best_checkpoint": str((output_dir / "best.pt").resolve()),
         "last_checkpoint": str((output_dir / "last.pt").resolve()),
+        "best_encoder_checkpoint": str(encoder_checkpoint.resolve()),
+        "dataset_root": audit["dataset_root"],
+        "encoder_architecture": type(encoder).__name__,
+        "latent_dimension": encoder.config.latent_dimension,
         "encoder": {
             "architecture": type(encoder).__name__,
             "image_source": source_label,
@@ -1112,6 +1199,7 @@ def train_baseline(
             "model_config": encoder.config.to_dict(),
             "metadata": metadata,
             "frozen": True,
+            "trained": train_encoder,
         },
         "policy": {
             "architecture": "LatentBcPolicy",
@@ -1139,22 +1227,35 @@ def train_baseline(
     return summary
 
 
-def _parser() -> argparse.ArgumentParser:
+def _parser(resnet_training: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="./uav bc-train",
+        prog=(
+            "./uav resnet-train"
+            if resnet_training
+            else "./uav bc-train"
+        ),
         description=(
-            "Train a frozen AE or ResNet18 BC baseline and run "
-            "held-out offline evaluation."
+            "Train BC with a frozen encoder, or train a 64D ResNet18 "
+            "with expert action supervision and held-out evaluation."
         ),
     )
     parser.add_argument(
         "--dataset",
         default=str(DEFAULT_DATASET),
-        help="dataset name under artifacts/datasets, or explicit path",
+        help="dataset name under datasets, or explicit path",
     )
-    parser.add_argument("--encoder", help="AE checkpoint override (autoencoder only)")
-    parser.add_argument("--encoder-type", choices=("autoencoder", "resnet18"),
-                        default="autoencoder", help="frozen visual encoder (default: autoencoder)")
+    if resnet_training:
+        parser.set_defaults(encoder=None)
+        parser.add_argument(
+            "--encoder-type", choices=("resnet18_trainable",),
+            default="resnet18_trainable", help=argparse.SUPPRESS,
+        )
+    else:
+        parser.add_argument("--encoder", help="trained 64D AE/ResNet checkpoint override (autoencoder mode)")
+        parser.add_argument(
+            "--encoder-type", choices=("autoencoder", "resnet18", "resnet18_trainable"),
+            default="autoencoder", help="encoder training mode (default: autoencoder)",
+        )
     parser.add_argument("--output")
     parser.add_argument("--epochs", type=int, default=100)
     add_episode_split_arguments(parser)
@@ -1169,25 +1270,33 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--encode-batch-size", type=int, default=128)
+    parser.add_argument(
+        "--encode-batch-size", type=int, default=128,
+        help=argparse.SUPPRESS if resnet_training else "batch size for frozen feature extraction",
+    )
     source_group = parser.add_mutually_exclusive_group()
     source_group.add_argument(
         "--image-source", choices=IMAGE_SOURCES, default="top"
     )
     source_group.add_argument(
         "--image-sources", choices=IMAGE_SOURCES, nargs="+",
-        help="one or more aligned image streams for joint BC training",
+        help="one or more aligned image streams for supervised training",
     )
     parser.add_argument(
         "--initialize-policy", type=Path,
-        help="initialize the BC actor from a checkpoint with the same primary source and latent size",
+        help="initialize the action head from a checkpoint with the same primary source and latent size",
     )
     add_tensorboard_arguments(parser)
     return parser
 
 
 def main() -> int:
-    args = _parser().parse_args()
+    args = _parser(
+        resnet_training=sys.argv[-2:] == ["--encoder-type", "resnet18_trainable"]
+    ).parse_args()
+    train_encoder = args.encoder_type == "resnet18_trainable"
+    stage = "ResNet18" if train_encoder else "BC"
+    error_stage = "ResNet18 training" if train_encoder else "BC baseline training"
     repository_root = Path(__file__).resolve().parents[2]
     try:
         dataset_location = resolve_dataset(
@@ -1196,14 +1305,14 @@ def main() -> int:
             project_root=repository_root,
         )
     except (OSError, ValueError) as error:
-        print(f"ERROR: BC baseline training stopped: {error}")
+        print(f"ERROR: {error_stage} stopped: {error}")
         return 1
     try:
         sources = normalize_image_sources(
             args.image_sources if args.image_sources else (args.image_source,)
         )
         source_label = sources[0] if len(sources) == 1 else "+".join(sources)
-        if args.encoder_type == "resnet18" and args.encoder:
+        if args.encoder_type != "autoencoder" and args.encoder:
             raise ValueError("ResNet18 does not accept an --encoder override")
         if args.encoder_type == "autoencoder":
             if len(sources) > 1:
@@ -1225,14 +1334,15 @@ def main() -> int:
         else:
             encoder = None
     except Exception as error:  # noqa: BLE001 - CLI boundary
-        print(f"ERROR: BC baseline training stopped: {error}")
+        print(f"ERROR: {error_stage} stopped: {error}")
         return 1
     print(
         f"Encoder type: {args.encoder_type}\n"
-        f"Encoder: {encoder.checkpoint if encoder else 'ImageNet IMAGENET1K_V1 (frozen)'}\n\n"
+        f"Encoder: {encoder.checkpoint if encoder else 'trainable ResNet18 (64D)' if train_encoder else 'ImageNet IMAGENET1K_V1 (frozen)'}\n\n"
         f"Dataset:\n{dataset_location.name}\n\n"
         f"Image sources:\n{', '.join(sources)}\n\n"
         + ("Encoder provenance:\nmatched" if encoder else
+         "Encoder training:\nexpert normalized-action MSE" if train_encoder else
          "Encoder weights:\nImageNet pretrained; saved with this BC run"),
         flush=True,
     )
@@ -1240,7 +1350,7 @@ def main() -> int:
         output = Path(args.output)
     else:
         output = experiment_run_directory(
-            "bc",
+            "resnet" if train_encoder else "bc",
             dataset_location,
             source_label,
             _stamp(),
@@ -1278,17 +1388,18 @@ def main() -> int:
                 tensorboard_port=args.tensorboard_port,
                 encoder_selection=(
                     ("automatic" if encoder.automatic else "explicit")
-                    if encoder else "imagenet_pretrained"
+                    if encoder else "expert_action_supervision" if train_encoder else "imagenet_pretrained"
                 ),
                 encoder_type=args.encoder_type,
                 image_sources=sources if len(sources) > 1 else None,
                 initialize_policy=args.initialize_policy,
             )
-            _publish_latest_bc(repository_root, summary)
+            if not train_encoder:
+                _publish_latest_bc(repository_root, summary)
             test = summary["test"]["per_action"]
             print(
                 "=========================================\n"
-                "BC training completed successfully\n\n"
+                f"{stage} training completed successfully\n\n"
                 f"Dataset:\n{dataset_location.name}\n\n"
                 f"Image sources:\n{', '.join(sources)}\n\n"
                 f"Maximum epochs requested:\n"
@@ -1296,6 +1407,7 @@ def main() -> int:
                 f"Actual epochs trained:\n"
                 f"{summary['actual_epochs_trained']}\n\n"
                 f"Best epoch:\n{summary['best_epoch']}\n\n"
+                f"Total training duration:\n{summary['training_duration_s']:.2f} s\n\n"
                 f"Early stopping:\n"
                 f"{'yes' if summary['early_stopping_triggered'] else 'no'}\n\n"
                 "Best validation action loss:\n"
@@ -1305,6 +1417,7 @@ def main() -> int:
                 f"right RMSE = {test['v_right']['rmse']:.8f}\n"
                 f"yaw-rate RMSE = {test['yaw_rate']['rmse']:.8f}\n\n"
                 f"Best checkpoint:\n{summary['best_checkpoint']}\n\n"
+                f"Encoder checkpoint:\n{summary['best_encoder_checkpoint']}\n\n"
                 f"TensorBoard:\n"
                 f"{tensorboard_server.url if tensorboard_server.active else 'not managed'}\n"
                 "=========================================",
@@ -1312,10 +1425,10 @@ def main() -> int:
             )
             tensorboard_server.wait_until_interrupted()
     except KeyboardInterrupt:
-        print("BC training interrupted; TensorBoard was cleaned up.")
+        print(f"{stage} training interrupted; TensorBoard was cleaned up.")
         return 130
     except Exception as error:  # noqa: BLE001 - CLI boundary
-        print(f"ERROR: BC baseline training stopped: {error}")
+        print(f"ERROR: {error_stage} stopped: {error}")
         return 1
     return 0
 

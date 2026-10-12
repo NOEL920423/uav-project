@@ -59,8 +59,10 @@ usage() {
   px4-gate-check    驗證 fail-closed output gate 與明確復原
   px4-boundary-check  驗證 scene 至 safe_to_forward 診斷圖
   ae-train        訓練以 episode 分割的 FPV/TOP/depth Autoencoder baseline
+  resnet-train    使用指定資料集與專家動作訓練 64 維 ResNet18 encoder
   bc-train        訓練並離線評估正式的 BC baseline
   bc-eval         使用 Isaac/Pegasus/PX4 飛行 TOP RGB BC policy
+  eval            bc-eval 的別名；使用 --scene v3|v4 選擇測試場景
   bc-eval-plot    由正式 BC evaluation artifact 重新產生圖表
   ml-test         執行不依賴 ROS/Isaac 的 ML regression tests
   px4-stream-offline-check  驗證不依賴 PX4 的 stream boundary
@@ -98,21 +100,21 @@ usage() {
   ./uav ml-doctor
   ./uav ae-train --dataset bc_expert_cube --epochs 200
   ./uav bc-train --dataset bc_expert_cube --epochs 500
-  ./uav bc-eval --image-source top_rgb --episodes 1 --visible
-  ./uav bc-eval-plot artifacts/evaluations/bc_flight/run_TIMESTAMP
+  ./uav eval --scene v3 --checkpoint /path/to/best.pt --episodes 1 --visible
+  ./uav bc-eval-plot evaluations/bc/run_TIMESTAMP
   ./uav ml-test
   ./uav px4-stream-offline-check
   ./uav px4-sitl-doctor
   ./uav px4-sitl-stream-check
   UAV_OFFLINE_TIMEOUT_SECONDS=150 ./uav px4-sitl-flight-check
   UAV_OFFLINE_TIMEOUT_SECONDS=180 ./uav isaac-runtime-flight-check
-  ./uav expert-collect --episodes 100 --dataset bc_expert_cube
+  ./uav expert-collect --scene v3 --episodes 100 --dataset cylinder_v3_new
   ./uav expert-runtime-smoke --episodes 2
   ./uav expert-collect --episodes 100 --dataset bc_expert_cube --max-attempts 150 --resume
   ./uav expert-collect-publish --episodes 100 --max-attempts 150 --dataset cylinder_v3 --nas-root /home/noel_614420090/NAS
   ./uav expert-scene-preview --seed 103001
   ./uav expert-validate --episodes 100
-  ./uav artifact-publish artifacts/evaluations/bc_flight/run_TIMESTAMP --nas-root "$UAV_NAS_ROOT" --category evaluations/bc_flight --delete-local
+  ./uav artifact-publish evaluations/bc/run_TIMESTAMP --nas-root "$UAV_NAS_ROOT" --category evaluations/bc --delete-local
   ./uav profile current expert-collect --episodes 10
   ./uav shell
 EOF
@@ -770,13 +772,24 @@ internal_expert_wait_runtime() {
 internal_expert_prepare_scene() {
     local episode_id="$1"
     local random_seed="$2"
+    local scene_version="${3:-v4}"
+    local scene_profile_path="${4:-}"
+    local evidence_path="${5:-}"
     clean_bootstrap required
     require_px4_msgs
+    local -a scene_arguments=()
+    if [[ -n "$scene_profile_path" ]]; then
+        scene_arguments+=(-p "scene_profile_path:=$scene_profile_path")
+    fi
+    if [[ -n "$evidence_path" ]]; then
+        scene_arguments+=(-p "evidence_path:=$evidence_path")
+    fi
     ros2 run uav_data_recorder episode_scene_client --ros-args \
         -p episode_id:="$episode_id" \
         -p random_seed:="$random_seed" \
         -p scene_mode:=normal \
-        -p timeout_s:=20.0
+        -p scene_version:="$scene_version" \
+        -p timeout_s:=20.0 "${scene_arguments[@]}"
 }
 
 internal_expert_run_episode() {
@@ -963,7 +976,7 @@ stop_managed_process_group() {
 
 expert_scene_preview_usage() {
     cat <<'EOF'
-Usage: ./uav expert-scene-preview --seed SEED
+Usage: ./uav expert-scene-preview --seed SEED [--scene v3|v4]
 
 Start the managed expert Isaac/PX4/XRCE runtime, apply one formal episode
 scene, and keep WebRTC running until interrupted. No flight, recorder, or
@@ -971,12 +984,14 @@ dataset output is started.
 
 Options:
   --seed SEED  Nonnegative deterministic episode scene seed (required)
+  --scene      Scene version (default: v4)
   -h, --help   Show this help
 EOF
 }
 
 command_expert_scene_preview() {
     local random_seed=""
+    local scene_version="v4"
     local episode_id="episode_000001"
     while (($# > 0)); do
         case "$1" in
@@ -988,6 +1003,11 @@ command_expert_scene_preview() {
             --seed=*)
                 random_seed="${1#--seed=}"
                 shift
+                ;;
+            --scene)
+                (($# >= 2)) || die "--scene requires a value"
+                scene_version="$2"
+                shift 2
                 ;;
             -h|--help)
                 expert_scene_preview_usage
@@ -1003,6 +1023,7 @@ command_expert_scene_preview() {
         die "expert-scene-preview requires --seed with a nonnegative integer"
         return 64
     }
+    [[ "$scene_version" == "v3" || "$scene_version" == "v4" ]] || die "--scene must be v3 or v4"
     [[ -x "$ISAAC_SIM_RELEASE/isaac-sim.streaming.sh" ]] || die \
         "Isaac streaming launcher missing: $ISAAC_SIM_RELEASE"
     command -v MicroXRCEAgent >/dev/null || die \
@@ -1071,7 +1092,7 @@ PY
     runtime_status=$?
     if ((runtime_status == 0)); then
         clean_environment_command expert-scene-prepare \
-            "$episode_id" "$random_seed"
+            "$episode_id" "$random_seed" "$scene_version"
         scene_status=$?
     fi
     set -e
@@ -1272,26 +1293,28 @@ command_verify() {
 
 expert_collect_publish_usage() {
     cat <<'EOF'
-用法：./uav expert-collect-publish --episodes <N> --dataset <name> [--max-attempts <N>] [--nas-root <path>]
+用法：./uav expert-collect-publish --episodes <N> --dataset <name> [--scene v3|v4] [--max-attempts <N>] [--nas-root <path>]
 
 依序收集、驗證並以 SHA-256 驗證後上傳 dataset；僅在上傳完整成功後
-刪除 artifacts/datasets/<name> 的本機資料。dataset 必須是簡短名稱，
+刪除 datasets/<name> 的本機資料。dataset 必須是簡短名稱，
 例如 cylinder_v3。NAS 路徑優先使用 --nas-root，否則使用 UAV_NAS_ROOT。
 EOF
 }
 
 command_expert_collect_publish() {
     local episodes="" max_attempts="" dataset=""
+    local scene_version="v4"
     local nas_root="${UAV_NAS_ROOT:-}"
     while (($#)); do
         case "$1" in
-            --episodes|--max-attempts|--dataset|--nas-root)
+            --episodes|--max-attempts|--dataset|--nas-root|--scene)
                 (($# >= 2)) || die "missing value for $1"
                 case "$1" in
                     --episodes) episodes="$2" ;;
                     --max-attempts) max_attempts="$2" ;;
                     --dataset) dataset="$2" ;;
                     --nas-root) nas_root="$2" ;;
+                    --scene) scene_version="$2" ;;
                 esac
                 shift 2
                 ;;
@@ -1306,6 +1329,7 @@ command_expert_collect_publish() {
         esac
     done
     [[ "$episodes" =~ ^[1-9][0-9]*$ ]] || die "--episodes must be a positive integer"
+    [[ "$scene_version" == "v3" || "$scene_version" == "v4" ]] || die "--scene must be v3 or v4"
     [[ -z "$max_attempts" || "$max_attempts" =~ ^[1-9][0-9]*$ ]] || \
         die "--max-attempts must be a positive integer"
     [[ "$dataset" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || \
@@ -1313,8 +1337,8 @@ command_expert_collect_publish() {
     [[ -n "$nas_root" && -d "$nas_root" ]] || \
         die "--nas-root must be an existing mounted directory"
 
-    local dataset_root="$REPO_ROOT/artifacts/datasets/$dataset"
-    local -a collect_arguments=(--episodes "$episodes" --dataset "$dataset")
+    local dataset_root="$REPO_ROOT/datasets/$dataset"
+    local -a collect_arguments=(--episodes "$episodes" --dataset "$dataset" --scene "$scene_version")
     if [[ -n "$max_attempts" ]]; then
         collect_arguments+=(--max-attempts "$max_attempts")
     fi
@@ -1486,7 +1510,12 @@ main() {
             shift
             python3 -m uav_ml.tools.bc_baseline "$@"
             ;;
-        bc-eval)
+        resnet-train)
+            require_repository
+            shift
+            python3 -m uav_ml.tools.bc_baseline "$@" --encoder-type resnet18_trainable
+            ;;
+        bc-eval|eval)
             require_repository
             shift
             python3 -m uav_ml.tools.bc_flight_evaluation "$@"

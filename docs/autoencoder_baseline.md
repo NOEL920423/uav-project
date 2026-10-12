@@ -44,6 +44,42 @@ pretraining 和視覺診斷。
 四個 stride-2 convolutions 將影像縮小至 128x5x8。Linear layer 產生 64D latent；對稱的
 linear/transposed-convolution decoder 負責重建影像。模型共有 891,811 個可訓練參數。
 
+## 可訓練的 ResNet18 encoder
+
+使用 `--encoder-backbone resnet18` 將 AE encoder 換成 ResNet18，預設輸出仍為 64 維。
+ResNet18 從隨機權重開始，以 reconstruction MSE 與 `Linear(512,64)` 投影層、既有 decoder
+共同訓練；不下載 ImageNet 權重。輸入維持完整 128x72、CHW float32 `[0,1]`，不套用
+ImageNet normalization。需要在訓練和推論的 Python environment 安裝相容的 torchvision。
+這與 `bc-train --encoder-type resnet18` 的 frozen ImageNet 512D 模式不同。
+
+v3、v4 可各自沿用既有 episode split 訓練。例如：
+
+```bash
+./uav ae-train --dataset cylinder_v3 --image-source top \
+  --encoder-backbone resnet18 --latent-dimension 64 --epochs 100 --no-tensorboard
+
+./uav ae-train --dataset cylinder_v4 --image-source top \
+  --encoder-backbone resnet18 --latent-dimension 64 --epochs 100 --no-tensorboard
+```
+
+未指定 `--output-dir` 時，新模式寫入
+`experiments/autoencoder/<dataset>/<source>/resnet18/run_<timestamp>`，並更新同一個
+`resnet18` 目錄的 `latest.json`。原本 CNN AE 的 output path 和 latest index 維持不變。
+訓練完成後，BC 使用既有 `--encoder` 明確指定該 run 的 `best.pt`：
+
+```bash
+./uav bc-train --dataset cylinder_v3 --image-source top \
+  --encoder experiments/autoencoder/cylinder_v3/top/resnet18/run_<timestamp>/best.pt \
+  --epochs 100 --no-tensorboard
+```
+
+BC 會凍結訓練好的 encoder 和 BatchNorm statistics，使用 `latent64 + state8` 的 72 維
+observation；closed-loop evaluator 會從 BC checkpoint 載入相符的 ResNet18 AE。
+請保留 AE checkpoint 的原始路徑。BC 未指定 `--encoder` 時仍選取原本 CNN AE 的 latest。
+單影像與既有 `--image-sources` 多影像流程皆可使用新 backbone；多影像仍融合為一個
+64D latent。`--initialize-from` 和 `--initialize-source` 僅接受相符 backbone 的 checkpoint。
+資料集尚未提供跨 v3/v4 合併訓練介面。
+
 ## 多影像訓練
 
 正式資料集可在同一個 run 指定任意已登記來源組合；來源清單的順序會寫入
@@ -90,12 +126,15 @@ Stage B 請使用影像來源相符的 encoder：
 ```
 
 TOP 是預設 image source。AE output 會自動寫入
-`artifacts/experiments/autoencoder/<dataset>/top/run_<timestamp>`；完成的 provenance
+`experiments/autoencoder/<dataset>/top/run_<timestamp>`；完成的 provenance
 index 可讓 BC 不透過 glob 就選到相符 encoder。仍可使用進階選項 `--image-source`、
 `--output-dir` 與 BC 的 `--encoder` 覆寫預設值。
 
 每個訓練 CLI 預設會啟動受管理的 localhost TensorBoard server，並在成功訓練後持續執行，
-直到按下 Ctrl+C。測試或 batch jobs 可使用 `--no-tensorboard`。每次 run 只會產生
+直到按下 Ctrl+C。測試或 batch jobs 可使用 `--no-tensorboard`。
+`summary.json` 和 `training_config.json` 都記錄總訓練時長 `training_duration_s`（秒），
+包含資料準備、訓練、評估和重建圖產生；不包含完成後等待 TensorBoard/Ctrl+C 的時間。
+完成訊息也會顯示總秒數。每次 run 只會產生
 `reconstruction_loss_curves.png` 作為 loss plot。Legacy summary artifact key `loss_curve`
 也指向同一個檔案。每次 run 會寫入以下 TensorBoard scalars：
 `ae/train_reconstruction_loss` 和 `ae/validation_reconstruction_loss`。固定的 validation

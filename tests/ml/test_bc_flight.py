@@ -438,6 +438,43 @@ class TimingReportTests(unittest.TestCase):
 
 
 class BcFlightDiagnosticsOptionTests(unittest.TestCase):
+    def test_runtime_prepares_selected_scene_and_rejects_wrong_ack_before_flight(self):
+        from unittest.mock import patch
+        from isaac.runtime.environment import generate_episode_scene, load_scene_profile
+        from uav_ml.tools.bc_flight_evaluation import ManagedFlightRuntime
+
+        for version, wrong_ack in (("v3", False), ("v4", False), ("v3", True)):
+            with self.subTest(version=version, wrong_ack=wrong_ack), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                runtime = ManagedFlightRuntime(
+                    root, root, False, "cpu", root / "model.pt", "top_rgb", 180,
+                    scene_profile=load_scene_profile(version),
+                )
+                result_path = root / "episode/result.json"
+
+                def run(arguments, log_path):
+                    if arguments[0] == "expert-scene-prepare":
+                        self.assertEqual(arguments[3], version)
+                        snapshot = json.loads(Path(arguments[4]).read_text())
+                        self.assertEqual(snapshot["scene_version"], version)
+                        actual_version = "v4" if wrong_ack else version
+                        scene = generate_episode_scene(arguments[1], int(arguments[2]), 0.0, 0.0, scene_version=actual_version)
+                        Path(arguments[5]).write_text(json.dumps({"scene_configuration": scene}))
+                    if arguments[0] == "bc-flight-run":
+                        result_path.write_text(json.dumps({"terminal_reason": "goal_reached"}))
+                    return 0
+
+                with patch.object(runtime, "_uav", side_effect=run) as command:
+                    if wrong_ack:
+                        with self.assertRaisesRegex(RuntimeError, "different evaluation scene"):
+                            runtime.run_episode(1, 103001, result_path, result_path.parent)
+                        self.assertFalse(any(call.args[0][0] == "bc-flight-run" for call in command.call_args_list))
+                    else:
+                        result = runtime.run_episode(1, 103001, result_path, result_path.parent)
+                        self.assertEqual(result["scene_version"], version)
+                        self.assertEqual(json.loads(result_path.read_text())["scene_configuration"], result["scene_configuration"])
+                        self.assertEqual(json.loads((result_path.parent / "scene.json").read_text()), result["scene_configuration"])
+
     def test_diagnosis_option_controls_reports_without_disabling_video(self):
         from unittest.mock import Mock, patch
         from uav_ml.tools import bc_flight_evaluation as evaluation
@@ -472,11 +509,15 @@ class BcFlightDiagnosticsOptionTests(unittest.TestCase):
                     patch("uav_ml.tools.bc_flight_plotting.create_training_loss_artifacts", return_value={}),
                     patch("scripts.diagnostics.summarize_bc_startup.write_run_reader_summary") as report,
                 ):
-                    arguments = ["--checkpoint", str(checkpoint), "--output", str(output)]
+                    scene_version = "v4" if diagnosis else "v3"
+                    arguments = ["--checkpoint", str(checkpoint), "--output", str(output), "--scene", scene_version]
                     if diagnosis:
                         arguments.append("--diagnosis")
                     self.assertEqual(evaluation.main(arguments), 0)
                 self.assertEqual(factory.call_args.kwargs["diagnostics_enabled"], diagnosis)
+                self.assertEqual(factory.call_args.kwargs["scene_profile"]["scene_version"], scene_version)
+                self.assertEqual(json.loads((output / "scene_parameters.json").read_text())["scene_version"], scene_version)
+                self.assertEqual(json.loads((output / "summary.json").read_text())["scene_version"], scene_version)
                 self.assertEqual(report.call_count, int(diagnosis))
                 video.assert_called_once_with(output / "episode_000001/result.json")
                 runtime.cleanup.assert_called_once()
@@ -563,7 +604,7 @@ class BcFlightDiagnosticsOptionTests(unittest.TestCase):
 
 class BcCheckpointSelectionTests(unittest.TestCase):
     def _pointer(self, root, relative, updated, *, status="completed"):
-        directory = root / "artifacts/experiments/bc" / relative
+        directory = root / "experiments/bc" / relative
         run = directory / "run"
         run.mkdir(parents=True)
         checkpoint = run / "best.pt"
@@ -611,6 +652,36 @@ class BcCheckpointSelectionTests(unittest.TestCase):
             self.assertEqual(resolve_checkpoint(root, chosen), chosen)
             self.assertEqual(resolve_checkpoint(root, Path("chosen/top/run/best.pt")), chosen)
 
+    def test_stored_legacy_pointer_uses_migrated_copy_when_original_still_exists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint, pointer = self._pointer(root, "dataset/top", "2026-10-10T08:00:00Z")
+            legacy = root / "artifacts/experiments/bc/dataset/top/run/best.pt"
+            legacy.parent.mkdir(parents=True)
+            legacy.touch()
+            payload = json.loads(pointer.read_text())
+            payload["best_checkpoint"] = str(legacy)
+            pointer.write_text(json.dumps(payload))
+            self.assertEqual(resolve_checkpoint(root), checkpoint)
+            self.assertTrue(legacy.is_file())
+
+    def test_stored_encoder_path_preserves_baseline_and_external_locations(self):
+        from uav_ml.inference.bc_flight import _stored_experiment_path
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = root / "artifacts/experiments/autoencoder/dataset/top/best.pt"
+            legacy.parent.mkdir(parents=True)
+            legacy.touch()
+            self.assertEqual(
+                _stored_experiment_path(legacy, root),
+                root / "experiments/autoencoder/dataset/top/best.pt",
+            )
+            baseline = root / "artifacts/experiments/bc_baseline/run/best.pt"
+            external = root / "custom/best.pt"
+            for path in (baseline, external):
+                self.assertEqual(_stored_experiment_path(path, root), path)
+
     def test_no_completed_checkpoint_has_a_clear_error(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(FileNotFoundError, "No completed BC checkpoint"):
@@ -620,15 +691,16 @@ class BcCheckpointSelectionTests(unittest.TestCase):
         from uav_ml.inference import bc_flight as flight
 
         cases = (
-            ("RgbAutoencoderV0", ("top",)),
-            ("ResNet18Encoder", ("fpv_rgb",)),
-            ("MultiImageAutoencoderV0", ("fpv_rgb", "fpv_depth")),
+            ("RgbAutoencoderV0", ("top",), 64),
+            ("ResNet18AutoencoderV0", ("top",), 64),
+            ("ResNet18Encoder", ("fpv_rgb",), 512),
+            ("ResNet18Encoder", ("top",), 64),
+            ("MultiImageAutoencoderV0", ("fpv_rgb", "fpv_depth"), 64),
         )
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "checkpoint.pt"
-            for architecture, sources in cases:
+            for architecture, sources, dimension in cases:
                 with self.subTest(architecture=architecture):
-                    dimension = 512 if architecture == "ResNet18Encoder" else 64
                     preprocessing = {source: flight.IMAGE_PREPROCESSING[source] for source in sources}
                     if len(sources) == 1:
                         preprocessing = preprocessing[sources[0]]
@@ -657,7 +729,7 @@ class BcCheckpointSelectionTests(unittest.TestCase):
 class BcFlightContractTests(unittest.TestCase):
     def _top_checkpoint(self) -> Path:
         pointer = REPOSITORY_ROOT / (
-            "artifacts/experiments/bc/bc_expert_cylinder_v1/top/latest.json"
+            "experiments/bc/bc_expert_cylinder_v1/top/latest.json"
         )
         payload = json.loads(pointer.read_text(encoding="utf-8"))
         return Path(payload["best_checkpoint"])
@@ -667,7 +739,7 @@ class BcFlightContractTests(unittest.TestCase):
         self.assertEqual(canonical_image_source("top_rgb"), "top_rgb")
 
     def test_top_checkpoint_rejects_requested_fpv(self) -> None:
-        with self.assertRaisesRegex(ValueError, "image source mismatch"):
+        with self.assertRaisesRegex(ValueError, "primary image source does not match"):
             load_checkpoint_payload(
                 self._top_checkpoint(), "fpv_rgb", torch.device("cpu")
             )
@@ -675,7 +747,7 @@ class BcFlightContractTests(unittest.TestCase):
     def test_checkpoint_accepts_path_relative_to_bc_experiments(self) -> None:
         checkpoint = self._top_checkpoint().resolve()
         short_path = checkpoint.relative_to(
-            REPOSITORY_ROOT / "artifacts/experiments/bc"
+            REPOSITORY_ROOT / "experiments/bc"
         )
         self.assertEqual(
             resolve_checkpoint(REPOSITORY_ROOT, short_path), checkpoint
@@ -803,36 +875,56 @@ class PolicyInputVideoTests(unittest.TestCase):
                 _annotate_frame(primary, output, frame, image_source="fpv_rgb", top_source=top)
             labels = [call.args[2] for call in text.call_args_list]
             self.assertIn("MODEL INPUT / FPV RGB", labels)
-            self.assertIn("+0.50 m/s", labels)
-            self.assertIn("+0.20 m/s", labels)
-            self.assertIn("-0.10 rad/s", labels)
+            self.assertIn("[forward m/s, right m/s, yaw rad/s]", labels)
+            self.assertIn("step7: [0.50, 0.20, -0.10]", labels)
             with Image.open(output) as image:
                 self.assertEqual(image.size, (2560, 1440))
                 self.assertEqual(image.getpixel((788, 784)), (190, 40, 30))
-                self.assertEqual(image.getpixel((2052, 568)), (20, 150, 60))
+                self.assertEqual(image.getpixel((2052, 476)), (20, 150, 60))
+
+    def test_action_history_keeps_latest_ten_original_steps_and_highlights_current(self):
+        from unittest.mock import patch
+        from PIL import ImageDraw
+        from uav_ml.tools.bc_flight_video import PolicyInputFrame, _annotate_frame
+
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory) / "input.png", Path(directory) / "dashboard.png"
+            source.write_bytes(self._png((80, 80, 80)))
+            history = [PolicyInputFrame(step, step, source.name, (0.5, 0.25, -0.1))
+                       for step in range(2, 26, 2)]
+            with patch.object(ImageDraw.ImageDraw, "text", autospec=True,
+                              side_effect=ImageDraw.ImageDraw.text) as text:
+                _annotate_frame(source, output, history[-1], action_history=history)
+            rows = [call for call in text.call_args_list if call.args[2].startswith("step")]
+            self.assertEqual([call.args[2] for call in rows],
+                             [f"step{step}: [0.50, 0.20, -0.10]" for step in range(6, 26, 2)])
+            self.assertTrue(all(call.kwargs["fill"] == "#9bb1c9" for call in rows[:-1]))
+            self.assertEqual(rows[-1].kwargs["fill"], "#36d5f4")
 
     def test_pointer_handles_backward_left_and_yaw_only(self):
-        from uav_ml.tools.bc_flight_video import PolicyInputFrame, _annotate_frame
+        from uav_ml.tools.bc_flight_video import POINTER_STYLES, PolicyInputFrame, _annotate_frame
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, output = root / "input.png", root / "dashboard.png"
             source.write_bytes(self._png((80, 80, 80)))
-            for action in ((0.5, 0.25, 0.0), (-0.5, -0.25, 0.0), (0.0, 0.0, 0.5)):
-                with self.subTest(action=action):
-                    frame = PolicyInputFrame(1, 0, source.name, action)
-                    _annotate_frame(source, output, frame, image_source="fpv_rgb")
-                    with Image.open(output) as image:
-                        pixels = np.asarray(image)
-                    y, x = np.where(np.all(pixels == (255, 220, 0), axis=2))
-                    if action[0] == 0.0:
-                        self.assertEqual(len(x), 0)
-                    elif action[0] > 0.0:
-                        self.assertGreater(x.mean(), 2360)
-                        self.assertLess(y.mean(), 1238)
-                    else:
-                        self.assertLess(x.mean(), 2360)
-                        self.assertGreater(y.mean(), 1238)
+            for style in POINTER_STYLES:
+                for action in ((0.5, 0.25, 0.0), (-0.5, -0.25, 0.0), (0.0, 0.0, 0.5)):
+                    with self.subTest(style=style, action=action):
+                        frame = PolicyInputFrame(1, 0, source.name, action)
+                        _annotate_frame(source, output, frame, image_source="fpv_rgb",
+                                        pointer_style=style)
+                        with Image.open(output) as image:
+                            pixels = np.asarray(image)
+                        y, x = np.where(np.all(pixels == (255, 220, 0), axis=2))
+                        if action[0] == 0.0:
+                            self.assertEqual(len(x), 0)
+                        elif action[0] > 0.0:
+                            self.assertGreater(x.mean(), 2360)
+                            self.assertLess(y.mean(), 1170)
+                        else:
+                            self.assertLess(x.mean(), 2360)
+                            self.assertGreater(y.mean(), 1170)
 
     def test_legacy_frames_reuse_top_or_show_missing_observer(self):
         from uav_ml.tools.bc_flight_video import _load_frames, _annotate_frame
@@ -896,7 +988,7 @@ class PolicyInputVideoTests(unittest.TestCase):
             source.write_bytes(self._png((80, 80, 80)))
             _annotate_frame(source, output, PolicyInputFrame(1, 0, source.name, (0.5, 0.25, 0)))
             with Image.open(output) as image:
-                pointer = np.asarray(image.crop((2230, 1108, 2490, 1370)))
+                pointer = np.asarray(image.crop((2230, 1040, 2490, 1302)))
             yellow_edges = ((pointer[..., 0] > 150) & (pointer[..., 0] < 254)
                             & (pointer[..., 1] > 100) & (pointer[..., 2] < 45))
             self.assertGreater(np.count_nonzero(yellow_edges), 0)
@@ -904,7 +996,10 @@ class PolicyInputVideoTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
                          "ffmpeg and ffprobe are required")
     def test_real_mp4_encoding_has_dashboard_resolution_and_top_metadata(self):
-        from uav_ml.tools.bc_flight_video import capture_policy_input_frame, render_policy_input_video
+        from unittest.mock import patch
+        from uav_ml.tools.bc_flight_video import (
+            _annotate_frame, capture_policy_input_frame, render_policy_input_video,
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -916,7 +1011,10 @@ class PolicyInputVideoTests(unittest.TestCase):
                     top_image_bytes=self._png((20, 150, 60), (640, 640)),
                     top_time_delta_ns=0,
                 )
-            metadata = render_policy_input_video(root, root / "episode_000001.mp4")
+            with patch("uav_ml.tools.bc_flight_video._annotate_frame", wraps=_annotate_frame) as render:
+                metadata = render_policy_input_video(root, root / "episode_000001.mp4")
+            self.assertEqual([[frame.inference_count for frame in call.kwargs["action_history"]]
+                              for call in render.call_args_list], [[1], [1, 2]])
             probe = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_streams", "-of", "json",
                  str(root / "episode_000001.mp4")],
@@ -930,6 +1028,8 @@ class PolicyInputVideoTests(unittest.TestCase):
             self.assertEqual(metadata["action_units"], ["m/s", "m/s", "rad/s"])
             self.assertEqual(metadata["h264_crf"], 16)
             self.assertEqual(metadata["hud_supersampling"], 2)
+            self.assertEqual(metadata["pointer_style"], "triangle")
+            self.assertEqual(metadata["action_history_length"], 10)
 
 
 if __name__ == "__main__":

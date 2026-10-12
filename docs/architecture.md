@@ -17,7 +17,7 @@ expert-collect -> ae-train -> bc-train -> bc-eval
   -> ./uav expert-run-episode
   -> px4_sitl_flight.launch.py
   -> expert_dataset_recorder
-  -> artifacts/datasets/<dataset>
+  -> datasets/<dataset>
 
 ./uav ae-train
   -> uav_ml.train_autoencoder

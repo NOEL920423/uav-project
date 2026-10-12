@@ -1,21 +1,28 @@
-# Future generated-artifact layout
+# Generated data locations
 
-This directory only records a possible future organization for generated,
-gitignored data:
+Current collection, training, and evaluation outputs live at the repository root:
 
 ```text
-artifacts/
-├── datasets/
-├── checkpoints/
-├── runs/
-├── logs/
-└── media/
+uav-project/
+├── datasets/                 # Expert datasets, images, and collection metadata
+├── experiments/
+│   ├── autoencoder/          # AE checkpoints and training results
+│   └── bc/                   # BC checkpoints and training results
+├── evaluations/
+│   └── bc/                   # Closed-loop results, videos, plots, and replay
+└── artifacts/
+    ├── datasets/             # Retained copies of the original datasets
+    ├── experiments/
+    │   ├── autoencoder/      # Retained original AE results
+    │   ├── bc/               # Retained original BC results
+    │   └── bc_baseline/      # Legacy results kept in place
+    └── ...                   # Other existing diagnostics and regressions
 ```
 
-Phase 9.5 does not move existing datasets, checkpoints, training or
-autoencoder runs, runtime logs, videos, rosbags, pose logs, or model outputs.
-Their current paths and all ML defaults remain unchanged.
+All generated data directories are ignored by Git. Only this README is tracked
+under `artifacts/`. Short dataset names resolve under `datasets/`; new AE and BC
+runs use `experiments/`, and BC evaluations use `evaluations/bc/`.
 
-The formal generated expert dataset is
-`artifacts/datasets/bc_expert_highrise_v1/`. It remains excluded by the
-repository's `/artifacts/*` ignore rule; only this README is tracked.
+Original dataset and experiment copies remain available. The latest 15 results
+from `artifacts/evaluations/bc_flight/` were moved to `evaluations/bc/` without
+renaming, and older evaluation result folders were deleted.

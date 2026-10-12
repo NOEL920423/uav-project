@@ -337,6 +337,9 @@ def create_grouped_trajectory_plots(run_dir: Path, records: list[dict]) -> list[
                 zorder=3,
             )
             axis.scatter(
+                east, north, color=color, s=MARKER_SIZE, zorder=4,
+            )
+            axis.scatter(
                 [east[-1]], [north[-1]], marker="x", s=60,
                 linewidths=1.8, color=color, zorder=5,
             )

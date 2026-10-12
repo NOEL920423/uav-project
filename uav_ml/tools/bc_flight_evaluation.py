@@ -19,6 +19,11 @@ from zoneinfo import ZoneInfo
 
 import torch
 
+from isaac.runtime.environment import (
+    DEFAULT_SCENE_VERSION, SCENE_VERSIONS, load_scene_profile,
+    scene_profile_record,
+)
+
 from uav_ml.inference.bc_flight import (
     BcFlightPolicy,
     canonical_image_source,
@@ -138,6 +143,7 @@ class ManagedFlightRuntime:
         verbose: bool = False,
         diagnostics_enabled: bool = False,
         image_sources: tuple[str, ...] | None = None,
+        scene_profile: dict | None = None,
     ) -> None:
         self.repository_root = repository_root
         self.isaac_release = isaac_release
@@ -149,6 +155,8 @@ class ManagedFlightRuntime:
         self.timeout_s = timeout_s
         self.verbose = verbose
         self.diagnostics_enabled = diagnostics_enabled
+        self.scene_profile = scene_profile or load_scene_profile()
+        self.scene_record = scene_profile_record(self.scene_profile)
         self._agent: subprocess.Popen | None = None
         self._isaac: subprocess.Popen | None = None
         self._streams = []
@@ -387,11 +395,21 @@ class ManagedFlightRuntime:
         if self._uav(["expert-runtime-wait"], runtime_dir / "ready.log") != 0:
             raise RuntimeError("Isaac/PX4 runtime did not become ready")
         episode_id = f"episode_{episode:06d}"
+        profile_path = runtime_dir / "scene_parameters.json"
+        profile_path.write_text(json.dumps(self.scene_record, indent=2) + "\n", encoding="utf-8")
+        scene_status_path = runtime_dir / "scene_status.json"
         if self._uav(
-            ["expert-scene-prepare", episode_id, str(seed)],
+            ["expert-scene-prepare", episode_id, str(seed),
+             self.scene_record["scene_version"], str(profile_path), str(scene_status_path)],
             runtime_dir / "scene.log",
         ) != 0:
             raise RuntimeError("seeded Isaac scene preparation failed")
+        scene = json.loads(scene_status_path.read_text(encoding="utf-8"))["scene_configuration"]
+        if any(scene.get(key) != self.scene_record[key] for key in (
+            "scene_version", "scene_profile_sha256",
+        )) or scene.get("episode_id") != episode_id or scene.get("random_seed") != seed:
+            raise RuntimeError("Isaac acknowledged a different evaluation scene")
+        (runtime_dir / "scene.json").write_text(json.dumps(scene, indent=2) + "\n", encoding="utf-8")
         arguments = [
             "bc-flight-run",
             str(result_path),
@@ -408,7 +426,14 @@ class ManagedFlightRuntime:
             raise RuntimeError(
                 f"BC flight result is missing after launch status {status}"
             )
-        return json.loads(result_path.read_text(encoding="utf-8"))
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        result.update({
+            "scene_version": self.scene_record["scene_version"],
+            "scene_profile_sha256": self.scene_record["scene_profile_sha256"],
+            "scene_configuration": scene,
+        })
+        result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        return result
 
     def replay_trace(
         self, trace_path: Path, playback_speed: float, runtime_dir: Path,
@@ -418,8 +443,12 @@ class ManagedFlightRuntime:
             raise ValueError("replay trace has an unsupported schema")
         seed = int(trace["seed"])
         episode_id = f"episode_{int(trace.get('episode', 0)):06d}"
+        profile_path = runtime_dir / "scene_parameters.json"
+        profile_path.write_text(json.dumps(self.scene_record, indent=2) + "\n", encoding="utf-8")
         if self._uav(
-            ["expert-scene-prepare", episode_id, str(seed)],
+            ["expert-scene-prepare", episode_id, str(seed),
+             self.scene_record["scene_version"], str(profile_path),
+             str(runtime_dir / "scene_status.json")],
             runtime_dir / "scene.log",
         ) != 0:
             raise RuntimeError("trace replay scene preparation failed")
@@ -535,6 +564,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument(
+        "--scene", choices=SCENE_VERSIONS, default=DEFAULT_SCENE_VERSION,
+        help="evaluation scene profile (default: v4); independent of training dataset",
+    )
+    parser.add_argument(
         "--replay-trace", type=Path,
         help="Visually replay a recorded trajectory trace; does not run BC.",
     )
@@ -643,6 +676,7 @@ def _finalize_evaluation(
     diagnostics_enabled: bool = False,
     total_test_duration_s: float | None = None,
     encoder_architecture: str | None = None,
+    scene_profile: dict | None = None,
 ) -> None:
     """Persist available evidence even if a later runtime startup fails."""
     records = _saved_result_records(output_root, results)
@@ -665,6 +699,9 @@ def _finalize_evaluation(
         "episodes": records,
         "plots": plots,
     }
+    if scene_profile is not None:
+        summary.update(scene_profile_record(scene_profile))
+        summary["scene_parameters_file"] = "scene_parameters.json"
     if total_test_duration_s is not None:
         summary["total_test_duration_s"] = total_test_duration_s
     if encoder_architecture is not None:
@@ -743,6 +780,10 @@ def main(argv: list[str] | None = None) -> int:
         else _evaluation_run_directory(repository_root, encoder_architecture)
     )
     output_root.mkdir(parents=True, exist_ok=False)
+    profile = load_scene_profile(args.scene)
+    (output_root / "scene_parameters.json").write_text(
+        json.dumps(scene_profile_record(profile), indent=2) + "\n", encoding="utf-8",
+    )
     global _LAST_ARTIFACT_PATH
     _LAST_ARTIFACT_PATH = output_root
     isaac_release = Path(os.environ.get(
@@ -761,6 +802,7 @@ def main(argv: list[str] | None = None) -> int:
                 checkpoint, image_source, args.timeout, args.verbose,
                 image_sources=tuple(identity.image_sources),
                 diagnostics_enabled=args.diagnosis,
+                scene_profile=profile,
             )
             runtime.preflight()
             print(MSG_STARTING, flush=True)
@@ -787,6 +829,7 @@ def main(argv: list[str] | None = None) -> int:
             diagnostics_enabled=args.diagnosis,
             total_test_duration_s=time.monotonic() - test_started_s,
             encoder_architecture=encoder_architecture,
+            scene_profile=profile,
         )
     if args.nas_root is not None:
         from uav_ml.tools.artifact_publish import publish_artifact_tree
@@ -815,7 +858,7 @@ def _replay_trace(args: argparse.Namespace, repository_root: Path) -> int:
     output_root = (
         args.output.expanduser().resolve()
         if args.output
-        else repository_root / "evaluations/bc_flight" / f"replay_{_stamp()}"
+        else repository_root / "evaluations/bc" / f"replay_{_stamp()}"
     )
     output_root.mkdir(parents=True, exist_ok=False)
     global _LAST_ARTIFACT_PATH
@@ -828,6 +871,7 @@ def _replay_trace(args: argparse.Namespace, repository_root: Path) -> int:
         repository_root, isaac_release, bool(args.visible), args.device,
         trace_path, str(trace.get("image_source", "top_rgb")), args.timeout,
         args.verbose, args.diagnosis,
+        scene_profile=load_scene_profile(args.scene),
     )
     print(MSG_PREFLIGHT, flush=True)
     runtime.preflight()
@@ -845,6 +889,7 @@ def _replay_trace(args: argparse.Namespace, repository_root: Path) -> int:
     digest = hashlib.sha256(trace_path.read_bytes()).hexdigest()
     result = {
         "schema": "uav_bc_flight_trace_replay/v1",
+        **scene_profile_record(load_scene_profile(args.scene)),
         "trace_path": str(trace_path), "trace_sha256": digest,
         "episode": trace.get("episode"), "seed": trace.get("seed"),
         "sample_count": len(samples), "duration_s": samples[-1]["time_s"],

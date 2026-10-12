@@ -430,7 +430,7 @@
 <ns0:g id="panel3_node7" class="node">
 <ns0:title>artifacts</ns0:title>
 <ns0:path fill="#fff1f2" stroke="#fb7185" stroke-width="1.4" d="M1301,-224C1301,-224 1062,-224 1062,-224 1056,-224 1050,-218 1050,-212 1050,-212 1050,-192 1050,-192 1050,-186 1056,-180 1062,-180 1062,-180 1301,-180 1301,-180 1307,-180 1313,-186 1313,-192 1313,-192 1313,-212 1313,-212 1313,-218 1307,-224 1301,-224" />
-<ns0:text text-anchor="middle" x="1181.5" y="-205.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">artifacts/datasets/</ns0:text>
+<ns0:text text-anchor="middle" x="1181.5" y="-205.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">datasets/</ns0:text>
 <ns0:text text-anchor="middle" x="1181.5" y="-191.6" font-family="DejaVu Sans" font-size="13.00" fill="#0f172a">Episode data + validation metadata</ns0:text>
 </ns0:g>
 

@@ -52,7 +52,7 @@ BC_ACTION_LIMITS = {
     "v_right_mps": ACTION_LIMITS[1],
     "yaw_rate_radps": ACTION_LIMITS[2],
 }
-BC_EXPERIMENTS_ROOT = Path("artifacts/experiments/bc")
+BC_EXPERIMENTS_ROOT = Path("experiments/bc")
 DEFAULT_LATEST_POINTER = BC_EXPERIMENTS_ROOT / "latest.json"
 
 
@@ -65,6 +65,23 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _stored_experiment_path(
+    value: str | Path,
+    repository_root: Path = Path(__file__).resolve().parents[2],
+) -> Path:
+    """Relocate stored experiment references without rewriting model files."""
+    root = repository_root.resolve()
+    path = Path(value).expanduser()
+    path = (path if path.is_absolute() else root / path).resolve()
+    try:
+        relative = path.relative_to(root / "artifacts/experiments")
+    except ValueError:
+        return path
+    if relative.parts and relative.parts[0] == "bc_baseline":
+        return path
+    return root / "experiments" / relative
+
+
 def resolve_checkpoint(
     repository_root: Path,
     checkpoint: Path | None = None,
@@ -72,7 +89,7 @@ def resolve_checkpoint(
     """Resolve an explicit checkpoint or the most recently completed BC run.
 
     Relative checkpoints may be given either from the current directory or
-    from ``artifacts/experiments/bc`` for concise experiment selection.
+    from ``experiments/bc`` for concise experiment selection.
     """
     if checkpoint is not None:
         candidate = checkpoint.expanduser()
@@ -100,7 +117,9 @@ def resolve_checkpoint(
                 updated = datetime.fromisoformat(payload["updated_utc"].replace("Z", "+00:00"))
                 if updated.tzinfo is None:
                     raise ValueError("BC latest pointer timestamp has no timezone")
-                candidate = Path(payload["best_checkpoint"]).expanduser().resolve()
+                candidate = _stored_experiment_path(
+                    payload["best_checkpoint"], repository_root
+                )
                 if not candidate.is_file():
                     raise FileNotFoundError(f"BC checkpoint is missing: {candidate}")
                 summary_path = candidate.parent / "summary.json"
@@ -143,12 +162,17 @@ def load_checkpoint_payload(
     architecture = payload.get("encoder_architecture")
     dimensions = {
         "RgbAutoencoderV0": 64,
+        "ResNet18AutoencoderV0": 64,
         "MultiImageAutoencoderV0": 64,
         "ResNet18Encoder": 512,
     }
     if architecture not in dimensions:
         raise ValueError(f"checkpoint encoder_architecture mismatch: {architecture!r}")
     dimension = dimensions[architecture]
+    if architecture == "ResNet18Encoder":
+        dimension = payload.get("latent_dimension")
+        if dimension not in (64, 512):
+            raise ValueError("ResNet18 checkpoint latent_dimension must be 64 or 512")
     checkpoint_sources = tuple(
         canonical_image_source(source)
         for source in payload.get(
@@ -257,7 +281,7 @@ class BcFlightPolicy:
         encoder_path = (
             encoder_override.expanduser().resolve()
             if encoder_override is not None
-            else Path(payload["autoencoder_checkpoint"]).resolve()
+            else _stored_experiment_path(payload["autoencoder_checkpoint"])
         )
         if not encoder_path.is_file():
             raise FileNotFoundError(
