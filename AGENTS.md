@@ -1,140 +1,163 @@
 # AGENTS.md
 
-## 專案說明
-目標: 在虛擬環境蒐集專家資料集，用蒐集到的資料集訓練 autoencoder, PPO, BC，最後在 closed-loop 測試 20 次能夠 100% 飛行。
-此目標為長期研究目標，不代表每一個 Codex 任務都需要自行持續修改直到達成該結果。
-本專案為無人機自主導航研究專案，主要包含：
+## 1. Project Overview
 
-- NVIDIA Isaac Sim 模擬環境
-- Pegasus Simulator
+本專案為 UAV Autonomous Navigation Research Project，主要包含：
+
+- NVIDIA Isaac Sim / Pegasus Simulator
 - PX4 Autopilot / SITL
 - ROS 2
-- 專家軌跡與資料蒐集
-- Autoencoder
-- Behavior Cloning
-- Closed-loop evaluation
+- Expert Data Collection
+- Autoencoder / Behavior Cloning / PPO
+- Offline and Closed-loop Evaluation
 
-修改程式前，請先理解目前既有架構與資料流程，避免進行與任務無關的修改。
+長期研究目標是在標準化測試條件下，達成 20/20 successful closed-loop flights。
 
----
+此為 Research Target，不是每項 Codex 任務的完成標準。不得為達成目標而擅自調整測試條件、排除失敗結果或修改評估規則。
 
-## 效率原則
+## 2. Core Principles
 
-- 如果任務已明確指定相關檔案或模組，優先只讀取這些檔案及其直接依賴，不要無必要地掃描整個 repository。
-- 如果某項測試在本次修改後已經通過，且相關程式未再變更，不要重複執行相同測試。
+所有工作遵循以下優先順序：
 
-## 工作原則
+**Correctness & Safety → Minimal Scope → Reusability → Readability → Efficiency**
 
-1. 優先修改與目前任務直接相關的程式。
-2. 不要因為修正單一問題而重構大量無關程式。
-3. 如果現有功能可以沿用，優先沿用，而不是重新建立另一套功能。
-4. 修改前先確認問題原因，不要只根據猜測直接大幅改動。
-5. 除非任務明確要求，否則不要改變既有 CLI、資料格式、模型輸入輸出或其他既有介面。
-6. 程式碼、變數名稱、函式名稱與程式註解一律使用英文。
-7. 如果使用者已經指定問題範圍、檔案或 failure path，不要重新進行整個 repository 的廣泛分析。
-8. 如果使用者要求「只檢查」、「只診斷」或「不要修改」，不得修改任何檔案。
-9. 如果問題已經定位，優先針對該 failure path 做最小驗證，不要重新展開已排除的假說。
-10. 優先使用既有 logs、artifacts、diagnostics 與測試，不要在沒有必要時新增新的診斷系統。
+1. Understand before modifying：修改前先理解直接相關的架構、資料流程與介面。
+2. Minimal Scope：只處理本次任務相關的問題，不進行無關重構。
+3. Reuse Existing Code：能合理沿用現有功能時，避免建立重複實作。
+4. Readability：程式應易於研究者理解、修改及除錯。
+5. Evidence-based Decisions：根據程式、Logs、Tests 和 Artifacts 判斷問題，不依靠猜測修改。
+6. Preserve Existing Behavior：除非明確要求，不得改變既有 CLI、資料格式、模型契約或控制行為。
 
----
-## 昂貴操作原則
+如果使用者明確要求 Read-only Audit、Diagnosis 或 No Modification，不得修改任何檔案。
 
-- 不要因為修改少量程式就自動執行完整 Isaac Sim regression。
-- 如果一次或少量 targeted reproduction 已能回答問題，就停止繼續重現。
-- 除非使用者要求，不要自行增加 simulation episode 數量。
-- 在執行昂貴測試前，先確認較低成本的 static、syntax、unit 或 targeted test 是否已足夠。
+## 3. Efficient Repository Inspection
 
-## 測試原則
+- 優先閱讀與本次任務直接相關的檔案及其依賴。
+- 已知 Failure Path 時，先沿該路徑調查。
+- 不要無必要地掃描整個 Repository 或讀取所有 Python 檔案。
+- 只有在局部資訊不足以判斷問題時，才擴大搜尋範圍。
+- 優先使用既有 Logs、Artifacts、Diagnostics 和 Tests。
+- 如果已有可靠證據排除某個假說，不要在缺少新證據時反覆調查。
 
-修改完成後，優先執行與此次修改直接相關的測試。
+Token Efficiency 不得凌駕於 Correctness 之上。
 
-測試順序盡量由成本最低的方式開始，例如：
+## 4. Code Architecture & Maintainability
 
-1. Static inspection
-2. Syntax / import check
-3. Unit test
-4. Targeted test
-5. Smoke test
-6. Isaac Sim runtime test
-7. 完整實驗
+以清楚的 Module Responsibility 和 Data Flow 為優先，不單純追求最少檔案數量。
 
+- 小型且相關的功能，優先整合至現有模組。
+- 如果既有模組過大、職責不同，或新增功能會增加耦合，可以建立獨立模組。
+- 新增模組前，先評估是否能重用現有實作。
+- 避免 Unnecessary Abstraction、Duplicated Logic 和 Circular Dependencies。
+- 不要為小型功能過度新增 Wrapper、Adapter、Manager、Monitor、Fixture 或 State Machine。
+- ROS2 Node 和核心邏輯可合理分離，但不要為簡單邏輯建立額外 Node。
+- Diagnostic / Offline Tools 優先放在 `tools/` 或適當的診斷模組。
+- Tests 應放在對應測試目錄，不混入主要 Runtime Logic。
 
-如果簡單測試已經可以確認修改正確，不要無必要地執行昂貴或耗時的完整模擬。
+新增 Python 檔案時，簡短說明新增的理由及其責任。
 
-## 診斷原則
+**Prefer cohesive modules over fewer files.**
 
-- Debugging 時優先依據原始 error、stderr、traceback、telemetry、ULog、process exit code 與 artifact。
-- 明確區分「已確認」、「最可能」、「尚未證明」。
-- 不要因時間上相鄰的兩個事件，就直接認定存在因果關係。
-- 如果缺少能區分兩個假說的證據，優先提出最小實驗取得該證據。
+## 5. Machine Learning Research Integrity
 
-## 錯誤與輸出原則
+涉及 Dataset、Model、Training 或 Evaluation 的修改，必須特別注意 Research Reproducibility。
 
-- 不要隱藏原始 stderr、traceback、ERROR、FATAL 或 subprocess 非零退出資訊。
-- 如果程式已有 artifact log，應保留原始 log，同時讓重要錯誤能直接從 terminal 看到。
-- `runtime_failure`、`startup_failure` 等摘要分類不能取代原始 failure reason。
-- 新增 subprocess 或 worker 時，必須確認 stdout/stderr 不會因 PIPE 未持續讀取而阻塞。
+- 保留 Dataset Identity、Episode IDs、Random Seed、Hyperparameters 和 Checkpoint Information。
+- 不得未經要求修改 Dataset Split、Action Labels、Normalization 或 Evaluation Conditions。
+- 不得將 Training-set Evaluation 當作 Generalization Performance。
+- 明確區分 Offline Prediction Metrics 與 Closed-loop Flight Metrics。
+- Diagnostic Experiments 必須與 Production Training Artifacts 隔離。
+- 不得意外覆寫現有 Models、Datasets 或重要 Checkpoints。
+- 修改 Model Inputs、Outputs、Coordinate Frames、Action Units 或 Timing Contracts 時，必須檢查上下游相容性。
+- 實驗失敗應保留原始結果，不得為提高 Success Rate 而隱藏或刪除失敗紀錄。
 
-## Git 原則
+Research conclusions must be supported by reproducible experimental evidence.
 
-- 不要修改或回復與目前任務無關的既有變更。
-- 不要使用 destructive Git commands，例如 reset --hard、clean -fd 或強制 checkout，除非使用者明確要求。
-- 不要自動 commit、push 或建立 branch，除非使用者明確要求。
----
+## 6. Debugging & Error Handling
 
-## 回覆格式
+診斷時，明確區分：
 
-完成工作後，不要提供過長的說明。
+- Confirmed：已有直接證據支持。
+- Hypothesis：合理但尚未驗證。
+- Unknown：目前證據不足。
 
-避免：
+優先根據原始 stderr、traceback、telemetry、ULog、process exit code 與 artifacts 進行分析。
 
-- 重複描述已經知道的背景
-- 詳細逐行解釋所有修改
-- 冗長介紹沒有修改的部分
-- 重複列出相同結論
-- 大量不影響結果的細節
+- 不要將時間先後關係直接認定為因果關係。
+- 如果多個假說都合理，優先設計最小的 Discriminating Test。
+- 不要只根據症狀就大幅修改系統。
+- 保留原始 ERROR、FATAL 和 Traceback。
+- Summary Classification 不得取代原始 Failure Reason。
+- 新增 Subprocess 或 Worker 時，必須避免 stdout/stderr PIPE 阻塞。
+- 不要透過捕捉並忽略 Exception 來使測試表面通過。
 
-最終回覆應保持精簡，原則上只包含：
+## 7. Testing & Expensive Operations
+
+根據 Change Impact 選擇必要的測試。
+
+建議測試順序：
+
+1. Static Inspection
+2. Syntax / Import Check
+3. Unit Tests
+4. Targeted Integration Tests
+5. Smoke Tests
+6. Isaac Sim Runtime Tests
+7. Full Experiments
+
+- 優先執行低成本、與本次修改直接相關的測試。
+- 測試通過且相關程式未改變時，不要無理由重複執行。
+- 修改少量程式不代表一定要執行完整 Isaac Sim Regression。
+- 如果 Targeted Tests 已提供足夠證據，可以停止擴大測試。
+- 如果修改涉及 Flight Control、Timing、Model I/O 或 Runtime Integration，不能僅靠 Syntax Check 宣稱系統行為正確。
+- 除非使用者要求，不要自行增加 Simulation Episodes 或執行完整昂貴實驗。
+
+若必要測試因環境、資源或時間限制無法執行，應明確回報尚未驗證的部分。
+
+## 8. Git & Data Safety
+
+- 不得修改與本次任務無關的既有變更。
+- 不得擅自使用 `git reset --hard`、`git clean -fd` 或其他 Destructive Operations。
+- 不得自動 Commit、Push 或建立 Branch，除非使用者明確要求。
+- 修改前後應保留使用者既有的 Uncommitted Changes。
+- 不得擅自刪除 Dataset、Checkpoint、Logs 或實驗結果。
+
+## 9. Code Quality & Learning Support
+
+- Code、Variables、Functions、Classes、Comments 和 Docstrings 一律使用英文。
+- 優先使用清楚、具有意義的 Naming。
+- 保持 Core Algorithm、Data Processing 與 I/O Responsibilities 易於辨識。
+- 避免不必要的間接呼叫與複雜抽象。
+- 不需要為每一行程式加入註解。
+- 當使用者要求學習或理解實作時，應指出 Core Functions、Inputs、Outputs 和主要演算法流程。
+- 優先解釋實際研究相關的核心程式，而不是所有 Boilerplate。
+
+**AI-assisted development should improve both research productivity and code understanding.**
+
+## 10. Task Completion & Reporting
+
+完成工作後，採用簡短的結構化回報：
 
 ### 修改內容
-
-列出實際修改的檔案，以及每個檔案最主要的修改內容。
+列出實際修改的檔案及主要原因。
 
 ### 測試結果
-
-簡單說明：
-
-- 執行了哪些測試
-- 是否通過
-- 如果失敗，主要失敗原因是什麼
+列出執行的測試、Pass/Fail，以及重要錯誤。
 
 ### 尚未解決
-
-如果還有問題，只列出目前真正尚未解決的重要事項。
-
-如果沒有，可以省略此段。
+只列出真正尚未解決的問題或必要的後續驗證。沒有則省略。
 
 ### 簡單總結
+以 2～5 點或幾句話說明目前狀態與下一步。
 
-最後一定要提供一個簡短總結。
+避免重複背景、無意義的冗長描述及大量不影響結果的細節。
 
-控制在約 2～5 點或幾句話內，讓使用者可以快速知道：
+若使用者要求 Audit、Research Analysis、Implementation Plan 或 Code Walkthrough，則依任務需要提供充分細節，不受一般簡短回報格式限制。
 
-- 做了什麼
-- 是否成功
-- 現在系統處於什麼狀態
-- 下一步是否還有必要處理的事情
+## 11. Task-specific Instructions
 
-不要在總結重新完整重述前面的內容。
+`AGENTS.md` 定義長期適用的 Project-wide Rules。
 
-## 檔案與架構原則
+具體的 Experiment Configuration、Hyperparameters、Episode Selection、Evaluation Metrics 和 Task-specific Constraints，應由當次 Task Prompt 定義。
 
-* 優先修改既有檔案，不要為單一小功能新增 `.py` 檔案。
-* 新增 production `.py` 檔案視為架構變更，新增前必須先確認現有模組無法合理承擔該職責。
-* 不要為了「分層」而過度建立 `models`、`adapter`、`monitor`、`fixture`、`harness` `state_machine` 等模組。
-* ROS2 node 與核心邏輯可以分離，但小型邏輯不需要額外 wrapper。
-* diagnostic、offline tool 與 test helper 優先放在 `tools/` 或 `test/`，不要混入主要 runtime package。
-* 如果新增檔案，最終回覆必須簡短說明為何不能沿用既有檔案。
-* 如果兩個檔案職責高度相近，優先評估整合，不要繼續增加新的抽象層。
-* 架構設計以容易理解、除錯與維護為優先，不追求不必要的抽象化。
-
+不得將單次實驗的特殊設定，自動套用至其他正式實驗。

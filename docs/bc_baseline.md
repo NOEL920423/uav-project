@@ -219,6 +219,90 @@ Offline metrics 包含各 action component 權重相同的 normalized action MSE
 的 MSE、MAE 和 RMSE。它們回答的是：**BC 能否模仿保留測試集中的 expert actions？**這些
 指標不能證明 UAV 能成功導航。
 
+### Single-episode BC overfitting diagnostic
+
+`bc-overfit` 檢查 BC 能否記住單一成功 episode 已保存的 observation/action pairs。
+它使用 `samples.csv` 的全部有效 samples，不再抽樣。這些 samples 不代表完整原始控制
+decisions：recorder 可能因 tracking window、影像去重等規則捨棄其他影像。
+此診斷的 training 與 offline evaluation 使用同一批資料，不評估泛化或 closed-loop 飛行。
+
+第一輪的 24 筆有效 samples 可用以下命令執行；此命令會開始 1000 epochs 訓練：
+
+```bash
+./uav bc-overfit \
+  --dataset cylinder_v4 \
+  --episode-id episode_000001 \
+  --expected-samples 24 \
+  --image-source top \
+  --encoder experiments/autoencoder/cylinder_v4/top/run_20261011T1139/best.pt \
+  --epochs 1000 \
+  --batch-size 64 \
+  --learning-rate 0.001 \
+  --seed 614420090 \
+  --device cpu \
+  --forward-sign-epsilon 0.01 \
+  --output experiments/diagnostics/bc_single_episode/cylinder_v4/top/episode_000001/run_001
+```
+
+診斷實作獨立放在 `uav_ml/tools/bc_overfit.py`，重用 `bc_baseline.py` 的 feature extraction、
+batch training 與 normalized action metrics。正式 BC 的 audit、split、training 和 publishing
+流程不變。診斷只支援 CPU、TOP 與相容的 64D AE，AE 保持 frozen，BC 從 random initialization
+開始。Adam、等權 normalized action MSE、gradient clipping 5.0 與正式 BC 相同；沒有
+augmentation、validation split、early stopping 或載入既有 BC policy 的選項。Epoch 上限為 1000。
+
+每個 epoch 完成所有更新後，以不 shuffle 的 loader 評估全部有效 pairs，再依最低 training MSE
+保存 `best.pt`；`last.pt` 保存最後一個 epoch。100、300、500、1000 epochs 另外保存完整 metrics。
+最後重新載入 best weights 與 checkpoint 的 normalization，產生同集 offline evaluation。
+Forward sign accuracy 排除 `|expert_forward| <= --forward-sign-epsilon`；metrics 同時記錄有效及
+排除樣本數，若沒有有效樣本則 accuracy 為 `null`。Normalized action 誤差依 `[1.0, 0.8, 1.0]`
+換算為 forward m/s、right m/s、yaw rad/s，與正式 BC 的 action limits 一致。
+
+所有輸出限定於 `experiments/diagnostics/bc_single_episode/` 之下的新 run 目錄，已存在的目錄
+拒絕覆寫。省略 `--output` 時會使用 dataset/source/episode 與時間戳記自動建立唯一 run 路徑。
+診斷不寫入任何 `latest.json`，checkpoint 使用 `bc_single_episode_diagnostic_v1.0` 格式，
+供同集診斷讀取；正式 `bc-eval` 的 loader 不接受此格式。
+
+```text
+run_001/
+  experiment_config.json
+  episode_audit.json
+  observation_normalization.json
+  best.pt
+  last.pt
+  training_history.csv
+  epoch_0100_metrics.json       # Also 0300, 0500, 1000 when reached.
+  offline_metrics.json
+  action_predictions.csv
+  summary.json
+  plots/training_loss.png
+  plots/v_forward_comparison.png
+  plots/v_right_comparison.png
+  plots/yaw_rate_comparison.png
+  plots/action_error.png
+```
+
+Configuration 保存 AE path/hash、hyperparameters、seed、軟體版本及核心程式檔 hashes；
+episode audit 保存 metadata、CSV、TOP images 的 hashes。Normalization 對完整 72D observation
+計算 mean 與 population std，使用 float64 reduction 與 `1e-6` std 下限，並存入 checkpoint。
+啟用 deterministic algorithms；重現時仍應使用相同程式、資料及軟體環境。
+
+初學者可以先依以下順序閱讀：
+
+1. `bc_overfit.audit_single_episode()` 讀取 CSV 並確認指定 episode；
+   `bc_baseline._episode_arrays()` 將八個 state 欄位與三個 expert action 欄位轉成數值陣列。
+2. `_episode_arrays()` 將 TOP images 前處理並呼叫 `encoder.encode()`，產生 64D latent；
+   再與 state8 串接，得到每筆 72D observation。AE 在此步完成後不參與 BC 更新。
+3. `bc_overfit.train_single_episode()` 做 normalization 並建立 `TensorDataset`/`DataLoader`。
+   `latent_bc_policy.LatentBcPolicy.forward()` 接收一批 `[batch,72]` input，輸出 `[batch,3]` action。
+4. **核心 epoch loop 位於 `bc_overfit.train_single_episode()` 的
+   `for epoch in range(1, config.epochs + 1)`。** 它呼叫 `bc_baseline._run_loader()`；
+   後者的 batch loop 執行 `model(observation)`、MSE、`loss.backward()`、gradient clipping、
+   `optimizer.step()`，完成一次參數更新。
+5. `bc_overfit.offline_action_metrics()` 計算 predicted 與 expert actions 的差，產出 MSE、
+   MAE、RMSE、maximum absolute error 及 forward sign accuracy。Evaluation 不更新參數。
+
+目前未定義 overfit 達標門檻，因此輸出連續誤差數值，不自動宣稱通過、泛化成功或飛行成功。
+
 BC output 會自動寫入 `experiments/bc/<dataset>/<source>/run_<timestamp>`。CLI
 預設會啟動受管理的 TensorBoard server，並在成功訓練後持續執行直到按下 Ctrl+C。
 `--no-tensorboard` 只停用 server，不會停用 event-file 記錄。TensorBoard 會記錄

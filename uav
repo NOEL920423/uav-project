@@ -61,6 +61,7 @@ usage() {
   ae-train        訓練以 episode 分割的 FPV/TOP/depth Autoencoder baseline
   resnet-train    使用指定資料集與專家動作訓練 64 維 ResNet18 encoder
   bc-train        訓練並離線評估正式的 BC baseline
+  bc-overfit      單一 episode 的 BC 記憶能力診斷（獨立輸出）
   bc-eval         使用 Isaac/Pegasus/PX4 飛行 TOP RGB BC policy
   eval            bc-eval 的別名；使用 --scene v3|v4 選擇測試場景
   bc-eval-plot    由正式 BC evaluation artifact 重新產生圖表
@@ -1509,6 +1510,11 @@ main() {
             require_repository
             shift
             python3 -m uav_ml.tools.bc_baseline "$@"
+            ;;
+        bc-overfit)
+            require_repository
+            shift
+            python3 -m uav_ml.tools.bc_overfit "$@"
             ;;
         resnet-train)
             require_repository
