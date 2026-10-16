@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 import tempfile
@@ -14,7 +15,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from uav_ml.inference.bc_flight_contract import body_action_to_ned
+from uav_ml.inference.bc_flight_contract import ACTION_LIMITS, body_action_to_ned
 
 
 VIDEO_METADATA_SCHEMA = "uav_bc_policy_input_video/v1"
@@ -26,6 +27,10 @@ VIDEO_CRF = 16
 ACTION_HISTORY_LENGTH = 10
 POINTER_STYLE = "needle"
 POINTER_STYLES = ("arrow", "triangle", "chevron", "needle")
+POINTER_SPEED_FULL_SCALE_MPS = math.hypot(*ACTION_LIMITS[:2])
+YAW_ARC_MAX_SWEEP_DEG = 180.0
+NEGATIVE_FORWARD_COLOR = "#ff5353"
+YAW_COLOR = "#36d5f4"
 
 
 @dataclass(frozen=True)
@@ -167,7 +172,7 @@ def _annotate_frame(
     action_history: list[PolicyInputFrame] | None = None,
     pointer_style: str = POINTER_STYLE,
 ) -> None:
-    """Compose model input, TOP view, direction pointer, and physical actions."""
+    """Compose camera views and commanded translation/yaw visualizations."""
     if pointer_style not in POINTER_STYLES:
         raise ValueError(f"unsupported pointer style: {pointer_style}")
     render_scale = VIDEO_SCALE * HUD_SUPERSAMPLING
@@ -201,12 +206,22 @@ def _annotate_frame(
         y = 496 + index * 18
         current = entry.inference_count == frame.inference_count
         if current:
-            draw.rounded_rectangle(scaled((800, y - 2, 1110, y + 16)),
+            draw.rounded_rectangle(scaled((800, y - 2, 1092, y + 16)),
                                    radius=3 * render_scale, fill="#173d4a")
+        font = _font(14 * render_scale, bold=current, monospace=True)
+        color = "#36d5f4" if current else "#9bb1c9"
         label = f"step{entry.inference_count}: [{forward:.2f}, {right:.2f}, {yaw_rate:.2f}]"
-        draw.text(scaled((804, y)), label,
-                  font=_font(14 * render_scale, bold=current, monospace=True),
-                  fill="#36d5f4" if current else "#9bb1c9")
+        if forward < 0.0:
+            x = 804 * render_scale
+            for text, fill in (
+                (f"step{entry.inference_count}: [", color),
+                (f"{forward:.2f}", NEGATIVE_FORWARD_COLOR),
+                (f", {right:.2f}, {yaw_rate:.2f}]", color),
+            ):
+                draw.text((x, y * render_scale), text, font=font, fill=fill)
+                x += draw.textlength(text, font=font)
+        else:
+            draw.text(scaled((804, y)), label, font=font, fill=color)
     forward, right, _, yaw_rate = body_action_to_ned(frame.action_body, 0.0)
     center_x, center_y, radius = 1180, 585, 54
     draw.ellipse(scaled((center_x - radius, center_y - radius,
@@ -216,12 +231,44 @@ def _annotate_frame(
               fill="#36516b", width=render_scale)
     draw.line(scaled((center_x, center_y - 42, center_x, center_y + 42)),
               fill="#36516b", width=render_scale)
-    for label, x, y in (("F", center_x, center_y - 65), ("B", center_x, center_y + 65),
-                        ("L", center_x - 65, center_y), ("R", center_x + 65, center_y)):
+    for label, x, y in (("F", center_x, center_y - 76), ("B", center_x, center_y + 76),
+                        ("L", center_x - 76, center_y), ("R", center_x + 76, center_y)):
         draw.text(scaled((x, y)), label, font=_font(15 * render_scale), fill="#edf3fb", anchor="mm")
-    magnitude = (forward**2 + right**2) ** 0.5
+    magnitude = math.hypot(forward, right)
+    speed_fraction = min(magnitude / POINTER_SPEED_FULL_SCALE_MPS, 1.0)
+    draw.text(scaled((center_x, 686)), f"CMD {magnitude:.2f} m/s",
+              font=_font(11 * render_scale, True), fill=YAW_COLOR, anchor="mm")
+
+    yaw_radius = 67
+    yaw_box = scaled((center_x - yaw_radius, center_y - yaw_radius,
+                      center_x + yaw_radius, center_y + yaw_radius))
+    draw.ellipse(yaw_box, outline="#36516b", width=2 * render_scale)
+    yaw_label = "YAW 0.00 rad/s"
+    if abs(yaw_rate) > 0.005:
+        sign = 1.0 if yaw_rate > 0.0 else -1.0
+        sweep = YAW_ARC_MAX_SWEEP_DEG * min(abs(yaw_rate) / ACTION_LIMITS[2], 1.0)
+        end_angle = -90.0 + sign * sweep
+        draw.arc(yaw_box, start=min(-90.0, end_angle), end=max(-90.0, end_angle),
+                 fill=YAW_COLOR, width=3 * render_scale)
+        angle = math.radians(end_angle)
+        tip_x = center_x + yaw_radius * math.cos(angle)
+        tip_y = center_y + yaw_radius * math.sin(angle)
+        tangent_x, tangent_y = -sign * math.sin(angle), sign * math.cos(angle)
+        head_length = min(8.0, yaw_radius * math.radians(sweep))
+        half_width = head_length * 0.5
+        draw.polygon([
+            scaled((tip_x, tip_y)),
+            scaled((tip_x - head_length * tangent_x - half_width * tangent_y,
+                    tip_y - head_length * tangent_y + half_width * tangent_x)),
+            scaled((tip_x - head_length * tangent_x + half_width * tangent_y,
+                    tip_y - head_length * tangent_y - half_width * tangent_x)),
+        ], fill=YAW_COLOR)
+        yaw_label = f"{'RIGHT' if yaw_rate > 0.0 else 'LEFT'} {yaw_rate:+.2f} rad/s"
+    draw.text(scaled((center_x, 480)), yaw_label,
+              font=_font(10 * render_scale, True), fill=YAW_COLOR, anchor="mm")
+
     if magnitude > 0.01:
-        scale = 43.0 / magnitude
+        scale = 43.0 * speed_fraction / magnitude
         end_x = center_x + right * scale
         end_y = center_y - forward * scale
         angle_x = end_x - center_x
@@ -229,14 +276,19 @@ def _annotate_frame(
         length = (angle_x**2 + angle_y**2) ** 0.5
         direction_x, direction_y = angle_x / length, angle_y / length
         side_x, side_y = -direction_y, direction_x
+        # Keep slow commands visible while preserving the linear length scale.
+        width_fraction = max(speed_fraction, 0.35)
 
         def pointer_point(along, across=0.0):
-            return scaled((center_x + along * direction_x + across * side_x,
-                           center_y + along * direction_y + across * side_y))
+            return scaled((center_x + speed_fraction * along * direction_x
+                           + width_fraction * across * side_x,
+                           center_y + speed_fraction * along * direction_y
+                           + width_fraction * across * side_y))
 
         if pointer_style == "arrow":
             draw.line(scaled((center_x, center_y, end_x, end_y)),
-                      fill=(255, 220, 0), width=6 * render_scale)
+                      fill=(255, 220, 0),
+                      width=max(render_scale, round(6 * render_scale * speed_fraction)))
             draw.polygon([pointer_point(43), pointer_point(32, 5), pointer_point(32, -5)],
                          fill=(255, 220, 0))
         elif pointer_style == "triangle":
@@ -341,8 +393,15 @@ def render_policy_input_video(
         "top_resampling": "lanczos",
         "h264_crf": VIDEO_CRF,
         "top_frame_count": sum(frame.top_image_filename is not None for frame in frames),
-        "pointer_frame": "body: forward up, right right; direction only",
+        "pointer_frame": "body: forward up, right right; length encodes horizontal command speed",
         "pointer_style": pointer_style,
+        "pointer_length_scaling": "linear in horizontal commanded speed",
+        "pointer_speed_full_scale_mps": POINTER_SPEED_FULL_SCALE_MPS,
+        "yaw_indicator": "outer arc: positive clockwise/right; negative counterclockwise/left",
+        "yaw_arc_full_scale_radps": ACTION_LIMITS[2],
+        "yaw_arc_max_sweep_deg": YAW_ARC_MAX_SWEEP_DEG,
+        "yaw_display_deadband_radps": 0.005,
+        "negative_forward_color": NEGATIVE_FORWARD_COLOR,
         "action_history_length": ACTION_HISTORY_LENGTH,
         "action_history_order": "oldest to newest; current step highlighted",
         "action_units": ["m/s", "m/s", "rad/s"],

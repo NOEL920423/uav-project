@@ -13,6 +13,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Circle, Rectangle  # noqa: E402
 from matplotlib.ticker import MaxNLocator  # noqa: E402
 
@@ -22,6 +23,7 @@ from isaac.runtime.environment import build_environment_parameters  # noqa: E402
 TRACE_SCHEMA = "uav_bc_flight_trace/v1"
 FIGURE_DPI = 160
 EPISODE_FIGURE_SIZE = (8.5, 6.0)
+ALL_TRAJECTORIES_FIGURE_SIZE = (12.0, 9.0)
 SERIES_FIGURE_SIZE = (9.0, 5.0)
 SUMMARY_FIGURE_SIZE = (9.0, 5.0)
 LINE_WIDTH = 1.8
@@ -44,6 +46,7 @@ STATUS_BAND_ALPHA = 0.085
 
 PLOT_FILENAMES = {
     "trajectory": "trajectory.png",
+    "all_trajectories": "trajectory_all.png",
     "goal_distance": "goal_distance_vs_time.png",
     "action": "bc_action_vs_time.png",
     "clearance": "obstacle_clearance_vs_time.png",
@@ -57,7 +60,7 @@ PLOT_FILENAMES = {
 }
 
 OUTCOME_ORDER = ("success", "timeout", "out_of_bounds", "collision", "runtime_failure")
-SUMMARY_OUTCOME_ORDER = ("success", "timeout", "collision")
+SUMMARY_OUTCOME_ORDER = ("success", "timeout", "collision", "runtime_failure")
 OUTCOME_LABELS = {
     "runtime_failure": "Control issue",
     "success": "Success",
@@ -67,14 +70,14 @@ OUTCOME_LABELS = {
 }
 OUTCOME_COLORS = {
     "runtime_failure": "#8b64bc",
-    "success": "#2a9d8f",
-    "collision": "#e76f51",
-    "timeout": "#e9c46a",
+    "success": "#238b45",
+    "collision": "#cb181d",
+    "timeout": "#d4a900",
     "out_of_bounds": "#6c757d",
 }
 TRAJECTORY_COLORS = {
     "success": ("#238b45", "#006d2c", "#41ab5d", "#74c476"),
-    "timeout": ("#2171b5", "#084594", "#4292c6", "#6baed6"),
+    "timeout": ("#d4a900", "#b38f00", "#e6bc27", "#f2d15c"),
     "collision": ("#cb181d", "#99000d", "#ef3b2c", "#fb6a4a"),
     "runtime_failure": ("#88419d", "#6e016b", "#8c6bb1", "#9e9ac8"),
     "out_of_bounds": ("#525252", "#252525", "#737373", "#969696"),
@@ -85,12 +88,23 @@ def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _read_trajectory_trace(episode_dir: Path, result: dict) -> dict | None:
+    """Read a measured trace, retaining the distinction from a missing file."""
+    path = episode_dir / str(result.get("trace_file", "trajectory_trace.json"))
+    if not path.is_file():
+        return None
+    trace = _read_json(path)
+    if trace.get("schema") != TRACE_SCHEMA:
+        raise ValueError(f"unsupported BC trace schema: {path}")
+    return trace
+
+
 def _finite(value: object) -> bool:
     return isinstance(value, (int, float)) and math.isfinite(float(value))
 
 
-def _save(figure, path: Path) -> str:
-    figure.tight_layout()
+def _save(figure, path: Path, *, rect=None) -> str:
+    figure.tight_layout(rect=rect)
     figure.savefig(path, dpi=FIGURE_DPI)
     plt.close(figure)
     return str(path.resolve())
@@ -262,9 +276,14 @@ def _trajectory_plot(
     north = [item[1] for item in points]
     figure, axis = plt.subplots(figsize=EPISODE_FIGURE_SIZE)
     _draw_trajectory_scene(axis, trace, points)
-    axis.plot(east, north, color="#264653", linewidth=LINE_WIDTH)
+    reason = str(result.get("terminal_reason", "unknown"))
+    color = OUTCOME_COLORS.get(reason, OUTCOME_COLORS["out_of_bounds"])
+    axis.plot(
+        east, north, color=color, linewidth=LINE_WIDTH,
+        linestyle="--" if reason == "runtime_failure" else "-",
+    )
     axis.scatter(
-        east, north, color="#264653", s=MARKER_SIZE, zorder=3,
+        east, north, color=color, s=MARKER_SIZE, zorder=3,
         label="UAV center (one dot per decision)",
     )
     axis.scatter(
@@ -296,14 +315,11 @@ def create_grouped_trajectory_plots(run_dir: Path, records: list[dict]) -> list[
     groups = {}
     for result in sorted(records, key=lambda item: int(item["episode"])):
         episode = int(result["episode"])
-        trace_path = run_dir / f"episode_{episode:06d}" / str(
-            result.get("trace_file", "trajectory_trace.json")
+        trace = _read_trajectory_trace(
+            run_dir / f"episode_{episode:06d}", result
         )
-        if not trace_path.is_file():
+        if trace is None:
             continue
-        trace = _read_json(trace_path)
-        if trace.get("schema") != TRACE_SCHEMA:
-            raise ValueError(f"unsupported BC trace schema: {trace_path}")
         points = _trajectory_points(trace)
         if points:
             first = (
@@ -358,6 +374,86 @@ def create_grouped_trajectory_plots(run_dir: Path, records: list[dict]) -> list[
             figure, plot_dir / f"trajectory_{first:03d}-{last:03d}.png"
         ))
     return paths
+
+
+def create_all_trajectory_plot(run_dir: Path, records: list[dict]) -> list[str]:
+    """Overlay the full run, explicitly labeling episodes without measured paths."""
+    flights = []
+    for result in sorted(records, key=lambda item: int(item["episode"])):
+        trace = _read_trajectory_trace(
+            run_dir / f"episode_{int(result['episode']):06d}", result
+        )
+        points = _trajectory_points(trace) if trace is not None else []
+        flights.append((result, trace, points))
+    recorded_count = sum(bool(points) for _, _, points in flights)
+    if not recorded_count:
+        return []
+
+    figure, axis = plt.subplots(figsize=ALL_TRAJECTORIES_FIGURE_SIZE)
+    figure.subplots_adjust(right=0.69)
+    seen_scene = set()
+    for _, trace, points in flights:
+        if points:
+            _draw_trajectory_scene(axis, trace, points, seen=seen_scene)
+    scene_handles, scene_labels = axis.get_legend_handles_labels()
+    flight_handles = []
+    for result, trace, points in flights:
+        reason = str(result.get("terminal_reason", "unknown"))
+        color = OUTCOME_COLORS.get(reason, OUTCOME_COLORS["out_of_bounds"])
+        label = (f"Episode {int(result['episode']):03d}: "
+                 f"{OUTCOME_LABELS.get(reason, reason)}")
+        if not points:
+            detail = "trace missing" if trace is None else "no valid samples"
+            flight_handles.append(Line2D(
+                [], [], color=color, marker="x", linestyle="none",
+                label=f"{label} ({detail})",
+            ))
+            continue
+        east, north = zip(*points)
+        line, = axis.plot(
+            east, north, color=color, label=label,
+            linewidth=LINE_WIDTH * (1.4 if reason == "success" else 1.0),
+            linestyle="--" if reason == "runtime_failure" else "-",
+            zorder=4 if reason == "success" else 3,
+        )
+        flight_handles.append(line)
+        axis.scatter(
+            [east[-1]], [north[-1]], marker="x", s=40,
+            linewidths=1.5, color=color, zorder=5,
+        )
+    final_marker = Line2D(
+        [], [], color="black", marker="x", linestyle="none",
+        label="Final recorded BC position",
+    )
+    missing_count = len(flights) - recorded_count
+    subtitle = f"{recorded_count} recorded trajectories"
+    if missing_count:
+        subtitle += f"; {missing_count} without trajectory data"
+    axis.set(
+        xlabel="East (m)", ylabel="North (m)",
+        title=f"All {len(flights)} closed-loop flights\n{subtitle}",
+    )
+    axis.xaxis.label.set_size(TRAJECTORY_LABEL_FONT_SIZE)
+    axis.yaxis.label.set_size(TRAJECTORY_LABEL_FONT_SIZE)
+    axis.title.set_size(TRAJECTORY_TITLE_FONT_SIZE)
+    axis.tick_params(axis="both", labelsize=TRAJECTORY_TICK_FONT_SIZE)
+    axis.set_aspect("equal", adjustable="box")
+    axis.grid(alpha=0.25)
+    legend = axis.legend(
+        handles=[*flight_handles, *scene_handles, final_marker],
+        labels=[handle.get_label() for handle in flight_handles]
+        + scene_labels + [final_marker.get_label()],
+        loc="upper left", bbox_to_anchor=(0.70, 0.96),
+        bbox_transform=figure.transFigure,
+        fontsize=TRAJECTORY_LEGEND_FONT_SIZE,
+    )
+    legend.set_in_layout(False)
+    plot_dir = run_dir / "trajectory_plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    return [_save(
+        figure, plot_dir / PLOT_FILENAMES["all_trajectories"],
+        rect=(0.0, 0.0, 0.69, 1.0),
+    )]
 
 
 def _single_series_plot(
@@ -441,14 +537,9 @@ def _clearance_plot(
 
 def create_episode_plots(episode_dir: Path, result: dict) -> list[str]:
     """Create plots only when a real measured trace is available."""
-    trace_path = episode_dir / str(
-        result.get("trace_file", "trajectory_trace.json")
-    )
-    if not trace_path.is_file():
+    trace = _read_trajectory_trace(episode_dir, result)
+    if trace is None:
         return []
-    trace = _read_json(trace_path)
-    if trace.get("schema") != TRACE_SCHEMA:
-        raise ValueError(f"unsupported BC trace schema: {trace_path}")
     plot_dir = episode_dir.parent / "trajectory_plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
     if not ENABLE_EXTRA_PLOTS:
@@ -641,6 +732,7 @@ def generate_evaluation_plots(
     return {
         "episodes": episode_plots,
         "trajectory_groups": create_grouped_trajectory_plots(root, records),
+        "trajectory_all": create_all_trajectory_plot(root, records),
         "summary": create_summary_plots(root, records),
     }
 

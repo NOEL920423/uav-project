@@ -15,6 +15,7 @@ from PIL import Image
 from uav_ml.tools import bc_flight_plotting as plotting
 from uav_ml.tools.bc_flight_plotting import (
     PLOT_FILENAMES,
+    create_all_trajectory_plot,
     create_grouped_trajectory_plots,
     create_summary_plots,
     create_training_loss_artifacts,
@@ -120,12 +121,15 @@ class BcFlightPlottingTests(unittest.TestCase):
             })
             self.assertEqual(
                 {path.name for path in (run_dir / "trajectory_plots").iterdir()},
-                {"trajectory_1.png", "trajectory_2.png", "trajectory_001-004.png"},
+                {"trajectory_1.png", "trajectory_2.png", "trajectory_001-004.png",
+                 "trajectory_all.png"},
             )
             self.assertEqual(
                 [Path(path).name for path in plots["trajectory_groups"]],
                 ["trajectory_001-004.png"],
             )
+            self.assertEqual([Path(path).name for path in plots["trajectory_all"]],
+                             ["trajectory_all.png"])
             for episode in (1, 2):
                 self.assertFalse((run_dir / f"episode_{episode:06d}" / "plots").exists())
             self.assertEqual({Path(path).name for path in plots["summary"]}, {
@@ -144,6 +148,7 @@ class BcFlightPlottingTests(unittest.TestCase):
             plots = generate_evaluation_plots(run_dir)
             self.assertEqual(plots["episodes"], {})
             self.assertEqual(plots["trajectory_groups"], [])
+            self.assertEqual(plots["trajectory_all"], [])
             self.assertEqual({Path(path).name for path in plots["summary"]}, {
                 PLOT_FILENAMES["outcomes"], PLOT_FILENAMES["status"],
             })
@@ -248,8 +253,9 @@ class BcFlightPlottingTests(unittest.TestCase):
 
             with patch.object(plotting, "_save", side_effect=capture):
                 create_grouped_trajectory_plots(run_dir, records)
-            blue, green, red, purple = [color for color, _ in captured]
-            self.assertGreater(blue[2], max(blue[:2]))
+            yellow, green, red, purple = [color for color, _ in captured]
+            self.assertGreater(yellow[0], yellow[1])
+            self.assertGreater(yellow[1], yellow[2])
             self.assertGreater(green[1], max(green[::2]))
             self.assertGreater(red[0], max(red[1:]))
             self.assertGreater(min(purple[::2]), purple[1])
@@ -280,7 +286,111 @@ class BcFlightPlottingTests(unittest.TestCase):
             ])
             self.assertEqual(captured, [["Episode 001: Timeout"], ["Episode 005: Timeout"]])
 
-    def test_summary_displays_three_outcomes_and_integer_counts(self) -> None:
+    def test_single_trajectory_uses_outcome_color(self) -> None:
+        with TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)
+            for episode, reason in enumerate(
+                ("success", "timeout", "collision", "runtime_failure"), 1
+            ):
+                with self.subTest(reason=reason):
+                    result = self._result(episode, reason)
+
+                    def capture(figure, path):
+                        axis = figure.axes[0]
+                        self.assertEqual(axis.lines[0].get_color(), plotting.OUTCOME_COLORS[reason])
+                        self.assertEqual(axis.collections[0].get_facecolors()[0].tolist(),
+                                         list(colors.to_rgba(plotting.OUTCOME_COLORS[reason])))
+                        plt.close(figure)
+                        return str(path)
+
+                    with patch.object(plotting, "_save", side_effect=capture):
+                        plotting._trajectory_plot(run_dir, self._trace(episode), result)
+
+    def test_all_trajectories_preserves_twenty_outcomes_and_empty_flight(self) -> None:
+        with TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)
+            reasons = {4: "success", 6: "success", 8: "runtime_failure", 17: "collision"}
+            records = [self._result(episode, reasons.get(episode, "timeout"))
+                       for episode in range(20, 0, -1)]
+            for result in records:
+                episode = result["episode"]
+                episode_dir = run_dir / f"episode_{episode:06d}"
+                episode_dir.mkdir()
+                trace = self._trace(episode)
+                if episode == 8:
+                    trace["samples"] = []
+                else:
+                    trace["samples"].append({"east_m": 99, "north_m": 99, "inference_step": 0})
+                    trace["samples"].append({"east_m": None, "north_m": 1})
+                (episode_dir / "trajectory_trace.json").write_text(json.dumps(trace))
+            captured = []
+
+            def capture(figure, path, **layout):
+                figure.tight_layout(**layout)
+                figure.canvas.draw()
+                axis = figure.axes[0]
+                self.assertEqual(len(axis.lines), 19)
+                expected = [result for result in reversed(records) if result["episode"] != 8]
+                self.assertEqual([line.get_label() for line in axis.lines], [
+                    f"Episode {item['episode']:03d}: {plotting.OUTCOME_LABELS[item['terminal_reason']]}"
+                    for item in expected
+                ])
+                self.assertEqual([line.get_color() for line in axis.lines], [
+                    plotting.OUTCOME_COLORS[item["terminal_reason"]] for item in expected
+                ])
+                for line in axis.lines:
+                    self.assertEqual(len(line.get_xdata()), 5)
+                    self.assertAlmostEqual(line.get_xdata()[-1], 0.2)
+                    self.assertAlmostEqual(line.get_ydata()[-1], 0.4)
+                legend = axis.get_legend()
+                labels = [text.get_text() for text in legend.get_texts()]
+                episode_labels = [label for label in labels if label.startswith("Episode ")]
+                self.assertEqual(len(episode_labels), 20)
+                self.assertEqual(episode_labels[7], "Episode 008: Control issue (no valid samples)")
+                self.assertIn("19 recorded trajectories; 1 without trajectory data", axis.get_title())
+                self.assertEqual(len(axis.patches), 8)
+                box = legend.get_window_extent(figure.canvas.get_renderer())
+                self.assertTrue(figure.bbox.contains(box.x0, box.y0))
+                self.assertTrue(figure.bbox.contains(box.x1, box.y1))
+                axes_box = axis.get_tightbbox(figure.canvas.get_renderer())
+                self.assertTrue(figure.bbox.contains(axes_box.x0, axes_box.y0))
+                self.assertTrue(figure.bbox.contains(axes_box.x1, axes_box.y1))
+                captured.append(True)
+                plt.close(figure)
+                return str(path)
+
+            with patch.object(plotting, "_save", side_effect=capture):
+                paths = create_all_trajectory_plot(run_dir, records)
+            self.assertEqual([Path(path).name for path in paths], ["trajectory_all.png"])
+            self.assertEqual(captured, [True])
+
+    def test_all_trajectories_distinguishes_missing_and_empty_traces(self) -> None:
+        with TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)
+            records = [self._result(episode, "timeout") for episode in (1, 2, 3)]
+            for episode in (1, 3):
+                episode_dir = run_dir / f"episode_{episode:06d}"
+                episode_dir.mkdir()
+                trace = self._trace(episode)
+                if episode == 3:
+                    trace["samples"] = []
+                (episode_dir / "trajectory_trace.json").write_text(json.dumps(trace))
+
+            def capture(figure, path, **layout):
+                axis = figure.axes[0]
+                self.assertEqual(len(axis.lines), 1)
+                labels = [text.get_text() for text in axis.get_legend().get_texts()]
+                self.assertIn("Episode 002: Timeout (trace missing)", labels)
+                self.assertIn("Episode 003: Timeout (no valid samples)", labels)
+                plt.close(figure)
+                return str(path)
+
+            with patch.object(plotting, "_save", side_effect=capture):
+                create_all_trajectory_plot(run_dir, records)
+            self.assertEqual(create_all_trajectory_plot(run_dir, []), [])
+            self.assertEqual(create_all_trajectory_plot(run_dir, records[1:]), [])
+
+    def test_summary_displays_four_outcomes_and_integer_counts(self) -> None:
         with TemporaryDirectory() as temporary:
             records = [self._result(episode, reason) for episode, reason in enumerate(
                 ("success", "timeout", "collision", "out_of_bounds", "runtime_failure"), 1
@@ -293,12 +403,12 @@ class BcFlightPlottingTests(unittest.TestCase):
                     axis = figure.axes[0]
                     captured.append(True)
                     self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
-                                     ["Success", "Timeout", "Collision"])
-                    self.assertEqual([bar.get_height() for bar in axis.patches], [1, 1, 1])
+                                     ["Success", "Timeout", "Collision", "Control issue"])
+                    self.assertEqual([bar.get_height() for bar in axis.patches], [1, 1, 1, 1])
                     self.assertTrue(all(float(tick).is_integer() for tick in axis.get_yticks()))
                     self.assertTrue(all("." not in label.get_text()
                                         for label in axis.get_yticklabels()))
-                    self.assertEqual([text.get_text() for text in axis.texts], ["1 (20.0%)"] * 3)
+                    self.assertEqual([text.get_text() for text in axis.texts], ["1 (20.0%)"] * 4)
                     self.assertEqual(axis.title.get_fontsize(), plotting.SUMMARY_TITLE_FONT_SIZE)
                     self.assertEqual(axis.yaxis.label.get_fontsize(), plotting.SUMMARY_LABEL_FONT_SIZE)
                     self.assertTrue(all(text.get_fontsize() == plotting.SUMMARY_COUNT_FONT_SIZE

@@ -391,8 +391,13 @@ metrics 包含數量/比例，以及平均距離、時間和 path length。這�
 最近十步動作，格式為 `step7: [0.50, 0.20, -0.10]`，依舊到新由上而下排列，最新一步
 高亮；不足十步時顯示已有紀錄，第十一筆起移除最舊一筆。step 保留原始成功推論編號。
 三個數值依序為 forward/right/yaw rate（m/s、m/s、rad/s），沿用 runtime 的動作
-裁切與縮放；指針表示平移命令方向，yaw rate 另外以數值顯示，並非實測飛行速度。
-指針預設為實心三角形；修改 `uav_ml/tools/bc_flight_video.py` 的 `POINTER_STYLE` 可切換
+裁切與縮放；指針方向表示機體座標的平移命令方向，長度與水平命令速度
+`hypot(forward, right)` 成正比，滿刻度沿用動作上限的 `hypot(1.0, 0.8)` m/s。
+下方 `CMD` 顯示命令速度，並非實測飛行速度。外圈青色弧箭頭表示 yaw rate：
+正值順時針／右轉，負值逆時針／左轉，弧長依角速度大小變化，滿刻度 1 rad/s 對應
+180° 的顯示弧；這個弧度範圍不是實際機頭角度。絕對值不超過 0.005 rad/s 時顯示零轉向。
+動作歷史中，負向 forward 的第一個數值標紅，其餘分量保留原色。
+指針預設為雙色羅盤指針；修改 `uav_ml/tools/bc_flight_video.py` 的 `POINTER_STYLE` 可切換
 `arrow`（細線箭頭）、`triangle`（實心三角形）、`chevron`（V 形導航尖頭）或
 `needle`（雙色羅盤指針），不改變動作或模型輸入。
 TOP 依主要輸入影像的時間戳在 1 ms 內配對；缺少同期 TOP 時明確顯示缺圖，不等待或
@@ -407,11 +412,15 @@ TOP；舊影像不會因提高影片解析度而增加原始細節。多影像�
 
 `trajectory_plots/` 保留每航次的 `trajectory_1.png` 至 `trajectory_20.png`，另外依固定
 航次範圍新增四條軌跡的合併圖：`trajectory_001-004.png`、`trajectory_005-008.png`，
-依此類推。缺少有效 trace 的航次會略過，不會移動其他航次的分組。合併圖中，timeout 為
-藍色實線、success 為綠色實線、collision 為紅色實線、control issue 為紫色虛線；
-同組同結果使用不同深淺，圖例標示航次與結果。越界沿用灰色實線。
+依此類推。缺少有效 trace 的航次會略過，不會移動其他航次的分組。
+另新增 `trajectory_all.png`，將本次全部航次疊在同一張圖；20 次測試會列出全部 20 次結果，
+缺少軌跡檔或有效座標的航次仍在圖例註明，不補造軌跡。
+軌跡依結果上色：timeout 為黃色實線、success 為綠色實線、collision 為紅色實線、
+control issue 為紫色虛線；四條一組的圖中，同組同結果使用不同深淺。
+圖例標示航次與結果，越界沿用灰色實線。繪圖路徑索引新增 `trajectory_all`。
 
-`summary_plots/summary.png` 只顯示 Success、Timeout、Collision，Y 軸次數使用整數。
+`summary_plots/summary.png` 由左至右顯示 Success、Timeout、Collision、Control issue，
+分別使用綠色、黃色、紅色、紫色；包含次數為零的類別，Y 軸次數使用整數。
 百分比仍以全部航次為分母；其他終止原因保留在 JSON 與 `flight_status_by_episode.png`。
 自行調整字體時，修改 `uav_ml/tools/bc_flight_plotting.py` 頂端的下列常數，數值單位為 pt：
 

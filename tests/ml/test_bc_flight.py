@@ -877,6 +877,8 @@ class PolicyInputVideoTests(unittest.TestCase):
             self.assertIn("MODEL INPUT / FPV RGB", labels)
             self.assertIn("[forward m/s, right m/s, yaw rad/s]", labels)
             self.assertIn("step7: [0.50, 0.20, -0.10]", labels)
+            self.assertIn("CMD 0.54 m/s", labels)
+            self.assertIn("LEFT -0.10 rad/s", labels)
             with Image.open(output) as image:
                 self.assertEqual(image.size, (2560, 1440))
                 self.assertEqual(image.getpixel((788, 784)), (190, 40, 30))
@@ -900,6 +902,97 @@ class PolicyInputVideoTests(unittest.TestCase):
                              [f"step{step}: [0.50, 0.20, -0.10]" for step in range(6, 26, 2)])
             self.assertTrue(all(call.kwargs["fill"] == "#9bb1c9" for call in rows[:-1]))
             self.assertEqual(rows[-1].kwargs["fill"], "#36d5f4")
+
+    def test_only_negative_forward_values_are_red_in_history_and_current_row(self):
+        from unittest.mock import patch
+        from PIL import ImageDraw
+        from uav_ml.tools.bc_flight_video import (
+            NEGATIVE_FORWARD_COLOR, PolicyInputFrame, _annotate_frame,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory) / "input.png", Path(directory) / "dashboard.png"
+            source.write_bytes(self._png((80, 80, 80)))
+            history = [
+                PolicyInputFrame(1, 1, source.name, (0.5, -0.25, -0.1)),
+                PolicyInputFrame(2, 2, source.name, (-0.5, -0.25, -0.1)),
+                PolicyInputFrame(3, 3, source.name, (-0.004, 0.25, -0.1)),
+            ]
+            with patch.object(ImageDraw.ImageDraw, "text", autospec=True,
+                              side_effect=ImageDraw.ImageDraw.text) as text:
+                _annotate_frame(source, output, history[-1], action_history=history)
+            red = [call for call in text.call_args_list
+                   if call.kwargs.get("fill") == NEGATIVE_FORWARD_COLOR]
+            self.assertEqual([call.args[2] for call in red], ["-0.50", "-0.00"])
+            normal = [(call.args[2], call.kwargs.get("fill")) for call in text.call_args_list]
+            self.assertIn(("step1: [0.50, -0.20, -0.10]", "#9bb1c9"), normal)
+            self.assertIn((", -0.20, -0.10]", "#9bb1c9"), normal)
+            self.assertIn((", 0.20, -0.10]", "#36d5f4"), normal)
+
+    def test_pointer_length_scales_with_command_speed_for_every_style(self):
+        from uav_ml.tools.bc_flight_video import POINTER_STYLES, PolicyInputFrame, _annotate_frame
+
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory) / "input.png", Path(directory) / "dashboard.png"
+            source.write_bytes(self._png((80, 80, 80)))
+            for style in POINTER_STYLES:
+                with self.subTest(style=style):
+                    lengths = []
+                    for forward in (0.25, 0.75):
+                        frame = PolicyInputFrame(1, 0, source.name, (forward, 0, 0))
+                        _annotate_frame(source, output, frame, pointer_style=style)
+                        with Image.open(output) as image:
+                            pixels = np.asarray(image)
+                        yellow = ((pixels[..., 0] > 200) & (pixels[..., 1] > 170)
+                                  & (pixels[..., 2] < 80))
+                        y, x = np.where(yellow)
+                        self.assertGreater(len(y), 0)
+                        lengths.append(1170 - y.min())
+                    self.assertAlmostEqual(lengths[1] / lengths[0], 3.0, delta=0.4)
+
+    def test_yaw_arc_shows_direction_and_strength_without_translation(self):
+        from uav_ml.tools.bc_flight_video import PolicyInputFrame, _annotate_frame
+
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory) / "input.png", Path(directory) / "dashboard.png"
+            source.write_bytes(self._png((80, 80, 80)))
+            counts = []
+            for yaw_rate in (0.0, 0.25, 0.75, -0.75):
+                frame = PolicyInputFrame(1, 0, source.name, (0, 0, yaw_rate))
+                _annotate_frame(source, output, frame)
+                with Image.open(output) as image:
+                    pixels = np.asarray(image.crop((2210, 1020, 2510, 1320)))
+                grid_y, grid_x = np.indices(pixels.shape[:2])
+                radius = np.hypot(grid_x - 150, grid_y - 150)
+                cyan = ((pixels[..., 0] < 100) & (pixels[..., 1] > 150)
+                        & (pixels[..., 2] > 150) & (radius > 124) & (radius < 141))
+                y, x = np.where(cyan)
+                counts.append(len(x))
+                if yaw_rate > 0:
+                    self.assertGreater(x.mean(), 150)
+                elif yaw_rate < 0:
+                    self.assertLess(x.mean(), 150)
+            self.assertEqual(counts[0], 0)
+            self.assertGreater(counts[2], counts[1] * 2)
+            self.assertAlmostEqual(counts[2] / counts[3], 1.0, delta=0.1)
+
+    def test_clipped_actions_keep_pointer_within_dial(self):
+        from uav_ml.tools.bc_flight_video import PolicyInputFrame, _annotate_frame
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "input.png"
+            source.write_bytes(self._png((80, 80, 80)))
+            rendered = []
+            for index, action in enumerate(((1, 1, 1), (3, 4, 5))):
+                output = Path(directory) / f"dashboard_{index}.png"
+                _annotate_frame(source, output, PolicyInputFrame(1, 0, source.name, action))
+                with Image.open(output) as image:
+                    rendered.append(np.asarray(image))
+            np.testing.assert_array_equal(*rendered)
+            yellow = ((rendered[0][..., 0] > 200) & (rendered[0][..., 1] > 170)
+                      & (rendered[0][..., 2] < 80))
+            y, x = np.where(yellow)
+            self.assertLessEqual(np.hypot(x - 2360, y - 1170).max(), 88)
 
     def test_pointer_handles_backward_left_and_yaw_only(self):
         from uav_ml.tools.bc_flight_video import POINTER_STYLES, PolicyInputFrame, _annotate_frame
@@ -1028,7 +1121,13 @@ class PolicyInputVideoTests(unittest.TestCase):
             self.assertEqual(metadata["action_units"], ["m/s", "m/s", "rad/s"])
             self.assertEqual(metadata["h264_crf"], 16)
             self.assertEqual(metadata["hud_supersampling"], 2)
-            self.assertEqual(metadata["pointer_style"], "triangle")
+            self.assertEqual(metadata["pointer_style"], "needle")
+            self.assertIn("horizontal command speed", metadata["pointer_frame"])
+            self.assertEqual(metadata["pointer_length_scaling"], "linear in horizontal commanded speed")
+            self.assertAlmostEqual(metadata["pointer_speed_full_scale_mps"], math.hypot(1.0, 0.8))
+            self.assertEqual(metadata["yaw_arc_full_scale_radps"], 1.0)
+            self.assertEqual(metadata["yaw_arc_max_sweep_deg"], 180.0)
+            self.assertEqual(metadata["negative_forward_color"], "#ff5353")
             self.assertEqual(metadata["action_history_length"], 10)
 
 
