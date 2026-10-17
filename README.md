@@ -41,6 +41,21 @@ Use a profile for repeatable daily arguments without changing module defaults:
 Profiles live in `config/profiles/`. They only supply workflow CLI arguments;
 PX4 safety limits remain in the package ROS parameter YAML files.
 
+The shared goal acceptance distance is `success_distance_m` in
+[`uav_navigation/config/task.yaml`](ros2_ws/src/uav_navigation/config/task.yaml).
+Edit that value once and restart the affected workflows to apply it to BC
+evaluation, the PX4 flight supervisor, Isaac goal confirmation, and the
+fixed-height city environment. The flight YAML files inherit this default.
+The shared Python loader reads and validates the YAML; it has no separate
+distance default. Source-checkout ML workflows can read it without ROS or
+launch. Installed ROS packages read the installed package's configuration.
+Explicit ROS parameter or Python config overrides still take precedence.
+Each workflow retains its existing distance calculation, comparison, and
+additional acceptance conditions, including PX4 tracking and settling limits.
+ROS deployments without symlink installation must rebuild `uav_navigation`
+after changing the source setting. Build `uav_navigation` once after adding
+the new YAML so it is included in the package installation.
+
 AE and BC training can select a subset of usable episodes without changing the
 source dataset. For example, select 50 episodes and split them into 30 training,
 10 validation, and 10 held-out test episodes:

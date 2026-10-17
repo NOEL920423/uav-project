@@ -18,6 +18,7 @@ from uav_navigation.planner.models import (  # noqa: E402
     PlannerConfig,
     Point3D,
 )
+from uav_navigation.task_config import SUCCESS_DISTANCE_M  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -57,7 +58,7 @@ class FixedHeightCityConfig:
     maximum_forward_speed_mps: float = 1.0
     maximum_right_speed_mps: float = 0.8
     maximum_yaw_rate_radps: float = 1.0
-    success_distance_m: float = 0.35
+    success_distance_m: float = SUCCESS_DISTANCE_M
     maximum_steps: int = 160
     expert_lookahead_m: float = 0.8
     progress_reward_scale: float = 3.0

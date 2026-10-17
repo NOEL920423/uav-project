@@ -1,3 +1,4 @@
 tensorboard>=2.16,<3
+PyYAML>=6,<7
 # Optional ResNet18 dependency for the current torch==2.12.0 environment:
 # python3 -m pip install --no-deps torchvision==0.27.0

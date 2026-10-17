@@ -18,6 +18,7 @@ setup(
             "share/" + package_name + "/config",
             [
                 "config/astar_planner.yaml",
+                "config/task.yaml",
                 "config/trajectory_follower.yaml",
                 "config/trajectory_parameterizer.yaml",
             ],
@@ -33,7 +34,7 @@ setup(
             ],
         ),
     ],
-    install_requires=["setuptools"],
+    install_requires=["setuptools", "PyYAML>=6,<7"],
     zip_safe=True,
     maintainer="Noel",
     maintainer_email="a0916190423@gmail.com",

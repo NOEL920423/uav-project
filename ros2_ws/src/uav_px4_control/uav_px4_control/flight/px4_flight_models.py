@@ -4,6 +4,8 @@ import math
 from dataclasses import dataclass
 from enum import Enum
 
+from uav_navigation.task_config import SUCCESS_DISTANCE_M
+
 
 class Px4FlightState(str, Enum):
     """Observable mission phases with explicit terminal states."""
@@ -37,7 +39,7 @@ class Px4FlightConfig:
     minimum_stream_rate_hz: float = 19.0
     takeoff_altitude_m: float = 2.0
     takeoff_altitude_tolerance_m: float = 0.25
-    goal_tolerance_m: float = 0.35
+    goal_tolerance_m: float = SUCCESS_DISTANCE_M
     pipeline_timeout_s: float = 20.0
     prestream_timeout_s: float = 15.0
     offboard_timeout_s: float = 8.0

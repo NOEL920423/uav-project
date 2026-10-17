@@ -42,7 +42,7 @@ px4_setpoint_streamer:
 
 bc_episode_monitor:
   ros__parameters:
-    goal_tolerance_m: 0.35
+    # Goal distance defaults to uav_navigation/config/task.yaml.
     timeout_s: 45.0
     uav_radius_m: 0.25
     collision_clearance_threshold_m: 0.0

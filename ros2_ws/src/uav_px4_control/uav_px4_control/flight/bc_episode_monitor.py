@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from uav_navigation.task_config import SUCCESS_DISTANCE_M
+
 
 TERMINAL_REASONS = ("collision", "out_of_bounds", "success", "timeout")
 
@@ -13,7 +15,7 @@ TERMINAL_REASONS = ("collision", "out_of_bounds", "success", "timeout")
 class TerminationConfig:
     """Geometric and timing limits used only by the evaluation monitor."""
 
-    goal_tolerance_m: float = 0.35
+    goal_tolerance_m: float = SUCCESS_DISTANCE_M
     timeout_s: float = 45.0
     uav_radius_m: float = 0.25
     collision_clearance_threshold_m: float = 0.0

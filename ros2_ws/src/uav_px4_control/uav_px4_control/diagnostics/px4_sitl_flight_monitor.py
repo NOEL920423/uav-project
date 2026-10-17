@@ -17,20 +17,21 @@ from std_msgs.msg import String
 from uav_interfaces.msg import Px4FlightStatus, Px4StreamStatus
 from uav_interfaces.srv import SetPx4FlightEnable
 
+from uav_navigation.task_config import SUCCESS_DISTANCE_M
 from uav_navigation.tracking.trajectory_follower_node import durable_qos
 
 from uav_px4_control.control.control_mux_node import control_qos
-from uav_px4_control.px4.px4_setpoint_streamer_node import (
-    STREAM_STATUS_TOPIC,
-    VEHICLE_STATUS_TOPIC,
-    px4_output_qos,
-)
 from uav_px4_control.flight.px4_sitl_flight_supervisor_node import (
     EXTERNAL_SCENE_GOAL_TOPIC,
     FLIGHT_STATUS_TOPIC,
     ISAAC_BRIDGE_STATUS_TOPIC,
     SET_FLIGHT_ENABLE_SERVICE,
     VEHICLE_LAND_DETECTED_TOPIC,
+)
+from uav_px4_control.px4.px4_setpoint_streamer_node import (
+    STREAM_STATUS_TOPIC,
+    VEHICLE_STATUS_TOPIC,
+    px4_output_qos,
 )
 
 
@@ -51,7 +52,7 @@ class Px4SitlFlightMonitor(Node):
         self.declare_parameter("minimum_stream_rate_hz", 19.0)
         self.declare_parameter("require_isaac_evidence", False)
         self.declare_parameter("minimum_isaac_pose_rate_hz", 15.0)
-        self.declare_parameter("isaac_goal_tolerance_m", 0.40)
+        self.declare_parameter("isaac_goal_tolerance_m", SUCCESS_DISTANCE_M)
         self.declare_parameter("isaac_landing_height_tolerance_m", 0.25)
         self.evidence_path = Path(
             str(self.get_parameter("evidence_path").value)
