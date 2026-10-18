@@ -430,7 +430,7 @@ def create_all_trajectory_plot(run_dir: Path, records: list[dict]) -> list[str]:
     if missing_count:
         subtitle += f"; {missing_count} without trajectory data"
     axis.set(
-        xlabel="East (m)", ylabel="North (m)",
+        xlabel="x (m)", ylabel="y (m)",
         title=f"All {len(flights)} closed-loop flights\n{subtitle}",
     )
     axis.xaxis.label.set_size(TRAJECTORY_LABEL_FONT_SIZE)
