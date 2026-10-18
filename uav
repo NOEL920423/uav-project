@@ -1495,6 +1495,9 @@ main() {
             require_repository
             command_status
             ;;
+        backup)
+            bash "$REPO_ROOT/tools/backup.sh"
+            ;;    
         profile)
             require_repository
             shift
