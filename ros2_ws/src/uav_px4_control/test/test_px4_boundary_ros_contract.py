@@ -224,7 +224,6 @@ def test_no_phase7_adapter_constructs_px4_flight_messages() -> None:
     """Keep real setpoint, mode, and vehicle-command messages absent."""
     paths = [
         PACKAGE / "uav_px4_control/px4/px4_mapping_gate_node.py",
-        PACKAGE / "uav_px4_control/diagnostics/offline_px4_boundary_harness.py",
     ]
     content = "\n".join(text(path) for path in paths)
     forbidden = (
@@ -234,30 +233,3 @@ def test_no_phase7_adapter_constructs_px4_flight_messages() -> None:
         "px4_msgs",
     )
     assert not any(name in content for name in forbidden)
-
-
-def test_all_phase7_wrappers_and_launches_are_installed() -> None:
-    """Expose mapping, gate, and full-boundary finite checks."""
-    wrapper = text(REPOSITORY / "uav")
-    setup = text(PACKAGE / "setup.py")
-    for command in (
-        "px4-map-check",
-        "px4-gate-check",
-        "px4-boundary-check",
-    ):
-        assert command in wrapper
-    for launch in (
-        "px4_mapping_offline.launch.py",
-        "px4_gate_offline.launch.py",
-        "px4_boundary_offline.launch.py",
-    ):
-        assert launch in setup
-
-
-def test_boundary_launch_stops_at_diagnostic_permission() -> None:
-    """Keep the full graph terminal output at safe_to_forward."""
-    launch = text(PACKAGE / "launch/px4_boundary_offline.launch.py")
-    assert 'executable="px4_mapping_gate_node"' in launch
-    assert 'executable="synthetic_px4_telemetry"' in launch
-    assert 'executable="px4_boundary_result_monitor"' in launch
-    assert "/fmu/" not in launch

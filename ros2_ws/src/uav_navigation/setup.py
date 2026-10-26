@@ -23,55 +23,24 @@ setup(
                 "config/trajectory_parameterizer.yaml",
             ],
         ),
-        (
-            "share/" + package_name + "/launch",
-            [
-                "launch/astar_planner_offline.launch.py",
-                "launch/planning_to_trajectory_offline.launch.py",
-                "launch/planning_to_tracking_offline.launch.py",
-                "launch/trajectory_parameterizer_offline.launch.py",
-                "launch/trajectory_tracking_offline.launch.py",
-            ],
-        ),
     ],
     install_requires=["setuptools", "PyYAML>=6,<7"],
     zip_safe=True,
     maintainer="Noel",
     maintainer_email="a0916190423@gmail.com",
     description=(
-        "Validated A*/B-spline paths and offline timed trajectories."
+        "Expert-flight planning, timed trajectories, and tracking."
     ),
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "navigation_node = uav_navigation.navigation_node:main",
-            "astar_planner_node = uav_navigation.planner.astar_planner_node:main",
-            "astar_offline_harness = "
-            "uav_navigation.planner.astar_planner_node:offline_harness_main",
-            "geometric_path_comparison = "
-            "uav_navigation.diagnostics.geometric_comparison:main",
+            "astar_planner_node = "
+            "uav_navigation.planner.astar_planner_node:main",
             "trajectory_parameterizer_node = "
             "uav_navigation.trajectory.trajectory_parameterizer_node:main",
             "trajectory_follower_node = "
             "uav_navigation.tracking.trajectory_follower_node:main",
-            "trajectory_offline_harness = "
-            "uav_navigation.trajectory.trajectory_parameterizer_node:"
-            "offline_harness_main",
-            "trajectory_pipeline_harness = "
-            "uav_navigation.trajectory.trajectory_parameterizer_node:"
-            "pipeline_harness_main",
-            "tracking_trajectory_publisher = "
-            "uav_navigation.diagnostics.offline_tracking_harness:"
-            "trajectory_publisher_main",
-            "tracking_scene_publisher = "
-            "uav_navigation.diagnostics.offline_tracking_harness:scene_publisher_main",
-            "offline_kinematic_plant = "
-            "uav_navigation.diagnostics.offline_tracking_harness:plant_main",
-            "tracking_result_monitor = "
-            "uav_navigation.diagnostics.offline_tracking_harness:monitor_main",
-            "tracking_comparison = "
-            "uav_navigation.diagnostics.tracking_comparison:main",
         ],
     },
 )

@@ -3,7 +3,6 @@ set -Eeuo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 UAV="$REPO_ROOT/uav"
-PPO_RUNNER="$REPO_ROOT/train_ppo.sh"
 
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
@@ -11,12 +10,7 @@ fail() {
 }
 
 [[ -x "$UAV" ]] || fail "$UAV is not executable"
-[[ -x "$PPO_RUNNER" ]] || fail "$PPO_RUNNER is not executable"
 /usr/bin/bash -n "$UAV"
-/usr/bin/bash -n "$PPO_RUNNER"
-ppo_help="$($PPO_RUNNER --help)"
-[[ "$ppo_help" == *"./train_ppo.sh 50k"* ]] || \
-    fail "PPO runner help is missing the 50k preset"
 
 "$UAV" help >/dev/null
 if "$UAV" definitely-not-a-command >/dev/null 2>&1; then
@@ -35,6 +29,7 @@ doctor_output="$("$UAV" doctor 2>&1)"
     fail "doctor did not source ROS 2 Jazzy"
 
 temporary_root="$(mktemp -d /tmp/uav-wrapper-test.XXXXXX)"
+trap 'rm -rf -- "$temporary_root"' EXIT
 cp "$UAV" "$temporary_root/uav"
 chmod +x "$temporary_root/uav"
 set +e
@@ -48,18 +43,7 @@ set -e
 if /usr/bin/grep -nE 'source[^\n]*uav_ros2_ws' "$UAV"; then
     fail "wrapper contains a legacy workspace source command"
 fi
-/usr/bin/grep -Fq \
-    'ros2 launch uav_navigation astar_planner_offline.launch.py "$@"' \
-    "$UAV" || fail "offline launch arguments are not forwarded"
-/usr/bin/grep -Fq 'trajectory_parameterizer_offline.launch.py "$@"' \
-    "$UAV" || fail "trajectory-check arguments are not forwarded"
-/usr/bin/grep -Fq 'planning_to_trajectory_offline.launch.py "$@"' \
-    "$UAV" || fail "pipeline-check arguments are not forwarded"
 help_output="$("$UAV" help)"
-[[ "$help_output" == *"trajectory-check"* ]] || \
-    fail "trajectory-check is missing from help"
-[[ "$help_output" == *"pipeline-check"* ]] || \
-    fail "pipeline-check is missing from help"
 [[ "$help_output" == *"expert-collect"* ]] || \
     fail "expert-collect is missing from help"
 [[ "$help_output" == *"expert-collect-publish"* ]] || \
@@ -89,6 +73,14 @@ if "$UAV" expert-collect-publish --episodes 1 --dataset cylinder_v3 \
 then
     fail "expert-collect-publish accepted a missing NAS root"
 fi
+
+for retired in offline-check tracking-check mux-check px4-map-check px4-sitl-stream-check bc-overfit; do
+    set +e
+    "$UAV" "$retired" >/dev/null 2>&1
+    retired_status=$?
+    set -e
+    ((retired_status == 64)) || fail "retired command was not rejected: $retired"
+done
 
 git -C "$REPO_ROOT" check-ignore -q ros2_ws/build/example
 git -C "$REPO_ROOT" check-ignore -q ros2_ws/install/example

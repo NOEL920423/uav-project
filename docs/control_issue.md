@@ -2,6 +2,9 @@
 
 ## 目前狀態
 
+下列 failure-path 分析與修正驗證限制屬既有紀錄。本次專案精簡不視為控制問題修復；
+正式 evaluator 的診斷開關以文末現行 CLI 為準。
+
 控制問題分成兩類：影像／動作新鮮度，以及 PX4 控制邊界。兩類都不能靠放寬延遲門檻處理。本次程式修改保留既有 250 ms 動作期限與 PX4 gate 門檻；尚未用新的 Isaac Sim 飛行回合驗證修改效果。
 
 ## 第一類：影像與動作新鮮度
@@ -47,12 +50,14 @@ BC 節點原本在 timer callback 內同步等待推論子程序回覆。失敗�
 - `policy_input_frames/` 暫存影像，以及 run 根目錄 `videos/*.mp4`、`videos/*.json`：每次成功推論的模型輸入影像和動作標註。
 - run 根目錄 `summary.json`、`closed_loop_control_summary.md` 與結果圖：跨回合成功／失敗及結果趨勢。
 
-## 停用額外診斷紀錄
+## 現行診斷入口
 
-在 `uav_ml/tools/bc_flight_evaluation.py` 修改檔案頂端的 `ENABLE_BC_FLIGHT_DIAGNOSTICS = True`：
+`./uav bc-eval` 預設不收集 timing 與 PX4 ULog；需要時使用 `--diagnosis`：
 
-- `True`：保留目前的 timing JSONL、ULog、推論輸入影片、逐步軌跡，以及由這些資料產生的 timing/control summaries。
-- `False`：停止收集上述額外診斷資料；不要求 ffmpeg、不啟動 ULog capture、不建立 timing 報告、不寫 policy-input 影片或 trajectory trace。
-- 不論開關為何，都保留程序 stdout/stderr log、`result.json`、run-level `summary.json` 和結果圖；這些是判讀回合結果與原始錯誤所需的基本資料。
+```bash
+./uav bc-eval --diagnosis --episodes 1 --checkpoint <path> --seed <seed>
+```
 
-此開關只控制 managed `bc-eval`／trace replay 流程的額外診斷資料，不改變新鮮度保護、HOLD 行為或飛行控制參數。預設維持 `True`，方便下一次針對本次修正取得證據；問題確認解決後可改成 `False`。
+此選項啟用 timing、ULog 與控制摘要。不加此選項仍保留 stdout/stderr、結果、軌跡、影片與圖表。
+診斷不改變 freshness、安全門檻或測試結果。早期文件中的
+`ENABLE_BC_FLIGHT_DIAGNOSTICS` 常數已非現行入口，請勿依該舊說明判斷資料是否存在。

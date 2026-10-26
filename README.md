@@ -9,12 +9,10 @@
 
 - `ros2_ws/src/`：目前使用中的 ROS 2 套件與各套件測試。
 - `isaac/runtime/`：Isaac Sim / Pegasus 的主要執行環境與 pose bridge。
-- `uav_ml/`：BC、PPO、Autoencoder、Dataset、Inference 與 Evaluation 相關模組。
-- `scripts/ml/`：獨立的 IsaacLab / ML 執行腳本。
+- `uav_ml/`：BC、ResNet、Autoencoder、Dataset、Inference 與 Evaluation 相關模組。
+- `scripts/diagnostics/`：分析保存的閉環啟動紀錄。
 - `tools/`：除錯、診斷與開發輔助工具。
 - `tests/`：整個專案層級的 runtime 與 machine learning 測試。
-- `legacy/`：過去開發過程中保留的舊版程式，目前正式飛行流程不會使用。
-- `assets/usd/legacy_or_unclassified/`：舊版或尚未重新分類的 USD 場景與資源。
 - `docs/`：系統設計、問題紀錄、研究里程碑與開發文件。
 - `datasets/`：專家資料集與影像。
 - `experiments/`：Autoencoder、BC 模型與訓練結果。
@@ -26,8 +24,8 @@
 Daily work should enter through `./uav`. The supported workflows are expert
 collection (`expert-collect`), autoencoder training (`ae-train`), BC training
 (`bc-train`), BC flight evaluation (`bc-eval`), and guarded PX4 SITL flight
-(`px4-sitl-flight-check`). Offline checks, doctors, comparisons, and fixtures
-are regression or diagnostic tools, not normal flight entry points.
+(`px4-sitl-flight-check`). Readiness checks, timing diagnostics, and regression tests support these workflows.
+The workspace has five ROS packages and two flight launch files; see [architecture](docs/architecture.md).
 
 Use a profile for repeatable daily arguments without changing module defaults:
 
@@ -44,8 +42,7 @@ PX4 safety limits remain in the package ROS parameter YAML files.
 The shared goal acceptance distance is `success_distance_m` in
 [`uav_navigation/config/task.yaml`](ros2_ws/src/uav_navigation/config/task.yaml).
 Edit that value once and restart the affected workflows to apply it to BC
-evaluation, the PX4 flight supervisor, Isaac goal confirmation, and the
-fixed-height city environment. The flight YAML files inherit this default.
+evaluation, the PX4 flight supervisor, and Isaac goal confirmation. The flight YAML files inherit this default.
 The shared Python loader reads and validates the YAML; it has no separate
 distance default. Source-checkout ML workflows can read it without ROS or
 launch. Installed ROS packages read the installed package's configuration.
@@ -99,7 +96,6 @@ AE count options cannot be combined with the legacy `--split-file` option.
 - FPV 與 observer camera
 - Camera image recording
 - ROS 2 pose 與飛行資料記錄
-- Manual / joystick control 實驗
 - Expert Dataset 自動蒐集
 - Autoencoder 與 Behavior Cloning
 - Closed-loop flight evaluation
@@ -107,4 +103,3 @@ AE count options cannot be combined with the legacy `--split-file` option.
 ## Notes
 
 Dataset、rosbag、log、image、video、checkpoint 與其他實驗輸出不會丟到 github 上，畢竟現在是一坨 💩 。
-![就是坨拔拔](docs/images/PoopPoopingGIF.gif)

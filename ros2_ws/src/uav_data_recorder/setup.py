@@ -1,4 +1,4 @@
-"""Package the UAV data recorder scaffold."""
+"""Package canonical expert recording and scene preparation."""
 
 from setuptools import find_packages, setup
 
@@ -19,12 +19,11 @@ setup(
     zip_safe=True,
     maintainer="Noel",
     maintainer_email="a0916190423@gmail.com",
-    description="Safe data recorder scaffold.",
+    description="Synchronized expert dataset recording and scene preparation.",
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "data_recorder_node = uav_data_recorder.data_recorder_node:main",
             "expert_dataset_recorder = "
             "uav_data_recorder.expert_dataset_recorder_node:main",
             "episode_scene_client = "

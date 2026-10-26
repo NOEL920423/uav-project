@@ -388,8 +388,13 @@ def test_runtime_creates_canonical_cylinders_and_lights():
     assert "UsdGeom.Cylinder.Define" in cylinder_helper
     assert "CreateRadiusAttr" in cylinder_helper
     assert "CreateHeightAttr" in cylinder_helper
-    assert "OBSTACLE_COLOR" in cylinder_helper
+    assert 'self._set_display_color(prim, source["color"])' in cylinder_helper
+    assert 'materials["obstacle"]' in apply_scene
     assert "bind_material(prim, material)" in cylinder_helper
     assert "UsdPhysics.CollisionAPI.Apply(prim)" in cylinder_helper
-    assert "UsdLux.DomeLight.Define" in apply_scene
-    assert "UsdLux.DistantLight.Define" not in apply_scene
+    assert 'self._create_episode_lighting(scene["lighting"])' in apply_scene
+    lighting_helper = source.split(
+        "def _create_episode_lighting", 1
+    )[1].split("def _update_camera_pose", 1)[0]
+    assert "UsdLux.DomeLight.Define" in lighting_helper
+    assert "UsdLux.DistantLight.Define" not in lighting_helper

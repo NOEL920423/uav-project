@@ -1,120 +1,94 @@
 # 架構導覽
 
-本文件只介紹正式工作流程：
+日常研究只沿以下兩條流程進行。訓練在呼叫端的 Python 環境執行；ROS 2 使用 Ubuntu 上的 Jazzy 環境。
 
 ```text
-expert-collect -> ae-train -> bc-train -> bc-eval
+expert-collect -> ae-train 或 resnet-train -> bc-train -> bc-eval
 ```
 
-## 正式訓練流程
+## 收集與訓練
 
 ```text
 ./uav expert-collect
-  -> uav_ml.tools.expert_collect
-  -> uav_ml.tools.persistent_runtime
-  -> isaac/runtime/bootstrap.py
-     (Isaac Sim + Pegasus + PX4 SITL + runtime_bridge)
+  -> uav_ml/tools/expert_collect.py
+  -> uav_ml/tools/persistent_runtime.py
+  -> isaac/runtime/bootstrap.py + environment.py
   -> ./uav expert-run-episode
   -> px4_sitl_flight.launch.py
-  -> expert_dataset_recorder
-  -> datasets/<dataset>
+  -> expert_dataset_recorder -> datasets/<dataset>
 
-./uav ae-train
-  -> uav_ml.train_autoencoder
-  -> RGB episode dataset -> RgbAutoencoderV0 checkpoint
-
-./uav bc-train
-  -> uav_ml.tools.bc_baseline
-  -> frozen AE + expert dataset -> LatentBcPolicy checkpoint
+./uav ae-train     -> uav_ml/train_autoencoder.py
+./uav resnet-train -> uav_ml/tools/bc_baseline.py 的 ResNet encoder 訓練
+./uav bc-train     -> uav_ml/tools/bc_baseline.py -> BC checkpoint
 ```
 
-`ae-train` 和 `bc-train` 不依賴 ROS、Isaac 或 PX4。
+AE、ResNet、BC 的 split、normalization、影像來源與 checkpoint provenance 沿用各次實驗設定。
+共用 random seed 與裝置選擇函式位於 `uav_ml/training/__init__.py`。
 
-ML 的小型輔助模組依職責合併於既有檔案：
-
-| 合併前模組 | 現在位置 |
-|---|---|
-| `uav_ml.datasets.split`、`uav_ml.datasets.validation` | `uav_ml.datasets.dataset` |
-| `uav_ml.datasets.rgb_episode_dataset` | `uav_ml.datasets.expert_image_dataset` |
-| `uav_ml.models.latent_actor_critic` | `uav_ml.models.latent_bc_policy` |
-
-專案內的 imports 已同步更新；額外腳本若直接匯入上述舊模組，也需改用現在位置。
-`uav_ml.models` 和 `uav_ml.datasets` 原有公開匯出、CLI、資料格式與 checkpoint 格式保持不變。
-
-## 正式 BC closed-loop 流程
+## 閉環測試
 
 ```text
 ./uav bc-eval
-  -> uav_ml.tools.bc_flight_evaluation
-  -> isaac/runtime/bootstrap.py
-     (Isaac Sim + Pegasus + PX4 SITL + runtime_bridge)
-  -> ./uav bc-flight-run
-  -> bc_flight.launch.py
+  -> uav_ml/tools/bc_flight_evaluation.py
+  -> Isaac Sim + Pegasus + PX4 SITL + XRCE
+  -> ./uav bc-flight-run -> bc_flight.launch.py
 
-TOP RGB + PX4 odometry + scene goal
-  -> bc_policy
-  -> control_mux
-  -> px4_mapping_gate
-  -> px4_setpoint_streamer
-  -> PX4 /fmu/in trajectory setpoint + offboard mode
-  -> Pegasus vehicle in Isaac
+影像 + PX4 odometry + goal
+  -> bc_policy -> control_mux -> px4_mapping_gate
+  -> px4_setpoint_streamer -> PX4 -> Pegasus vehicle
 
-bc_flight_supervisor + bc_episode_monitor
-  -> lifecycle, termination, result JSON, traces, plots
+bc_flight_supervisor -> 起飛、來源切換、HOLD、降落
+bc_episode_monitor   -> 終止條件、result.json、軌跡
 ```
 
-`bc-eval` 是正式的 Isaac/Pegasus/PX4 飛行評估流程。
+`bc-eval --diagnosis` 額外保存 timing、ULog 與控制摘要。`Control issue` 是
+`runtime_failure` 的圖表標籤，並非根因；已知證據與限制見 [control_issue.md](control_issue.md)。
 
-## 主要 ROS 2 nodes
+## 五個 ROS 2 套件
 
-| Node | 正式用途 | 職責 |
-|---|---|---|
-| `scene_bridge` | 資料收集、BC 評估 | Isaac pose/status -> 經驗證的場景障礙物、起點與終點 |
-| `astar_planner` | 資料收集 | Scene -> A* 路徑 |
-| `trajectory_parameterizer` | 資料收集 | Path -> timed trajectory |
-| `trajectory_follower` | 資料收集 | Trajectory -> `ASTAR_EXPERT` command candidate |
-| `expert_dataset_recorder` | 資料收集 | 將影像、odometry、expert command 和飛行證據同步記錄成 episodes |
-| `px4_odometry_bridge` | 資料收集、BC 評估 | PX4 vehicle odometry -> ROS odometry |
-| `control_mux` | 資料收集、BC 評估 | 唯一選取一個 command source |
-| `px4_live_telemetry_adapter` | 資料收集、BC 評估 | 將 PX4 status/control/odometry/failsafe 轉為 gate 使用的 telemetry |
-| `px4_mapping_gate` | 資料收集、BC 評估 | Fail-closed command 驗證與 PX4 candidate mapping |
-| `px4_setpoint_streamer` | 資料收集、BC 評估 | 唯一向 PX4 發布 trajectory-setpoint/offboard-mode 的 node |
-| `px4_vehicle_command_owner` | 資料收集、BC 評估 | 唯一向 PX4 發布 vehicle command 的 node |
-| `px4_sitl_flight_supervisor`, `px4_sitl_flight_monitor` | 資料收集 | Expert 任務生命週期與飛行證據 |
-| `bc_policy` | BC 評估 | TOP RGB AE+BC 推論 -> BC command candidate |
-| `bc_flight_supervisor` | BC 評估 | Arm/takeoff/enable/landing 生命週期 |
-| `bc_episode_monitor` | BC 評估 | 判定 goal/collision/timeout 並產生結果 artifact |
+| 套件 | 職責 |
+|---|---|
+| `uav_interfaces` | 正式流程共用的 messages 與 services |
+| `uav_scene_bridge` | Isaac runtime 與 coherent scene snapshots |
+| `uav_navigation` | Expert 的 A*、B-spline、軌跡參數化、follower |
+| `uav_px4_control` | Source mux、PX4 邊界、expert／BC 生命週期與診斷 |
+| `uav_data_recorder` | 場景準備與同步 expert dataset 記錄 |
 
-## Launch graph 對照
+## 正式 launch 與 nodes
 
-| Launch file | 使用者 | 該 graph 專屬的 nodes |
-|---|---|---|
-| `uav_px4_control/launch/px4_sitl_flight.launch.py` | `expert-collect` | A* planner、parameterizer、follower、expert recorder、expert supervisor/monitor |
-| `uav_px4_control/launch/bc_flight.launch.py` | `bc-eval` | BC policy、BC supervisor、BC episode monitor；刻意不包含 planner/follower |
+僅保留 `ros2_ws/src/uav_px4_control/launch/` 下兩個 launch。
 
-## 分類
+| 使用範圍 | Nodes |
+|---|---|
+| 兩者共用 | `scene_bridge_node`, `px4_odometry_bridge_node`, `control_mux_node`, `px4_live_telemetry_adapter`, `px4_mapping_gate_node`, `px4_setpoint_streamer_node`, `px4_vehicle_command_owner_node` |
+| `px4_sitl_flight.launch.py`：收集 | `astar_planner_node`, `trajectory_parameterizer_node`, `trajectory_follower_node`, `expert_dataset_recorder`, `px4_sitl_flight_supervisor_node`, `px4_sitl_flight_monitor` |
+| `bc_flight.launch.py`：測試 | `bc_policy_node`, `bc_flight_supervisor_node`, `bc_episode_monitor_node` |
 
-### 主要元件
+`episode_scene_client`、`px4_sitl_doctor`、`px4_generation_probe` 與
+`runtime_smoke_lifecycle_client` 由 orchestrator 按需啟動，負責 scene、readiness、跨回合 reset。
+它們仍是正式流程的相依項。
 
-- `uav`
-- `uav_ml/tools/{expert_collect,persistent_runtime,bc_baseline,bc_flight_evaluation,training_cli}.py`
-- `uav_ml/train_autoencoder.py`, `uav_ml/train_bc.py`
-- 正式 dataset、AE/BC model 與 BC inference modules
-- `isaac/runtime/{bootstrap,environment,formal_expert_sensor_contract}.py`
-- 上述來自 `uav_navigation`、`uav_scene_bridge`、`uav_data_recorder` 和 `uav_px4_control` 的
-  active nodes 與 launch/config files
+## 保留與移除的範圍
 
-### 支援元件
+保留正式流程使用的純演算法、契約／安全測試與其 fixtures、故障診斷、資料驗證、影片／繪圖及 NAS 工具。
+`diagnostics/` 中部分純 Python fixtures 僅供測試使用，不會啟動額外 ROS graph。
+控制來源的既有識別字與 message 格式保留相容性；日常入口只提供自動 expert 與 BC 流程。
 
-- Expert 資料收集驗證、finalization 與 visual-QA helpers
-- BC 飛行繪圖 helper
-- 正式 navigation 與 PX4 設定 YAML files
+已移除 Phase 1 scaffold 套件／nodes、獨立離線 launch／harness、實體搖桿入口、
+舊版 NPZ 四軸 BC trainer／model／inference、固定高度 city／PPO 支線及單回合 overfit 指令。
+相關安裝入口、失效文件和舊架構圖同步移除。
 
-### 診斷工具
+Dataset、所有 checkpoint、歷史 logs、失敗結果與其他研究 artifacts 均保留。
+精簡只降低維護範圍，不代表既有閉環 control issue 已修復。
 
-- `scripts/diagnostics/summarize_bc_startup.py`
-- Offline harnesses、比較工具、smoke checks 與 PX4 診斷 launch paths
+Isaac Sim、PX4 與 Pegasus 維持外部安裝。專案內 `pegasus_test/PegasusSimulator`
+的 144 個 source／asset files 已逐檔驗證與 `/home/noel_614420090/PegasusSimulator`
+相同，重複副本改為連到該 checkout 的 symlink；不另外維護第三方程式副本。
 
-### 不屬於正式流程
+## 本次精簡驗證
 
-- `uav_camera_bridge` 和 `uav_bringup/uav_system_scaffold.launch.py` 是 scaffold nodes，不會由正式 graph 啟動。
+- 五個 ROS 套件重新建置成功，保留的 20 個 console entry points 均可 import。
+- ML／runtime：163 tests 通過；ROS 功能測試：375 通過、22 跳過；CLI 檢查通過。
+- 現有 BC checkpoint 與其 encoder 可載入；未啟動 training、collection 或 Isaac 飛行。
+- 完整 `./uav test` 仍有 recorder、navigation、PX4 control 三個既有 lint suites 失敗。
+  功能測試結果與 lint 分開回報；未放寬 lint 設定或移除其測試。

@@ -78,8 +78,9 @@ def test_takeoff_acceptance_matches_follower_terminal_tolerance():
     assert "takeoff_altitude_tolerance_m: 0.25" in config
 
 
-def test_human_launch_uses_existing_nodes_and_rejects_astar_recording():
-    """Human mode omits automatic missions and prevents mislabeled data."""
+@pytest.mark.parametrize("recording", [False, True])
+def test_automated_expert_launch_has_only_formal_nodes(recording):
+    """Start the expert graph with its recorder enabled only on request."""
     from launch import LaunchContext
     from launch_ros.actions import Node
 
@@ -88,26 +89,26 @@ def test_human_launch_uses_existing_nodes_and_rejects_astar_recording():
     ))
     context = LaunchContext()
     context.launch_configurations.update({
-        "human_control": "true", "record_expert_dataset": "false",
+        "record_expert_dataset": str(recording).lower(),
         "use_external_scene": "true",
     })
-    module["_validate_human_options"](context)
     enabled = {
         action.node_executable
         for action in module["generate_launch_description"]().entities
         if isinstance(action, Node)
         and (action.condition is None or action.condition.evaluate(context))
     }
-    assert "joystick_control_node" in enabled
-    assert "px4_sitl_flight_supervisor_node" in enabled
-    assert not enabled.intersection({
+    expected = {
+        "scene_bridge_node", "px4_odometry_bridge_node", "control_mux_node",
+        "px4_live_telemetry_adapter", "px4_mapping_gate_node",
+        "px4_setpoint_streamer_node", "px4_vehicle_command_owner_node",
+        "px4_sitl_flight_supervisor_node",
         "astar_planner_node", "trajectory_parameterizer_node",
         "trajectory_follower_node", "px4_sitl_flight_monitor",
-        "expert_dataset_recorder",
-    })
-    context.launch_configurations["record_expert_dataset"] = "true"
-    with pytest.raises(RuntimeError, match="not implemented"):
-        module["_validate_human_options"](context)
+    }
+    if recording:
+        expected.add("expert_dataset_recorder")
+    assert enabled == expected
 
 
 def test_human_supervisor_ros_adapter_requires_live_neutral_landed_input():

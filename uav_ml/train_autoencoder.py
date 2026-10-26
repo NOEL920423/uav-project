@@ -53,7 +53,7 @@ from uav_ml.tools.training_cli import (
     resolve_dataset,
 )
 from uav_ml.tools.validate_expert_collection import DEFAULT_DATASET
-from uav_ml.train_bc import resolve_device, set_seeds
+from uav_ml.training import resolve_device, set_seeds
 
 
 LATENT_CONTRACT_TEMPLATE = "rgb_autoencoder_latent_{dimension}_v0.1"

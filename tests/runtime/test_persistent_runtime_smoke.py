@@ -31,11 +31,11 @@ RUNTIME_MANAGER = ROOT / "uav_ml/tools/persistent_runtime.py"
 COLLECTOR = ROOT / "uav_ml/tools/expert_collect.py"
 GENERATION_PROBE = (
     ROOT / "ros2_ws/src/uav_px4_control/uav_px4_control/"
-    "px4_generation_probe.py"
+    "diagnostics/px4_generation_probe.py"
 )
 FLIGHT_SUPERVISOR = (
     ROOT / "ros2_ws/src/uav_px4_control/uav_px4_control/"
-    "px4_sitl_flight_supervisor_node.py"
+    "flight/px4_sitl_flight_supervisor_node.py"
 )
 
 

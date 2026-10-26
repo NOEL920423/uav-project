@@ -1,6 +1,5 @@
 """Behavior-cloning policy models."""
 
-from uav_ml.models.bc_policy_v0 import BcPolicyConfig, BcPolicyV0
 from uav_ml.models.rgb_autoencoder_v0 import (
     MultiImageAutoencoderConfig,
     MultiImageAutoencoderV0,
@@ -9,14 +8,11 @@ from uav_ml.models.rgb_autoencoder_v0 import (
     ResNet18AutoencoderV0,
 )
 from uav_ml.models.latent_bc_policy import (
-    LatentActorCritic,
     LatentBcPolicy,
     LatentBcPolicyConfig,
 )
 
 __all__ = [
-    "BcPolicyConfig",
-    "BcPolicyV0",
     "RgbAutoencoderConfig",
     "RgbAutoencoderV0",
     "ResNet18AutoencoderV0",
@@ -24,5 +20,4 @@ __all__ = [
     "MultiImageAutoencoderV0",
     "LatentBcPolicy",
     "LatentBcPolicyConfig",
-    "LatentActorCritic",
 ]

@@ -1,8 +1,9 @@
 # Package layout
 
-- `planner/` owns A*, B-spline, geometric validation, and coordinate frames.
-- `trajectory/` owns path timing, sampling, validation, and yaw profiles.
-- `tracking/` owns the follower and tracking command validation.
-- `diagnostics/` contains offline plants, fixtures, harnesses, and comparisons.
+- `planner/`: expert A*, B-spline, geometry, and coordinate conversion.
+- `trajectory/`: timing, sampling, validation, and yaw profiles.
+- `tracking/`: expert follower and command validation.
+- `diagnostics/`: pure test fixtures for geometry, plant, and tracking metrics.
 
-Console-script and launch names remain stable; import paths follow this layout.
+The expert launch is maintained in `uav_px4_control/launch/px4_sitl_flight.launch.py`.
+No standalone offline ROS graph is installed by this package.

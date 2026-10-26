@@ -1,27 +1,14 @@
-"""Launch A* acceptance or an explicitly enabled physical joystick flight."""
+"""Launch the automated A* expert collection and guarded flight graph."""
 
 from pathlib import Path
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, Shutdown
-from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import (
-    LaunchConfiguration, PathJoinSubstitution, PythonExpression,
-)
+from launch.actions import DeclareLaunchArgument, Shutdown
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
-
-
-def _validate_human_options(context):
-    """Refuse a human run with the existing A*-only dataset recorder."""
-    human = LaunchConfiguration("human_control").perform(context).lower()
-    record = LaunchConfiguration("record_expert_dataset").perform(context)
-    record = record.lower()
-    if human in {"true", "1"} and record in {"true", "1"}:
-        raise RuntimeError("Human dataset recording is not implemented yet")
-    return []
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -51,14 +38,6 @@ def generate_launch_description() -> LaunchDescription:
     timeout_s = LaunchConfiguration("timeout_s")
     start_delay_s = LaunchConfiguration("start_delay_s")
     use_external_scene = LaunchConfiguration("use_external_scene")
-    human_control = LaunchConfiguration("human_control")
-    joystick_device = LaunchConfiguration("joystick_device")
-    verbose_diagnostics = ParameterValue(
-        PythonExpression([
-            "'", human_control, "'.lower() not in ('true', '1')",
-        ]),
-        value_type=bool,
-    )
     require_isaac_evidence = LaunchConfiguration("require_isaac_evidence")
     record_expert_dataset = LaunchConfiguration("record_expert_dataset")
     dataset_root = LaunchConfiguration("dataset_root")
@@ -84,10 +63,6 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("timeout_s", default_value="120.0"),
         DeclareLaunchArgument("start_delay_s", default_value="2.0"),
         DeclareLaunchArgument("use_external_scene", default_value="false"),
-        DeclareLaunchArgument("human_control", default_value="false"),
-        DeclareLaunchArgument(
-            "joystick_device", default_value="/dev/input/js0"
-        ),
         DeclareLaunchArgument(
             "require_isaac_evidence", default_value="false"
         ),
@@ -112,21 +87,6 @@ def generate_launch_description() -> LaunchDescription:
             "minimum_observer_frame_count", default_value="0"
         ),
         DeclareLaunchArgument("minimum_depth_frame_count", default_value="0"),
-        OpaqueFunction(function=_validate_human_options),
-        Node(
-            package="uav_px4_control",
-            executable="joystick_control_node",
-            parameters=[{
-                "device": joystick_device,
-                "enable_control": True,
-                "altitude_hold_m": 1.5,
-                "latch_after_stop": True,
-                "report_raw_inputs": False,
-                "show_operator_status": True,
-            }],
-            condition=IfCondition(human_control),
-            output="screen",
-        ),
         Node(
             package="uav_scene_bridge",
             executable="scene_bridge_node",
@@ -140,21 +100,18 @@ def generate_launch_description() -> LaunchDescription:
         Node(
             package="uav_navigation",
             executable="astar_planner_node",
-            condition=UnlessCondition(human_control),
             parameters=[planner, flight],
             output="screen",
         ),
         Node(
             package="uav_navigation",
             executable="trajectory_parameterizer_node",
-            condition=UnlessCondition(human_control),
             parameters=[trajectory],
             output="screen",
         ),
         Node(
             package="uav_navigation",
             executable="trajectory_follower_node",
-            condition=UnlessCondition(human_control),
             parameters=[follower, flight],
             output="screen",
         ),
@@ -193,7 +150,7 @@ def generate_launch_description() -> LaunchDescription:
             package="uav_px4_control",
             executable="px4_live_telemetry_adapter",
             parameters=[{
-                "log_telemetry_diagnostics": verbose_diagnostics,
+                "log_telemetry_diagnostics": True,
             }],
             output="screen",
         ),
@@ -201,8 +158,7 @@ def generate_launch_description() -> LaunchDescription:
             package="uav_px4_control",
             executable="px4_mapping_gate_node",
             parameters=[gate, flight, {
-                "allow_controlled_mux_handoff": human_control,
-                "log_startup_diagnostics": verbose_diagnostics,
+                "log_startup_diagnostics": True,
             }],
             output="screen",
         ),
@@ -210,7 +166,7 @@ def generate_launch_description() -> LaunchDescription:
             package="uav_px4_control",
             executable="px4_setpoint_streamer_node",
             parameters=[streamer, flight, {
-                "log_startup_diagnostics": verbose_diagnostics,
+                "log_startup_diagnostics": True,
             }],
             output="screen",
         ),
@@ -224,14 +180,12 @@ def generate_launch_description() -> LaunchDescription:
             executable="px4_sitl_flight_supervisor_node",
             parameters=[flight, {
                 "use_external_scene": use_external_scene,
-                "human_control": human_control,
             }],
             output="screen",
         ),
         Node(
             package="uav_px4_control",
             executable="px4_sitl_flight_monitor",
-            condition=UnlessCondition(human_control),
             parameters=[{
                 "evidence_path": evidence_path,
                 "timeout_s": timeout_s,

@@ -1,18 +1,13 @@
 # uav_data_recorder
 
-Future owner of synchronized dataset, metadata, pose-log, and rosbag recording.
+`expert_dataset_recorder` records synchronized expert images, odometry, actions,
+scene/seed metadata, and safety evidence under `datasets/<dataset>/episode_*`.
+It is enabled by the expert flight launch; BC evaluation does not start the recorder.
 
-- Inputs: episode state, camera streams, vehicle state, and planning outputs.
-- Outputs: versioned datasets and recording status (future).
-- Must not: command PX4, generate scenes, or execute training/inference jobs.
-- The recorder is idle with recording disabled and opens no output files.
-- `expert_dataset_recorder` is opt-in from the guarded flight launch. It uses
-  bounded synchronization queues and records FPV RGB, observer RGB, FPV depth,
-  seed, scene, rejection, and safety metadata under a Git-ignored artifact root.
-- `episode_scene_client` requires landed, disarmed, no-failsafe PX4 state before
-  it requests a seeded Isaac scene.
-- Formal expert collection: the same recorder additionally publishes a 1 Hz
-  file-based progress snapshot and records A* path plus raw stream counts. The
-  one-command orchestration, resume manifest, aggregate validation, and 20
-  episode Visual QA cadence are documented in
-  `docs/expert_dataset_collection.md`. The recorder still never commands PX4.
+`episode_scene_client` verifies landed, disarmed, no-failsafe PX4 state before requesting
+a seeded Isaac scene. The root `./uav expert-collect` orchestrator owns episode collection,
+resume manifests, finalization, validation, and visual QA.
+
+The unused placeholder recorder has been removed. Dataset contracts and recorded
+labels are unchanged. This package never commands PX4 or trains models.
+See `docs/expert_dataset_collection.md`.

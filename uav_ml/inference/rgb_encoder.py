@@ -16,7 +16,7 @@ from uav_ml.models import (
     RgbAutoencoderV0,
     ResNet18AutoencoderV0,
 )
-from uav_ml.train_bc import resolve_device
+from uav_ml.training import resolve_device
 
 
 RESNET_PREPROCESSING = (

@@ -3,7 +3,7 @@
 <package format="3">
   <name>uav_navigation</name>
   <version>0.1.0</version>
-  <description>Validated paths, timed trajectories, and offline tracking.</description>
+  <description>Expert-flight path planning, timed trajectories, and tracking.</description>
   <maintainer email="a0916190423@gmail.com">Noel</maintainer>
   <license>Apache-2.0</license>
   <exec_depend>ament_index_python</exec_depend>

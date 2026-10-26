@@ -1,22 +1,11 @@
 # uav_interfaces
 
-Phase 8 adds `Px4StreamStatus.msg` and `SetPx4StreamEnable.srv` for the
-separately gated SITL-only setpoint streamer. These interfaces do not authorize
-OFFBOARD, arming, takeoff, landing, or real-vehicle operation.
+Typed messages and services used by expert collection and BC flight evaluation:
+scene/episode snapshots, timed trajectories, tracking/mux status, PX4 candidate/gate/
+stream/flight status, scene generation, explicit enable requests, source selection,
+and sole-owner vehicle-command requests.
 
-The guarded flight milestone adds `Px4FlightStatus.msg` and
-`SetPx4FlightEnable.srv`. They expose explicit mission intent and measured
-acceptance evidence; command ownership and all SITL identity/safety checks
-remain in `uav_px4_control`.
-
-Owns the typed ROS 2 message, service, and action contracts shared by the UAV
-integration packages. Current definitions include scene/episode contracts,
-`TimedTrajectory`, `TrajectoryPoint`, `TrajectoryTrackingStatus`, the Phase 6
-`ControlMuxStatus`, and `SetControlSource` service. Runtime behavior remains in
-the owning packages.
-
-- Inputs: interface definitions maintained in this package.
-- Outputs: generated language bindings after a workspace build.
-- Must not: contain planners, controllers, PX4 command logic, or simulator I/O.
-- Phase 6: `uav_px4_control/control_mux` owns the mux status publisher and
-  source-selection service; this package contains definitions only.
+Runtime behavior lives in the owning packages. The unused `RunEpisode` action and
+its `action_msgs` build dependency have been removed. Existing message and service
+schemas are unchanged, including `Px4SyntheticTelemetry`, which is also used by the
+production live telemetry adapter.

@@ -1,9 +1,6 @@
-"""ROS 2 adapter and finite harnesses for offline trajectory generation."""
+"""ROS 2 adapter for expert-flight trajectory generation."""
 
 import math
-import time
-
-from geometry_msgs.msg import PoseStamped
 
 from nav_msgs.msg import Path
 
@@ -15,15 +12,15 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
 
 from uav_interfaces.msg import (
-    Obstacle,
-    ObstacleArray,
     TimedTrajectory,
     TrajectoryPoint as TrajectoryPointMessage,
 )
 
 from uav_navigation.planner.models import Point3D
 from uav_navigation.trajectory.trajectory_models import TrajectoryConfig
-from uav_navigation.trajectory.trajectory_parameterizer import parameterize_trajectory
+from uav_navigation.trajectory.trajectory_parameterizer import (
+    parameterize_trajectory,
+)
 
 PATH_TOPIC = "/uav/planner/path"
 CANDIDATE_TOPIC = "/uav/trajectory/candidate"
@@ -197,236 +194,6 @@ class TrajectoryParameterizerNode(Node):
         )
 
 
-def _fixture_points(name: str) -> tuple[tuple[float, float, float], ...]:
-    """Return one of twelve deterministic standalone path fixtures."""
-    fixtures = {
-        "straight-line": ((0, 0, -2), (3, 0, -2), (6, 0, -2)),
-        "phase3-bspline": (
-            (0, 0, -2), (1, 0.08, -2), (2, 0.30, -2),
-            (3, 0.55, -2), (4, 0.30, -2), (5, 0.08, -2), (6, 0, -2),
-        ),
-        "sharp-bend": ((0, 0, -2), (2, 0, -2), (2, 0.3, -2), (2, 2, -2)),
-        "high-curvature": (
-            (0, 0, -2), (0.4, 0, -2), (0.45, 0.12, -2),
-            (0.4, 0.25, -2), (0, 0.25, -2),
-        ),
-        "duplicate-adjacent": (
-            (0, 0, -2), (1, 0, -2), (1, 0, -2), (2, 0, -2),
-        ),
-        "two-point": ((0, 0, -2), (1, 0, -2)),
-        "invalid-one-point": ((0, 0, -2),),
-        "nonfinite": ((0, 0, -2), (math.nan, 0, -2)),
-        "yaw-wrap": (
-            (0, 0.01, -2), (-1, 0.001, -2),
-            (-2, -0.001, -2), (-3, -0.01, -2),
-        ),
-        "jerk-scaling": (
-            (0, 0, -2), (1, 0, -2), (1, 0.2, -2),
-            (1, 1, -2), (2, 1, -2),
-        ),
-        "impossible-config-rejection": (
-            (0, 0, -2), (1, 0, -2), (1, 1, -2), (2, 1, -2),
-        ),
-        "wrong-frame": ((0, 0, -2), (1, 0, -2), (2, 0, -2)),
-    }
-    if name not in fixtures:
-        raise RuntimeError(f"unknown trajectory fixture: {name}")
-    return fixtures[name]
-
-
-class OfflineTrajectoryHarness(Node):
-    """Publish one fixed path and independently inspect all Phase 4 outputs."""
-
-    def __init__(self) -> None:
-        """Create subscriptions and a finite wall-time state machine."""
-        super().__init__("trajectory_offline_harness")
-        self.declare_parameter("fixture", "straight-line")
-        self._fixture = str(self.get_parameter("fixture").value)
-        self._points = _fixture_points(self._fixture)
-        self._expected_valid = self._fixture not in {
-            "invalid-one-point", "nonfinite",
-            "impossible-config-rejection", "wrong-frame",
-        }
-        qos = _durable_qos()
-        self._publisher = self.create_publisher(Path, PATH_TOPIC, qos)
-        self.create_subscription(
-            TimedTrajectory, CANDIDATE_TOPIC, self._candidate_callback, qos
-        )
-        self.create_subscription(
-            Bool, VALID_TOPIC, self._valid_callback, qos
-        )
-        self.create_subscription(
-            String, STATUS_TOPIC, self._status_callback, qos
-        )
-        self._candidate = None
-        self._valid = None
-        self._status_text = ""
-        self._valid_count = 0
-        self._published = False
-        self._duplicate_published_at = None
-        self._finished = False
-        self.exit_code = 1
-        self._started_at = time.monotonic()
-        self.create_timer(0.1, self._tick)
-
-    def _path_message(self) -> Path:
-        message = Path()
-        message.header.stamp = self.get_clock().now().to_msg()
-        message.header.frame_id = (
-            "map" if self._fixture == "wrong-frame" else "px4_ned"
-        )
-        for x, y, z in self._points:
-            pose = PoseStamped()
-            pose.header = message.header
-            pose.pose.position.x = float(x)
-            pose.pose.position.y = float(y)
-            pose.pose.position.z = float(z)
-            message.poses.append(pose)
-        return message
-
-    def _tick(self) -> None:
-        if not self._published:
-            self._publisher.publish(self._path_message())
-            self._published = True
-            self.get_logger().info(
-                f"Published trajectory fixture: {self._fixture}"
-            )
-        ready = self._valid is not None and bool(self._status_text)
-        if ready and self._duplicate_published_at is None:
-            self._publisher.publish(self._path_message())
-            self._duplicate_published_at = time.monotonic()
-        if self._duplicate_published_at is not None:
-            if time.monotonic() - self._duplicate_published_at > 0.35:
-                self._inspect()
-        if not self._finished and time.monotonic() - self._started_at > 8.0:
-            self._finish(1, "trajectory fixture timed out")
-
-    def _candidate_callback(self, message: TimedTrajectory) -> None:
-        self._candidate = message
-
-    def _valid_callback(self, message: Bool) -> None:
-        self._valid = message.data
-        self._valid_count += 1
-
-    def _status_callback(self, message: String) -> None:
-        self._status_text = message.data
-
-    def _inspect(self) -> None:
-        if self._finished:
-            return
-        if self._valid_count != 1:
-            self._finish(1, "identical input was recomputed")
-            return
-        if self._valid != self._expected_valid:
-            self._finish(1, f"unexpected validity: {self._valid}")
-            return
-        if self._expected_valid:
-            if self._candidate is None or not self._candidate.valid:
-                self._finish(1, "valid candidate was not received")
-                return
-            times = [
-                item.time_from_start.sec + item.time_from_start.nanosec / 1e9
-                for item in self._candidate.points
-            ]
-            if not times or times[0] != 0.0 or any(
-                later <= earlier for earlier, later in zip(times, times[1:])
-            ):
-                self._finish(1, "candidate time sequence is invalid")
-                return
-        expected_marker = "SUCCESS|" if self._expected_valid else "REJECTED|"
-        if expected_marker not in self._status_text:
-            self._finish(1, "trajectory status marker is inconsistent")
-            return
-        count = len(self._candidate.points) if self._candidate else 0
-        self._finish(
-            0,
-            "trajectory offline integration passed: "
-            f"fixture={self._fixture}, valid={str(self._valid).lower()}, "
-            f"points={count}, duplicate_recomputations=0, frame=px4_ned",
-        )
-
-    def _finish(self, code: int, detail: str) -> None:
-        if self._finished:
-            return
-        self._finished = True
-        self.exit_code = code
-        logger = self.get_logger()
-        (logger.info if code == 0 else logger.error)(detail)
-        if rclpy.ok():
-            rclpy.shutdown()
-
-
-class OfflinePipelineHarness(OfflineTrajectoryHarness):
-    """Drive a fixed scene through Phase 3 and inspect Phase 4 outputs."""
-
-    def __init__(self) -> None:
-        """Replace the direct path publisher with fixed scene publishers."""
-        super().__init__()
-        self.destroy_publisher(self._publisher)
-        qos = _durable_qos()
-        self._obstacles = self.create_publisher(
-            ObstacleArray, "/uav/scene/obstacles", qos
-        )
-        self._start = self.create_publisher(
-            PoseStamped, "/uav/scene/start", qos
-        )
-        self._goal = self.create_publisher(
-            PoseStamped, "/uav/scene/goal", qos
-        )
-
-    def _tick(self) -> None:
-        if not self._published:
-            stamp = self.get_clock().now().to_msg()
-            obstacles = ObstacleArray()
-            obstacles.header.frame_id = "isaac_world"
-            obstacles.header.stamp = stamp
-            obstacle = Obstacle()
-            obstacle.name = "pipeline_tower"
-            obstacle.center.x = 0.0
-            obstacle.center.y = 0.0
-            obstacle.center.z = 1.5
-            obstacle.radius = 0.2
-            obstacle.height = 3.0
-            obstacles.obstacles.append(obstacle)
-            start = self._scene_pose(-2.0, stamp)
-            goal = self._scene_pose(2.0, stamp)
-            self._obstacles.publish(obstacles)
-            self._start.publish(start)
-            self._goal.publish(goal)
-            self._published = True
-            self.get_logger().info("Published fixed Phase 3 pipeline scene")
-        if (
-            self._valid is not None
-            and self._status_text
-            and not self._finished
-        ):
-            self._inspect_pipeline()
-        if not self._finished and time.monotonic() - self._started_at > 12.0:
-            self._finish(1, "planning-to-trajectory pipeline timed out")
-
-    @staticmethod
-    def _scene_pose(x: float, stamp) -> PoseStamped:
-        pose = PoseStamped()
-        pose.header.frame_id = "isaac_world"
-        pose.header.stamp = stamp
-        pose.pose.position.x = x
-        pose.pose.orientation.w = 1.0
-        return pose
-
-    def _inspect_pipeline(self) -> None:
-        if not self._valid or self._candidate is None:
-            self._finish(1, "pipeline trajectory was rejected")
-            return
-        if self._candidate.source_path_topic != PATH_TOPIC:
-            self._finish(1, "pipeline consumed the wrong path topic")
-            return
-        self._finish(
-            0,
-            "pipeline offline integration passed: scene=accepted-bspline, "
-            f"valid=true, points={len(self._candidate.points)}, frame=px4_ned",
-        )
-
-
 def _spin(node_type, args=None) -> int:
     rclpy.init(args=args)
     node = node_type()
@@ -445,16 +212,6 @@ def _spin(node_type, args=None) -> int:
 def main(args=None) -> int:
     """Run the trajectory parameterizer node."""
     return _spin(TrajectoryParameterizerNode, args)
-
-
-def offline_harness_main(args=None) -> int:
-    """Run one finite standalone trajectory fixture."""
-    return _spin(OfflineTrajectoryHarness, args)
-
-
-def pipeline_harness_main(args=None) -> int:
-    """Run the finite scene-to-trajectory integration fixture."""
-    return _spin(OfflinePipelineHarness, args)
 
 
 if __name__ == "__main__":

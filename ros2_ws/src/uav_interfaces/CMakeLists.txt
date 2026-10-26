@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.8)
 project(uav_interfaces)
 
 find_package(ament_cmake REQUIRED)
-find_package(action_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
@@ -27,8 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetPx4StreamEnable.srv"
   "srv/SetPx4FlightEnable.srv"
   "srv/SendPx4VehicleCommand.srv"
-  "action/RunEpisode.action"
-  DEPENDENCIES action_msgs builtin_interfaces geometry_msgs std_msgs
+  DEPENDENCIES builtin_interfaces geometry_msgs std_msgs
 )
 
 ament_export_dependencies(rosidl_default_runtime)

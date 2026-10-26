@@ -1,1 +1,0 @@
-"""UAV camera bridge package."""

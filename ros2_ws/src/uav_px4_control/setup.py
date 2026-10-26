@@ -1,4 +1,4 @@
-"""Package the UAV PX4 control scaffold."""
+"""Package the guarded expert and BC flight control nodes."""
 
 from setuptools import find_packages, setup
 
@@ -27,12 +27,6 @@ setup(
         (
             "share/" + package_name + "/launch",
             [
-                "launch/control_mux_offline.launch.py",
-                "launch/control_stack_offline.launch.py",
-                "launch/px4_mapping_offline.launch.py",
-                "launch/px4_gate_offline.launch.py",
-                "launch/px4_boundary_offline.launch.py",
-                "launch/px4_sitl_stream.launch.py",
                 "launch/px4_sitl_flight.launch.py",
                 "launch/bc_flight.launch.py",
             ],
@@ -42,14 +36,14 @@ setup(
     zip_safe=True,
     maintainer="Noel",
     maintainer_email="a0916190423@gmail.com",
-    description="Safe Phase 1 PX4 control scaffold.",
+    description=(
+        "Guarded PX4 flight control for expert collection and BC evaluation."
+    ),
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "control_mux_node = uav_px4_control.control.control_mux_node:main",
-            "joystick_control_node = "
-            "uav_px4_control.control.joystick_control_node:main",
             "bc_policy_node = uav_px4_control.flight.bc_policy_node:main",
             "bc_flight_supervisor_node = "
             "uav_px4_control.flight.bc_flight_supervisor_node:main",
@@ -63,10 +57,6 @@ setup(
             "uav_px4_control.px4.px4_live_telemetry_adapter:main",
             "px4_sitl_doctor = "
             "uav_px4_control.diagnostics.px4_sitl_doctor:main",
-            "px4_sitl_stream_monitor = "
-            "uav_px4_control.diagnostics.px4_sitl_stream_monitor:main",
-            "px4_stream_offline_comparison = "
-            "uav_px4_control.diagnostics.px4_stream_fixtures:main",
             "px4_odometry_bridge_node = "
             "uav_px4_control.px4.px4_odometry_bridge_node:main",
             "px4_vehicle_command_owner_node = "
@@ -79,26 +69,6 @@ setup(
             "uav_px4_control.diagnostics.px4_generation_probe:main",
             "runtime_smoke_lifecycle_client = "
             "uav_px4_control.diagnostics.runtime_smoke_lifecycle_client:main",
-            "px4_boundary_result_monitor = "
-            "uav_px4_control.diagnostics.offline_px4_boundary_harness:monitor_main",
-            "synthetic_px4_telemetry = "
-            "uav_px4_control.diagnostics.offline_px4_boundary_harness:telemetry_main",
-            "control_mux_comparison = "
-            "uav_px4_control.diagnostics.control_mux_comparison:main",
-            "control_mux_result_monitor = "
-            "uav_px4_control.diagnostics.offline_control_mux_harness:monitor_main",
-            "px4_control_node = uav_px4_control.px4_control_node:main",
-            "synthetic_astar_candidate = "
-            "uav_px4_control.diagnostics.offline_control_mux_harness:"
-            "astar_publisher_main",
-            "synthetic_hold_candidate = "
-            "uav_px4_control.diagnostics.offline_control_mux_harness:hold_publisher_main",
-            "synthetic_joystick_candidate = "
-            "uav_px4_control.diagnostics.offline_control_mux_harness:"
-            "joystick_publisher_main",
-            "synthetic_navrl_candidate = "
-            "uav_px4_control.diagnostics.offline_control_mux_harness:"
-            "navrl_publisher_main",
         ],
     },
 )

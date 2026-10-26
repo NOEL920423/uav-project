@@ -56,7 +56,7 @@ from uav_ml.tools.training_cli import (
     select_autoencoder_checkpoint,
     select_multi_autoencoder_checkpoint,
 )
-from uav_ml.train_bc import resolve_device, set_seeds
+from uav_ml.training import resolve_device, set_seeds
 
 import matplotlib
 

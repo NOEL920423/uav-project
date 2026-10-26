@@ -46,7 +46,6 @@ def _check_consumers(tmp_path, distance, *, ros=False, override=False):
         spec.loader.exec_module(shared)
         assert shared.SUCCESS_DISTANCE_M == distance
 
-        from uav_ml.envs import FixedHeightCityConfig
         from uav_px4_control.flight.bc_episode_monitor import (
             TerminationConfig, select_terminal_reason,
         )
@@ -56,9 +55,6 @@ def _check_consumers(tmp_path, distance, *, ros=False, override=False):
             assert config.goal_tolerance_m == distance
             explicit = replace(config, goal_tolerance_m=0.2)
             assert explicit.goal_tolerance_m == 0.2
-        assert FixedHeightCityConfig().success_distance_m == distance
-        explicit_city = FixedHeightCityConfig(success_distance_m=0.2)
-        assert explicit_city.success_distance_m == 0.2
         common = dict(
             minimum_clearance_m=1.0, bc_duration_s=1.0,
             north_m=3.0, east_m=0.0, config=TerminationConfig(),

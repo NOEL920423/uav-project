@@ -1,8 +1,5 @@
-# Standalone scripts
+# 診斷腳本
 
-`ml/` contains the standalone IsaacLab collection, evaluation, smoke, PPO,
-and video utilities used by the ML workflows. Their implementation and command
-semantics are unchanged by Phase 9.5.
+`scripts/diagnostics/summarize_bc_startup.py <run-directory>` 分析已保存的閉環啟動紀錄，不啟動模擬。
 
-The active flight runtime lives in `ros2_ws/src/` and `isaac/runtime/`, not in
-this directory.
+收集、訓練與測試統一使用根目錄 `./uav`；實作位於 `uav_ml/`、`ros2_ws/src/` 與 `isaac/runtime/`。
