@@ -16,6 +16,16 @@ expert-collect
 
 ## 0. 設定本次資料集名稱
 
+收集資料仍寫入本機 `datasets/`。訓練與 closed-loop 評估的成果則直接寫入 NAS；預設 NAS 專案根目錄為 `/home/noel_614420090/NAS/614/614420090_ChenHao/uav-project`。若使用其他已掛載的 NAS 專案目錄，可在同一個終端機設定：
+
+```bash
+export UAV_NAS_ROOT=/home/noel_614420090/NAS/614/614420090_ChenHao/uav-project
+```
+
+以下 `experiments/`、`evaluations/` 路徑均相對於 NAS 專案根目錄。訓練的 `latest.json` 也存於 NAS，模型自動選取會使用同一處索引。NAS 不存在、不是網路掛載或不能寫入時會報錯；自訂輸出必須位於該 NAS 根目錄內，不會退回本機。
+
+RaiDrive 及系統快取仍可能使用本機空間。`--diagnosis` 會先檢查 NAS 回報的可用空間：PX4 logger 要求至少 50 MiB；若掛載回報 0，即使 NAS 實際仍有空間，也會在啟動模擬前報錯。需要使用能正確回報容量的掛載。
+
 ```bash
 # 設定本次資料集名稱，以下流程會沿用這個變數。
 DATASET=bc_expert_run_v1
@@ -65,6 +75,14 @@ DATASET=bc_expert_run_v1
 
 **命令來源：**`uav` 的 `expert-validate` dispatch、`uav_ml/tools/validate_expert_collection.py` 和 `uav_ml/tools/validate_expert_episode.py`。一般選項可用 `./uav expert-validate --help` 查詢。
 
+所有資料集收集完成、collector 已停止且各自通過 aggregate validation 後，再執行整批備份：
+
+```bash
+bash tools/backup.sh
+```
+
+腳本只處理本機 `datasets/`，先檢查所有 collection 都已完成且驗證通過，再顯示 dry-run 並要求輸入 `yes`。它補齊 NAS 缺少的檔案、保留既有檔案，最後以 checksum 比對；存在內容衝突時報錯，不會覆寫衝突檔案或刪除本機資料。此命令不會再次備份本機歷史 `experiments/` 或 `evaluations/`。
+
 ## 3. 訓練 Autoencoder
 
 ```bash
@@ -85,7 +103,7 @@ AE 會使用 episode-level train / validation / test split，並將訓練結果�
 
 ```bash
 # 設定本次 BC run 輸出目錄；請確認它尚不存在，且每次訓練使用新名稱。
-BC_RUN="experiments/bc/${DATASET}/top/run_01"
+BC_RUN="${UAV_NAS_ROOT:-/home/noel_614420090/NAS/614/614420090_ChenHao/uav-project}/experiments/bc/${DATASET}/top/run_01"
 # BC 會依 dataset 與 image source 自動選取已完成且相符的 AE provenance。
 # 使用 TOP 影像和同資料集的 AE encoder 訓練 BC 500 epochs。
 ./uav bc-train --dataset "$DATASET" --image-source top --epochs 500 --output "$BC_RUN"
@@ -111,6 +129,8 @@ BC 預設輸出在 `experiments/bc/<dataset>/<image_source>/run_<timestamp>/`。
 ```
 
 `bc-eval` 會管理 Isaac Sim、Pegasus、PX4 SITL 與 ROS 2 flight stack；若要查看模擬畫面，可加上 `--visible`。評估結果會寫入 `evaluations/bc/<AE或ResNet18>_<MMDDTHHMMYyyyy>/`。檢查每回合的 success、failure reason 與 aggregate success rate；offline BC loss 不能取代 closed-loop 飛行結果。
+
+`--nas-root` 現在選擇直接輸出的 NAS 專案根目錄，不再先存本機再發布或刪除本機檔案。`--output` 可指定此根目錄內的新 run 路徑。影像、影片、stdout/stderr、ROS logs 與 Kit log 直接寫入 run 目錄；診斷 ULog 透過該次 PX4 暫存 rootfs 的目錄連結直接寫入 NAS，不複製本機 ULog。既有訓練與評估檔案保留原位。
 
 ```bash
 # 查看 closed-loop evaluator 的完整參數。

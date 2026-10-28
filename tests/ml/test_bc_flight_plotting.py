@@ -567,8 +567,12 @@ class TrainingLossArtifactTests(unittest.TestCase):
                 runtime.run_episode.return_value = {
                     "schema": "uav_bc_flight_result/v1", "episode": 1, "terminal_reason": "success",
                 }
-                output = root / "evaluations/bc" / f"{label}_1010T1530Y2026"
+                nas = root / "nas"
+                nas.mkdir()
+                output = nas / "evaluations/bc" / f"{label}_1010T1530Y2026"
                 with (
+                    patch.object(evaluation, "require_nas_root", return_value=nas),
+                    patch("uav_ml.tools.artifact_publish.require_nas_root", return_value=nas),
                     patch.object(evaluation, "__file__", str(root / "uav_ml/tools/bc_flight_evaluation.py")),
                     patch.object(evaluation, "_LAST_ARTIFACT_PATH", None),
                     patch.object(evaluation, "ENABLE_BC_FLIGHT_RECORDING", False),
@@ -581,13 +585,15 @@ class TrainingLossArtifactTests(unittest.TestCase):
                     clock.now.return_value = datetime(2026, 10, 10, 15, 30)
                     self.assertEqual(evaluation.main(["--checkpoint", str(bc), "--nas-root", str(root / "nas")]), 0)
                     self.assertEqual(str(clock.now.call_args.args[0]), "Asia/Taipei")
+                    self.assertEqual(evaluation._LAST_ARTIFACT_PATH, output)
                 summary = json.loads((output / "summary.json").read_text())
                 self.assertEqual(summary["feature_extractor"], label)
                 self.assertEqual(summary["encoder_architecture"], architecture)
                 self.assertEqual(summary["encoder_checkpoint"], str(encoder))
                 self.assertEqual(summary["loss_summary_file"], "loss/loss_summary.json")
                 self.assertTrue((output / summary["loss_summary_file"]).is_file())
-                publish.assert_called_once_with(output, root / "nas", "evaluations/bc", delete_local=True)
+                publish.assert_not_called()
+                self.assertFalse((root / "evaluations").exists())
 
 
 if __name__ == "__main__":

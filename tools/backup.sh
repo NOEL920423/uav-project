@@ -1,60 +1,61 @@
-#!/bin/bash
-echo "nas backup practice"
-echo "this is my first bash script"
-SOURCE_ROOT="/home/noel_614420090/uav-project"
-NAS_MOUNT="/home/noel_614420090/NAS"
-BACKUP_DIR="$NAS_MOUNT/614/614420090_ChenHao/uav-project"
-echo "來源：$SOURCE_ROOT"
-echo "掛載點：$NAS_MOUNT"
-echo "位置：$BACKUP_DIR"
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-# 檢查掛載點
-if mountpoint -q "$NAS_MOUNT"; then
-    echo "NAS is mounted."
-    else
-    echo "NAS isn't mounted."
+SOURCE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$SOURCE_ROOT"
+command -v rsync >/dev/null || { echo "ERROR: rsync is required" >&2; exit 1; }
+
+# Validate the whole collection batch before opening any backup destination.
+BACKUP_ROOT="$(python3 - <<'PY'
+import json
+from pathlib import Path
+import sys
+
+from uav_ml.tools.artifact_publish import require_nas_root
+
+root = require_nas_root()
+datasets = Path("datasets")
+if not datasets.is_dir():
+    raise SystemExit("ERROR: local datasets directory is missing")
+collections = sorted(datasets.iterdir())
+if not collections:
+    raise SystemExit("ERROR: no datasets are available for backup")
+for dataset in collections:
+    if dataset.is_symlink() or not dataset.is_dir():
+        raise SystemExit(f"ERROR: expected a local dataset directory: {dataset}")
+    manifest = json.loads((dataset / "collection_manifest.json").read_text())
+    validation = json.loads((dataset / "collection_validation.json").read_text())
+    if manifest.get("status") != "complete" or validation.get("valid") is not True:
+        raise SystemExit(f"ERROR: dataset is incomplete or has not passed validation: {dataset}")
+    print(f"Completed and validated: {dataset}", file=sys.stderr)
+print(root)
+PY
+)"
+
+printf 'Source: %s/datasets\nDestination: %s/datasets\n' "$SOURCE_ROOT" "$BACKUP_ROOT"
+# Existing NAS files are preserved. Missing files can be filled in on a rerun.
+rsync -rt --omit-dir-times --ignore-existing --dry-run --stats \
+    "$SOURCE_ROOT/datasets" "$BACKUP_ROOT/"
+read -r -p "Back up all completed datasets to NAS? Type yes: " ANSWER
+if [[ "$ANSWER" != "yes" ]]; then
+    echo "Backup cancelled."
+    exit 0
+fi
+
+# Recheck the mount immediately before copying; never delete local data.
+python3 - "$BACKUP_ROOT" <<'PY'
+import sys
+from uav_ml.tools.artifact_publish import require_nas_root
+require_nas_root(sys.argv[1])
+PY
+rsync -rt --omit-dir-times --ignore-existing \
+    "$SOURCE_ROOT/datasets" "$BACKUP_ROOT/"
+
+# This is a read-only comparison. --delete only reports NAS-only paths here.
+DIFFERENCES="$(rsync -rcn --delete --itemize-changes \
+    "$SOURCE_ROOT/datasets/" "$BACKUP_ROOT/datasets/")"
+if [[ -n "$DIFFERENCES" ]]; then
+    printf 'ERROR: backup content differs; all existing files were preserved:\n%s\n' "$DIFFERENCES" >&2
     exit 1
-    fi 
-
-# 檢查資料存在嗎
-for DIR_NAME in datasets experiments evaluations; do 
-    if [[ -d "$SOURCE_ROOT/$DIR_NAME" ]]; then
-        echo "$DIR_NAME 存在"
-        else
-        echo "$DIR_NAME不存在"
-        exit 1
-        fi
-done
-
-# 執行 dry-run
-if rsync -rt --omit-dir-times --dry-run --stats "$SOURCE_ROOT/experiments" \
-"$SOURCE_ROOT/datasets" \
-"$SOURCE_ROOT/evaluations" \
-"$BACKUP_DIR/"; then
-    echo "dry-run completed"
-    else
-    echo "dry-run failed"
-    exit 1
-    fi
-
-if read -r -p "確定要備份到 NAS 嗎，yes or no： " ANSWER; then
-    echo "你輸入： $ANSWER"
-    if [[ "$ANSWER" == "yes" ]]; then
-        echo "讀取成功，開始備份"
-        if rsync -rt --omit-dir-times "$SOURCE_ROOT/experiments" \
-        "$SOURCE_ROOT/datasets" \
-        "$SOURCE_ROOT/evaluations" \
-        "$BACKUP_DIR/"; then
-            echo "備份完成"
-            else
-            echo "備份失敗"
-            exit 1
-            fi
-        else
-        echo "備份取消"
-        exit 0
-        fi
-    else
-    echo "讀取失敗"
-    exit 1
-    fi
+fi
+echo "Dataset backup verified by checksums. Local datasets were preserved."

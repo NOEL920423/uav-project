@@ -1,6 +1,7 @@
 """Tests for live BC checkpoint, observation, and action contracts."""
 
 import json
+import contextlib
 import math
 import shutil
 import subprocess
@@ -368,6 +369,8 @@ class TimingReportTests(unittest.TestCase):
                 runtime.run_episode.side_effect = run_episode
                 runtime.cleanup.side_effect = lambda: advance(5.0)
                 with (
+                    patch.object(evaluation, "require_nas_root", return_value=root),
+                    patch("uav_ml.tools.artifact_publish.require_nas_root", return_value=root),
                     patch.object(evaluation, "ENABLE_BC_FLIGHT_RECORDING", False),
                     patch.object(evaluation, "_LAST_ARTIFACT_PATH", None),
                     patch.object(evaluation, "BcFlightPolicy", side_effect=load_policy),
@@ -421,29 +424,97 @@ class TimingReportTests(unittest.TestCase):
             self.assertEqual(summary["statistics"], [])
             self.assertEqual(summary["event_count"], 0)
 
-    def test_open_ulog_survives_temporary_rootfs_removal(self):
+    def test_direct_ulog_survives_temporary_rootfs_removal(self):
+        import shutil
         from uav_ml.tools.bc_flight_evaluation import ManagedFlightRuntime
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / "temporary.ulg"
+            rootfs = root / "temporary_rootfs"
+            rootfs.mkdir()
+            destination = root / "nas/px4_ulog"
+            ManagedFlightRuntime._prepare_ulog_directory(rootfs, destination)
+            source = rootfs / "log/sess001/test.ulg"
+            source.parent.mkdir()
             source.write_bytes(b"ULog-test-evidence")
             runtime = ManagedFlightRuntime(root, root, False, "cpu", root, "top_rgb", 180)
-            runtime._ulog_handles[str(source)] = source.open("rb")
-            source.unlink()
-            destination = root / "saved"
-            destination.mkdir()
+            shutil.rmtree(rootfs)
             runtime._write_ulog_snapshot(destination)
-            self.assertEqual((destination / source.name).read_bytes(), b"ULog-test-evidence")
+            self.assertEqual((destination / "sess001/test.ulg").read_bytes(), b"ULog-test-evidence")
+            manifest = json.loads((destination / "manifest.json").read_text())
+            self.assertEqual(manifest["copied_files"][0]["path"], "sess001/test.ulg")
+            self.assertIn("written directly to NAS", manifest["snapshot"])
+
+    def test_direct_ulog_preserves_existing_runtime_evidence(self):
+        from uav_ml.tools.bc_flight_evaluation import ManagedFlightRuntime
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "log").mkdir()
+            original = root / "log/original.ulg"
+            original.write_bytes(b"original evidence")
+            with self.assertRaisesRegex(RuntimeError, "existing PX4 log evidence"):
+                ManagedFlightRuntime._prepare_ulog_directory(root, root / "nas")
+            self.assertEqual(original.read_bytes(), b"original evidence")
 
 
 class BcFlightDiagnosticsOptionTests(unittest.TestCase):
+    def test_nas_failure_stops_before_loading_a_policy_or_starting_runtime(self):
+        from unittest.mock import patch
+        from uav_ml.tools import bc_flight_evaluation as evaluation
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "run"
+            with (
+                patch.object(evaluation, "require_nas_root", side_effect=RuntimeError("NAS unmounted")),
+                patch.object(evaluation, "BcFlightPolicy") as policy,
+                patch.object(evaluation, "ManagedFlightRuntime") as runtime,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "NAS unmounted"):
+                    evaluation.main(["--output", str(output)])
+            policy.assert_not_called()
+            runtime.assert_not_called()
+            self.assertFalse(output.exists())
+
+    def test_zero_reported_capacity_rejects_diagnostics_before_any_output(self):
+        from unittest.mock import patch
+        from uav_ml.tools import bc_flight_evaluation as evaluation
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                patch.object(evaluation, "require_nas_root", return_value=root),
+                patch.object(evaluation.os, "statvfs", return_value=SimpleNamespace(f_bavail=0, f_frsize=4096)),
+                patch.object(evaluation, "ManagedFlightRuntime") as runtime,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "reported available space"):
+                    evaluation.main(["--diagnosis"])
+            runtime.assert_not_called()
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_failed_nas_log_write_drains_pipe_and_preserves_error(self):
+        from io import StringIO
+        from unittest.mock import Mock
+        from uav_ml.tools.bc_flight_evaluation import _pump, ManagedFlightRuntime
+        source = StringIO("first line\nsecond line\n")
+        output = Mock()
+        failure = OSError("NAS disconnected")
+        output.write.side_effect = failure
+        errors = []
+        stderr = StringIO()
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(StringIO()):
+            _pump(source, output, label="test stdout", verbose=False, on_error=errors.append)
+        self.assertEqual(errors, [failure])
+        self.assertTrue(source.closed)
+        self.assertIn("NAS disconnected", stderr.getvalue())
+        runtime = ManagedFlightRuntime(Path('.'), Path('.'), False, 'cpu', Path('.'), 'top_rgb', 180)
+        runtime._log_errors = errors
+        with self.assertRaisesRegex(OSError, "NAS disconnected"):
+            runtime.cleanup()
+
     def test_runtime_prepares_selected_scene_and_rejects_wrong_ack_before_flight(self):
         from unittest.mock import patch
         from isaac.runtime.environment import generate_episode_scene, load_scene_profile
         from uav_ml.tools.bc_flight_evaluation import ManagedFlightRuntime
 
-        for version, wrong_ack in (("v3", False), ("v4", False), ("v3", True)):
+        for version, wrong_ack in (("v3", False), ("v4", False), ("v5", False), ("v3", True)):
             with self.subTest(version=version, wrong_ack=wrong_ack), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 runtime = ManagedFlightRuntime(
@@ -500,6 +571,8 @@ class BcFlightDiagnosticsOptionTests(unittest.TestCase):
                 runtime = Mock()
                 runtime.run_episode.return_value = result
                 with (
+                    patch.object(evaluation, "require_nas_root", return_value=root),
+                    patch("uav_ml.tools.artifact_publish.require_nas_root", return_value=root),
                     patch.object(evaluation, "_LAST_ARTIFACT_PATH", None),
                     patch.object(evaluation, "BcFlightPolicy", return_value=policy),
                     patch.object(evaluation, "ManagedFlightRuntime", return_value=runtime) as factory,
@@ -549,11 +622,13 @@ class BcFlightDiagnosticsOptionTests(unittest.TestCase):
                 ):
                     runtime.start(root)
                     isaac_environment = popen.call_args.kwargs["env"]
+                    self.assertIn(f"--/log/file={root / 'kit.log'}", popen.call_args.args[0])
                     self.assertEqual(isaac_environment["UAV_BC_VIDEO_TOP"], "1")
                     popen.return_value.wait.return_value = 0
                     self.assertEqual(runtime._uav(["expert-runtime-wait"], root / "ready.log"), 0)
                     ros_environment = popen.call_args.kwargs["env"]
                     for environment in (isaac_environment, ros_environment):
+                        self.assertEqual(environment["ROS_LOG_DIR"], str(root / "ros_logs"))
                         self.assertEqual(environment["UAV_BC_FLIGHT_DIAGNOSTICS"], "1")
                         if diagnosis:
                             self.assertEqual(environment["UAV_TIMING_DIR"], str(root / "timing"))
@@ -590,6 +665,8 @@ class BcFlightDiagnosticsOptionTests(unittest.TestCase):
                 runtime = Mock()
                 runtime._uav.return_value = 0
                 with (
+                    patch.object(evaluation, "require_nas_root", return_value=root),
+                    patch("uav_ml.tools.artifact_publish.require_nas_root", return_value=root),
                     patch.object(evaluation, "_LAST_ARTIFACT_PATH", None),
                     patch.object(evaluation, "ManagedFlightRuntime", return_value=runtime) as factory,
                 ):
@@ -623,7 +700,7 @@ class BcCheckpointSelectionTests(unittest.TestCase):
             _, older = self._pointer(root, "old/top", "2026-09-10T04:30:00Z")
             newest, _ = self._pointer(root, "today/top/resnet18", "2026-10-10T08:30:00Z")
             older.touch()
-            self.assertEqual(resolve_checkpoint(root), newest)
+            self.assertEqual(resolve_checkpoint(root, artifact_root=root), newest)
 
     def test_unusable_pointers_are_reported_and_incomplete_runs_are_skipped(self):
         from contextlib import redirect_stderr
@@ -639,7 +716,7 @@ class BcCheckpointSelectionTests(unittest.TestCase):
             malformed.write_text("{")
             stderr = StringIO()
             with redirect_stderr(stderr):
-                self.assertEqual(resolve_checkpoint(root), good)
+                self.assertEqual(resolve_checkpoint(root, artifact_root=root), good)
             self.assertIn("BC training is not completed", stderr.getvalue())
             self.assertIn("BC checkpoint is missing", stderr.getvalue())
             self.assertIn("Expecting property name", stderr.getvalue())
@@ -649,8 +726,8 @@ class BcCheckpointSelectionTests(unittest.TestCase):
             root = Path(directory)
             chosen, _ = self._pointer(root, "chosen/top", "2026-09-10T04:00:00Z")
             self._pointer(root, "newer/top/resnet18", "2026-10-10T08:00:00Z")
-            self.assertEqual(resolve_checkpoint(root, chosen), chosen)
-            self.assertEqual(resolve_checkpoint(root, Path("chosen/top/run/best.pt")), chosen)
+            self.assertEqual(resolve_checkpoint(root, chosen, artifact_root=root), chosen)
+            self.assertEqual(resolve_checkpoint(root, Path("chosen/top/run/best.pt"), artifact_root=root), chosen)
 
     def test_stored_legacy_pointer_uses_migrated_copy_when_original_still_exists(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -662,7 +739,7 @@ class BcCheckpointSelectionTests(unittest.TestCase):
             payload = json.loads(pointer.read_text())
             payload["best_checkpoint"] = str(legacy)
             pointer.write_text(json.dumps(payload))
-            self.assertEqual(resolve_checkpoint(root), checkpoint)
+            self.assertEqual(resolve_checkpoint(root, artifact_root=root), checkpoint)
             self.assertTrue(legacy.is_file())
 
     def test_stored_encoder_path_preserves_baseline_and_external_locations(self):
@@ -685,7 +762,7 @@ class BcCheckpointSelectionTests(unittest.TestCase):
     def test_no_completed_checkpoint_has_a_clear_error(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(FileNotFoundError, "No completed BC checkpoint"):
-                resolve_checkpoint(Path(directory))
+                resolve_checkpoint(Path(directory), artifact_root=Path(directory))
 
     def test_unspecified_image_source_uses_checkpoint_sources_in_order(self):
         from uav_ml.inference import bc_flight as flight
@@ -750,7 +827,7 @@ class BcFlightContractTests(unittest.TestCase):
             REPOSITORY_ROOT / "experiments/bc"
         )
         self.assertEqual(
-            resolve_checkpoint(REPOSITORY_ROOT, short_path), checkpoint
+            resolve_checkpoint(REPOSITORY_ROOT, short_path, artifact_root=REPOSITORY_ROOT), checkpoint
         )
 
     def test_state8_matches_body_contract(self) -> None:

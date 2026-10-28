@@ -38,6 +38,7 @@ from uav_ml.models import (
     LatentBcPolicy,
     LatentBcPolicyConfig,
 )
+from uav_ml.tools.artifact_publish import nas_project_root, stored_experiment_path
 
 
 BC_CHECKPOINT_FORMAT = "bc_baseline_v1.0"
@@ -70,27 +71,21 @@ def _stored_experiment_path(
     repository_root: Path = Path(__file__).resolve().parents[2],
 ) -> Path:
     """Relocate stored experiment references without rewriting model files."""
-    root = repository_root.resolve()
-    path = Path(value).expanduser()
-    path = (path if path.is_absolute() else root / path).resolve()
-    try:
-        relative = path.relative_to(root / "artifacts/experiments")
-    except ValueError:
-        return path
-    if relative.parts and relative.parts[0] == "bc_baseline":
-        return path
-    return root / "experiments" / relative
+    return stored_experiment_path(value, repository_root)
 
 
 def resolve_checkpoint(
     repository_root: Path,
     checkpoint: Path | None = None,
+    *,
+    artifact_root: Path | None = None,
 ) -> Path:
     """Resolve an explicit checkpoint or the most recently completed BC run.
 
     Relative checkpoints may be given either from the current directory or
     from ``experiments/bc`` for concise experiment selection.
     """
+    nas_root = nas_project_root(artifact_root)
     if checkpoint is not None:
         candidate = checkpoint.expanduser()
         if candidate.is_absolute():
@@ -98,7 +93,7 @@ def resolve_checkpoint(
         else:
             from_working_directory = candidate.resolve()
             from_bc_experiments = (
-                repository_root.resolve() / BC_EXPERIMENTS_ROOT / candidate
+                nas_root / BC_EXPERIMENTS_ROOT / candidate
             ).resolve()
             path = (
                 from_working_directory
@@ -106,8 +101,8 @@ def resolve_checkpoint(
                 else from_bc_experiments
             )
     else:
-        experiments_root = repository_root.resolve() / BC_EXPERIMENTS_ROOT
-        global_pointer = repository_root.resolve() / DEFAULT_LATEST_POINTER
+        experiments_root = nas_root / BC_EXPERIMENTS_ROOT
+        global_pointer = nas_root / DEFAULT_LATEST_POINTER
         candidates = []
         for pointer in sorted(experiments_root.rglob("latest.json")):
             try:
@@ -117,8 +112,8 @@ def resolve_checkpoint(
                 updated = datetime.fromisoformat(payload["updated_utc"].replace("Z", "+00:00"))
                 if updated.tzinfo is None:
                     raise ValueError("BC latest pointer timestamp has no timezone")
-                candidate = _stored_experiment_path(
-                    payload["best_checkpoint"], repository_root
+                candidate = stored_experiment_path(
+                    payload["best_checkpoint"], repository_root, artifact_root=nas_root,
                 )
                 if not candidate.is_file():
                     raise FileNotFoundError(f"BC checkpoint is missing: {candidate}")

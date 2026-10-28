@@ -1,5 +1,11 @@
 # FPV/TOP/depth Autoencoder 基準流程
 
+訓練成果與 `latest.json` 預設直接存於 NAS 專案根目錄下的 `experiments/autoencoder/`。
+資料集仍從本機 `datasets/` 或明確指定的位置讀取；`--output-dir` 必須位於 NAS 內。
+NAS 根目錄可由 `UAV_NAS_ROOT` 設定，未設定時使用
+`/home/noel_614420090/NAS/614/614420090_ChenHao/uav-project`。
+掛載不可用時會停止，不會將成果寫回本機；完整儲存與備份流程見 [SystemUserManual.md](SystemUserManual.md)。
+
 ## 目的與範圍
 
 這是兩階段基準流程的 Stage A：使用 reconstruction MSE 訓練 `RgbAutoencoderV0`。

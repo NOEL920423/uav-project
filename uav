@@ -8,11 +8,9 @@ ROS_SETUP="/opt/ros/jazzy/setup.bash"
 WORKSPACE_SETUP="$ROS_WS/install/setup.bash"
 RUN_LOG_DIR="$REPO_ROOT/run_logs"
 SCRIPT_PATH="$REPO_ROOT/uav"
-ISAAC_SIM_RELEASE="${UAV_ISAAC_SIM_RELEASE:-$HOME/isaacsim/_build/linux-x86_64/release}"
 
 readonly SCRIPT_DIR REPO_ROOT ROS_WS ROS_SETUP WORKSPACE_SETUP
 readonly RUN_LOG_DIR SCRIPT_PATH
-readonly ISAAC_SIM_RELEASE
 
 info() {
     printf 'INFO: %s\n' "$*"
@@ -35,57 +33,35 @@ usage() {
     cat <<'EOF'
 用法：./uav <command> [arguments]
 
-Expert collection, AE/ResNet training, BC training, and PX4 flight evaluation.
+資料收集、模型訓練與 Isaac/Pegasus/PX4 閉環測試。
 
 指令：
-  help           顯示此說明
-  backup         備份研究資料至 NAS（需互動確認）
-  status         不修改檔案，顯示 Git 與 workspace 狀態
-  doctor         檢查 ROS、Python、workspace、環境與 topic 安全性
-  build          在隔離的 Jazzy 環境建置 ROS 2 workspace
-  test           測試已建置的 workspace
-  verify         執行 doctor、build、測試、介面／import／靜態檢查
-  ae-train        訓練以 episode 分割的 FPV/TOP/depth Autoencoder baseline
-  resnet-train    使用指定資料集與專家動作訓練 64 維 ResNet18 encoder
-  bc-train        訓練並離線評估正式的 BC baseline
-  bc-eval         使用 Isaac/Pegasus/PX4 飛行 TOP RGB BC policy
-  eval            bc-eval 的別名；使用 --scene v3|v4 選擇測試場景
-  bc-eval-plot    由正式 BC evaluation artifact 重新產生圖表
-  ml-test         執行不依賴 ROS/Isaac 的 ML regression tests
-  px4-sitl-doctor     唯讀檢查已執行的 SITL/XRCE graph
-  px4-sitl-flight-check  在執行中的 SITL 飛行一個受保護的 ASTAR_EXPERT 任務
-  isaac-runtime-flight-check  要求受保護任務具備 Isaac evidence
-  expert-collect  收集可續跑的 canonical cylinder expert dataset
-  expert-collect-publish  收集、驗證、上傳 NAS，成功後刪除本機 dataset
-  expert-runtime-smoke  在單一持續 Isaac runtime 中重啟 PX4 episodes
-  expert-scene-preview  透過 WebRTC 預覽一個正式 expert scene
-  expert-validate  驗證正式 cylinder expert dataset
-  artifact-publish SHA-256 驗證後將完成的本地 artifact 複製至 NAS
+  help             顯示此說明
+  build            在隔離的 Jazzy 環境建置 ROS 2 workspace
+  expert-collect   收集可續跑的 expert dataset
+  expert-validate  驗證 expert dataset
+  ae-train         訓練 Autoencoder
+  resnet-train     訓練 ResNet18 encoder
+  bc-train         訓練 BC 並執行離線評估
+  bc-eval          執行 BC policy 閉環飛行測試
+  eval             bc-eval 的別名
+  bc-eval-plot     使用既有閉環測試結果重新產生圖表
   profile <name> <workflow> [arguments]
-                 執行維護中的 workflow preset，並附加額外 arguments
-  topics         檢查目前 ROS graph 並拒絕 /fmu/in/ topics
-  interfaces     顯示自訂 interfaces 與 planner topic contracts
-  shell          開啟乾淨的互動式 ROS 2 workspace shell
+                   使用既有 workflow preset，並附加額外 arguments
 
 範例：
-  ./uav verify
-  ./uav ae-train --dataset bc_expert_cube --epochs 200
-  ./uav bc-train --dataset bc_expert_cube --epochs 500
-  ./uav eval --scene v3 --checkpoint /path/to/best.pt --episodes 1 --visible
+  ./uav build
+  ./uav expert-collect --scene v4 --episodes 100 --dataset cylinder_v4_new
+  ./uav expert-collect --scene v4 --episodes 100 --dataset cylinder_v4_new --resume
+  ./uav expert-validate --dataset cylinder_v4_new
+  ./uav ae-train --dataset cylinder_v4_new --epochs 200
+  ./uav resnet-train --dataset cylinder_v4_new --epochs 200
+  ./uav bc-train --dataset cylinder_v4_new --epochs 500
+  ./uav eval --scene v4 --checkpoint /path/to/best.pt --episodes 1 --visible
   ./uav bc-eval-plot evaluations/bc/run_TIMESTAMP
-  ./uav ml-test
-  ./uav px4-sitl-doctor
-  UAV_OFFLINE_TIMEOUT_SECONDS=150 ./uav px4-sitl-flight-check
-  UAV_OFFLINE_TIMEOUT_SECONDS=180 ./uav isaac-runtime-flight-check
-  ./uav expert-collect --scene v3 --episodes 100 --dataset cylinder_v3_new
-  ./uav expert-runtime-smoke --episodes 2
-  ./uav expert-collect --episodes 100 --dataset bc_expert_cube --max-attempts 150 --resume
-  ./uav expert-collect-publish --episodes 100 --max-attempts 150 --dataset cylinder_v3 --nas-root /home/noel_614420090/NAS
-  ./uav expert-scene-preview --seed 103001
-  ./uav expert-validate --episodes 100
-  ./uav artifact-publish evaluations/bc/run_TIMESTAMP --nas-root "$UAV_NAS_ROOT" --category evaluations/bc --delete-local
   ./uav profile current expert-collect --episodes 10
-  ./uav shell
+
+各工作流程的完整參數：./uav <command> --help
 EOF
 }
 
@@ -172,6 +148,8 @@ clean_environment_command() {
     fi
     local persistent_variable
     for persistent_variable in \
+        ROS_LOG_DIR \
+        UAV_NAS_ROOT \
         UAV_TIMING_DIR \
         UAV_TIMING_SCHED_SECONDS \
         UAV_BC_FLIGHT_DIAGNOSTICS \
@@ -205,7 +183,7 @@ print_clean_summary() {
 source_setup_file() {
     local setup_file="$1"
     set +u
-    # ROS 產生的 setup 腳本會合理地檢查可能未設定的變數。
+    # ROS setup scripts may check variables that are not set.
     # shellcheck disable=SC1090,SC1091
     source "$setup_file"
     set -u
@@ -237,14 +215,6 @@ clean_bootstrap() {
             source_setup_file "$WORKSPACE_SETUP"
             print_clean_summary "yes"
             ;;
-        optional)
-            if [[ -f "$WORKSPACE_SETUP" ]]; then
-                source_setup_file "$WORKSPACE_SETUP"
-                print_clean_summary "yes"
-            else
-                print_clean_summary "no (not built yet)"
-            fi
-            ;;
         none)
             print_clean_summary "no"
             ;;
@@ -253,49 +223,6 @@ clean_bootstrap() {
             return 1
             ;;
     esac
-}
-
-scan_forbidden_topics() {
-    local topics
-    if ! topics="$(ros2 topic list)"; then
-        die "unable to inspect ROS topics"
-        return 1
-    fi
-    local forbidden
-    forbidden="$(printf '%s\n' "$topics" | /usr/bin/grep -E '^/fmu/in(/|$)' || true)"
-    if [[ -n "$forbidden" ]]; then
-        error "unexpected /fmu/in/* topics detected"
-        printf '%s\n' "$forbidden" >&2
-        return 1
-    fi
-    printf 'SAFE: no /fmu/in/* topics detected\n'
-}
-
-show_interfaces() {
-    local interface_name
-    for interface_name in \
-        uav_interfaces/msg/Obstacle \
-        uav_interfaces/msg/ObstacleArray \
-        uav_interfaces/msg/EpisodeState \
-        uav_interfaces/msg/TrajectoryPoint \
-        uav_interfaces/msg/TimedTrajectory \
-        uav_interfaces/msg/TrajectoryTrackingStatus \
-        uav_interfaces/msg/ControlMuxStatus \
-        uav_interfaces/msg/Px4OutputGateStatus \
-        uav_interfaces/msg/Px4SetpointCandidate \
-        uav_interfaces/msg/Px4StreamStatus \
-        uav_interfaces/msg/Px4FlightStatus \
-        uav_interfaces/msg/Px4SyntheticTelemetry \
-        uav_interfaces/srv/GenerateEpisode \
-        uav_interfaces/srv/SetControlSource \
-        uav_interfaces/srv/SetPx4OutputEnable \
-        uav_interfaces/srv/SetPx4StreamEnable \
-        uav_interfaces/srv/SetPx4FlightEnable \
-        uav_interfaces/srv/SendPx4VehicleCommand
-    do
-        printf '\nInterface: %s\n' "$interface_name"
-        ros2 interface show "$interface_name"
-    done
 }
 
 run_colcon_build() {
@@ -311,209 +238,11 @@ run_colcon_build() {
     [[ -f "$WORKSPACE_SETUP" ]] || die "build succeeded but overlay is missing"
 }
 
-run_colcon_tests() {
-    local -a test_arguments=("$@")
-    cd "$ROS_WS"
-    set +e
-    colcon test "${test_arguments[@]}"
-    local test_status=$?
-    colcon test-result --verbose
-    local result_status=$?
-    set -e
-    if ((test_status != 0)); then
-        return "$test_status"
-    fi
-    return "$result_status"
-}
-
-check_pure_navigation_imports() {
-    local module_root="$ROS_WS/src/uav_navigation/uav_navigation"
-    local -a pure_modules=(
-        "$module_root/planner/coordinate_frames.py"
-        "$module_root/planner/geometry.py"
-        "$module_root/planner/models.py"
-        "$module_root/planner/astar_planner.py"
-        "$module_root/planner/bspline_smoother.py"
-        "$module_root/planner/path_simplifier.py"
-        "$module_root/planner/path_validator.py"
-        "$module_root/planner/path_metrics.py"
-        "$module_root/trajectory/trajectory_models.py"
-        "$module_root/trajectory/trajectory_parameterizer.py"
-        "$module_root/trajectory/trajectory_validator.py"
-        "$module_root/trajectory/yaw_profile.py"
-        "$module_root/trajectory/trajectory_metrics.py"
-        "$module_root/trajectory/trajectory_sampler.py"
-        "$module_root/tracking/tracking_models.py"
-        "$module_root/tracking/trajectory_tracker.py"
-        "$module_root/tracking/tracking_validator.py"
-    )
-    local pattern
-    pattern='^[[:space:]]*(from|import)[[:space:]]+(rclpy|omni|isaac|px4_msgs|pymavlink|pegasus|viewport)|/fmu/in/'
-    local findings
-    findings="$(/usr/bin/grep -inE "$pattern" "${pure_modules[@]}" || true)"
-    if [[ -n "$findings" ]]; then
-        error "forbidden runtime import found in pure navigation modules"
-        printf '%s\n' "$findings" >&2
-        return 1
-    fi
-    printf 'SAFE: pure navigation modules contain no forbidden runtime imports\n'
-}
-
-check_pure_control_imports() {
-    local module_root="$ROS_WS/src/uav_px4_control/uav_px4_control"
-    local -a pure_modules=(
-        "$module_root/control/control_source_models.py"
-        "$module_root/control/control_source_registry.py"
-        "$module_root/control/control_mux.py"
-        "$module_root/control/selected_command_validator.py"
-        "$module_root/px4/px4_boundary_models.py"
-        "$module_root/px4/px4_candidate_validator.py"
-        "$module_root/px4/px4_output_gate.py"
-        "$module_root/px4/px4_setpoint_mapper.py"
-        "$module_root/px4/px4_timestamp.py"
-        "$module_root/px4/px4_message_adapter.py"
-        "$module_root/px4/px4_stream_models.py"
-        "$module_root/px4/px4_stream_state_machine.py"
-        "$module_root/flight/px4_flight_models.py"
-        "$module_root/flight/px4_flight_state_machine.py"
-        "$module_root/flight/bc_flight_models.py"
-    )
-    local pattern
-    pattern='^[[:space:]]*(from|import)[[:space:]]+(rclpy|omni|isaac|px4_msgs|pymavlink|pegasus|viewport|torch|tensorflow|onnxruntime)|/fmu/in/'
-    local findings
-    findings="$(/usr/bin/grep -inE "$pattern" "${pure_modules[@]}" || true)"
-    if [[ -n "$findings" ]]; then
-        error "forbidden runtime import found in pure control modules"
-        printf '%s\n' "$findings" >&2
-        return 1
-    fi
-    printf 'SAFE: pure control modules contain no forbidden runtime imports\n'
-}
-
-check_generated_files_untracked() {
-    local pattern
-    pattern='(^|/)(build|install|log|run_logs|__pycache__|\.pytest_cache)(/|$)|\.(bag|db3|pt|onnx)$'
-    local tracked
-    tracked="$(git -C "$REPO_ROOT" ls-files | /usr/bin/grep -E "$pattern" || true)"
-    if [[ -n "$tracked" ]]; then
-        error "generated or runtime files are tracked by Git"
-        printf '%s\n' "$tracked" >&2
-        return 1
-    fi
-    printf 'SAFE: generated files and runtime logs are not tracked\n'
-}
-
-internal_doctor() {
-    clean_bootstrap optional
-    command -v ros2 >/dev/null || die "ros2 command is unavailable"
-    command -v colcon >/dev/null || die "colcon command is unavailable"
-
-    printf 'Repository: %s\n' "$REPO_ROOT"
-    printf 'Package count: %s\n' "$(
-        find "$ROS_WS/src" -mindepth 2 -maxdepth 2 -name package.xml | wc -l
-    )"
-    if [[ -f "$WORKSPACE_SETUP" ]]; then
-        printf 'Install overlay: available\n'
-    else
-        warn "install overlay is absent; run ./uav build before test"
-    fi
-    printf 'Git branch: %s\n' "$(git -C "$REPO_ROOT" branch --show-current)"
-    if [[ -n "$(git -C "$REPO_ROOT" status --porcelain=v1)" ]]; then
-        warn "working tree has local changes"
-    else
-        printf 'Working tree: clean\n'
-    fi
-    scan_forbidden_topics
-}
-
-internal_verify() {
-    clean_bootstrap none
-    run_colcon_build
-    source_setup_file "$WORKSPACE_SETUP"
-    printf 'Workspace overlay sourced after build: yes\n'
-    run_colcon_tests
-
-    local package_name
-    for package_name in \
-        uav_interfaces \
-        uav_scene_bridge \
-        uav_navigation \
-        uav_px4_control \
-        uav_data_recorder
-    do
-        ros2 pkg prefix "$package_name"
-    done
-
-    show_interfaces
-
-    python3 -c "import uav_scene_bridge"
-    python3 -c "import uav_navigation"
-    python3 -c "import uav_px4_control"
-    python3 -c "import uav_data_recorder"
-
-    check_pure_navigation_imports
-    check_pure_control_imports
-    scan_forbidden_topics
-    check_generated_files_untracked
-    printf 'VERIFY SUCCESS: build, tests, interfaces, imports, and safety checks passed\n'
-}
-
 require_px4_msgs() {
     if ! ros2 pkg prefix px4_msgs >/dev/null 2>&1; then
         die "px4_msgs is absent from this workspace overlay; run: ./uav build --base-paths src /home/noel_614420090/uav_ros2_ws/src/px4_msgs"
         return 1
     fi
-}
-
-internal_px4_sitl_doctor() {
-    clean_bootstrap required
-    require_px4_msgs
-    ros2 run uav_px4_control px4_sitl_doctor
-}
-
-internal_px4_sitl_flight_check() {
-    clean_bootstrap required
-    require_px4_msgs
-    ros2 run uav_px4_control px4_sitl_doctor
-    local timeout_seconds="${UAV_OFFLINE_TIMEOUT_SECONDS:-150}"
-    if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
-        die "UAV_OFFLINE_TIMEOUT_SECONDS must be a positive integer"
-        return 1
-    fi
-    if ((timeout_seconds <= 10)); then
-        die "PX4 SITL flight timeout must exceed 10 seconds"
-        return 1
-    fi
-    local timestamp evidence_path
-    timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-    evidence_path="$RUN_LOG_DIR/px4-sitl-flight_${timestamp}.json"
-    mkdir -p "$RUN_LOG_DIR"
-    warn "AUTHORIZED SITL FLIGHT: OFFBOARD, arm, takeoff, track, and land"
-    timeout "${timeout_seconds}s" \
-        ros2 launch uav_px4_control px4_sitl_flight.launch.py \
-        evidence_path:="$evidence_path" \
-        timeout_s:="$((timeout_seconds - 10)).0" "$@"
-    [[ -f "$evidence_path" ]] || die "flight evidence was not written"
-    python3 - "$evidence_path" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-payload = json.loads(path.read_text(encoding="utf-8"))
-print(f"Flight evidence: {path}")
-print(f"Flight success: {payload.get('success')}")
-if not payload.get("success"):
-    raise SystemExit(1)
-PY
-}
-
-internal_isaac_runtime_flight_check() {
-    internal_px4_sitl_flight_check \
-        use_external_scene:=true \
-        require_isaac_evidence:=true \
-        start_delay_s:=5.0 \
-        "$@"
 }
 
 internal_expert_wait_runtime() {
@@ -710,220 +439,13 @@ PY
     return 1
 }
 
-process_group_has_live_members() {
-    local process_group_id="$1"
-    [[ "$process_group_id" =~ ^[1-9][0-9]*$ ]] || return 1
-    ps -eo pgid=,stat= | awk -v target="$process_group_id" '
-        $1 == target && $2 !~ /^Z/ { found = 1 }
-        END { exit(found ? 0 : 1) }
-    '
-}
-
-stop_managed_process_group() {
-    local process_id="$1"
-    local label="$2"
-    [[ "$process_id" =~ ^[1-9][0-9]*$ ]] || return 0
-    if process_group_has_live_members "$process_id"; then
-        info "Stopping managed $label process group $process_id"
-        kill -INT -- "-$process_id" 2>/dev/null || true
-        local attempt
-        for ((attempt = 1; attempt <= 20; attempt++)); do
-            process_group_has_live_members "$process_id" || break
-            sleep 0.5
-        done
-        if process_group_has_live_members "$process_id"; then
-            warn "$label did not exit after SIGINT; sending SIGTERM"
-            kill -TERM -- "-$process_id" 2>/dev/null || true
-            for ((attempt = 1; attempt <= 20; attempt++)); do
-                process_group_has_live_members "$process_id" || break
-                sleep 0.5
-            done
-        fi
-        if process_group_has_live_members "$process_id"; then
-            warn "$label did not exit after SIGTERM; sending SIGKILL"
-            kill -KILL -- "-$process_id" 2>/dev/null || true
-        fi
-    fi
-    wait "$process_id" 2>/dev/null || true
-}
-
-expert_scene_preview_usage() {
-    cat <<'EOF'
-Usage: ./uav expert-scene-preview --seed SEED [--scene v3|v4]
-
-Start the managed expert Isaac/PX4/XRCE runtime, apply one formal episode
-scene, and keep WebRTC running until interrupted. No flight, recorder, or
-dataset output is started.
-
-Options:
-  --seed SEED  Nonnegative deterministic episode scene seed (required)
-  --scene      Scene version (default: v4)
-  -h, --help   Show this help
-EOF
-}
-
-command_expert_scene_preview() {
-    local random_seed=""
-    local scene_version="v4"
-    local episode_id="episode_000001"
-    while (($# > 0)); do
-        case "$1" in
-            --seed)
-                (($# >= 2)) || die "--seed requires a value"
-                random_seed="$2"
-                shift 2
-                ;;
-            --seed=*)
-                random_seed="${1#--seed=}"
-                shift
-                ;;
-            --scene)
-                (($# >= 2)) || die "--scene requires a value"
-                scene_version="$2"
-                shift 2
-                ;;
-            -h|--help)
-                expert_scene_preview_usage
-                return 0
-                ;;
-            *)
-                die "unknown expert-scene-preview argument: $1"
-                return 64
-                ;;
-        esac
-    done
-    [[ "$random_seed" =~ ^[0-9]+$ ]] || {
-        die "expert-scene-preview requires --seed with a nonnegative integer"
-        return 64
-    }
-    [[ "$scene_version" == "v3" || "$scene_version" == "v4" ]] || die "--scene must be v3 or v4"
-    [[ -x "$ISAAC_SIM_RELEASE/isaac-sim.streaming.sh" ]] || die \
-        "Isaac streaming launcher missing: $ISAAC_SIM_RELEASE"
-    command -v MicroXRCEAgent >/dev/null || die \
-        "MicroXRCEAgent is not available"
-    if ! /usr/bin/python3 - \
-        "$REPO_ROOT/isaac/runtime/bootstrap.py" \
-        "$REPO_ROOT/isaac/runtime/environment.py" <<'PY'
-import pathlib
-import sys
-
-for source_name in sys.argv[1:]:
-    source_path = pathlib.Path(source_name)
-    try:
-        compile(source_path.read_bytes(), str(source_path), "exec")
-    except (OSError, SyntaxError) as error:
-        print(f"ERROR: invalid Isaac runtime source: {error}", file=sys.stderr)
-        raise SystemExit(1)
-PY
-    then
-        die "expert scene preview stopped before launching any process"
-        return 1
-    fi
-    if pgrep -x MicroXRCEAgent >/dev/null \
-        || pgrep -f "$ISAAC_SIM_RELEASE/kit/kit" >/dev/null \
-        || pgrep -f '/PX4-Autopilot/build/px4_sitl_default/bin/px4' \
-            >/dev/null; then
-        die "expert scene preview requires no pre-existing Isaac/PX4/XRCE process"
-        return 1
-    fi
-
-    local preview_timestamp preview_runtime_root
-    local preview_agent_pid="" preview_isaac_pid=""
-    local runtime_status=1 scene_status=1 isaac_status=0
-    local preview_interrupted=0 preview_cleanup_done=0
-    preview_timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-    preview_runtime_root="$RUN_LOG_DIR/expert-scene-preview_$preview_timestamp"
-    mkdir -p "$preview_runtime_root"
-
-    expert_scene_preview_cleanup() {
-        ((preview_cleanup_done == 0)) || return 0
-        preview_cleanup_done=1
-        stop_managed_process_group "$preview_isaac_pid" "preview Isaac/PX4"
-        stop_managed_process_group "$preview_agent_pid" "preview XRCE agent"
-    }
-    trap expert_scene_preview_cleanup EXIT
-    trap 'preview_interrupted=1; expert_scene_preview_cleanup' HUP INT TERM
-
-    setsid MicroXRCEAgent udp4 -p 8888 \
-        >"$preview_runtime_root/xrce.log" 2>&1 &
-    preview_agent_pid=$!
-    # shellcheck disable=SC2016
-    setsid /usr/bin/bash -c '
-        cd -- "$1"
-        exec env -u DISPLAY -u WAYLAND_DISPLAY \
-            UAV_EXPERT_SENSORS=1 \
-            ./isaac-sim.streaming.sh --livestream 2 --exec "$2"
-    ' expert-scene-preview-runtime "$ISAAC_SIM_RELEASE" \
-        "$REPO_ROOT/isaac/runtime/bootstrap.py" \
-        >"$preview_runtime_root/isaac.log" 2>&1 &
-    preview_isaac_pid=$!
-
-    info "Starting formal expert scene preview seed=$random_seed"
-    info "Runtime logs: $preview_runtime_root"
-    set +e
-    clean_environment_command expert-runtime-wait
-    runtime_status=$?
-    if ((runtime_status == 0)); then
-        clean_environment_command expert-scene-prepare \
-            "$episode_id" "$random_seed" "$scene_version"
-        scene_status=$?
-    fi
-    set -e
-
-    if ((runtime_status == 0 && scene_status == 0)); then
-        info "打開 WebRTC 可以看到場景。 episode=$episode_id seed=$random_seed"
-        info "不飛行，不收集資料，純檢查場景。 Press Ctrl-C to stop."
-        set +e
-        wait "$preview_isaac_pid"
-        isaac_status=$?
-        set -e
-    fi
-
-    expert_scene_preview_cleanup
-    trap - EXIT HUP INT TERM
-    if ((preview_interrupted != 0)); then
-        return 130
-    fi
-    if ((runtime_status != 0)); then
-        die "expert scene preview runtime did not become ready"
-        return "$runtime_status"
-    fi
-    if ((scene_status != 0)); then
-        die "formal expert scene could not be applied"
-        return "$scene_status"
-    fi
-    if ((isaac_status != 0)); then
-        die "preview Isaac runtime exited with status $isaac_status"
-        return "$isaac_status"
-    fi
-}
-
 internal_dispatch() {
     local command_name="${1:-}"
     shift || true
     case "$command_name" in
-        doctor)
-            internal_doctor "$@"
-            ;;
         build)
             clean_bootstrap none
             run_colcon_build "$@"
-            ;;
-        test)
-            clean_bootstrap required
-            run_colcon_tests "$@"
-            ;;
-        verify)
-            internal_verify "$@"
-            ;;
-        px4-sitl-doctor)
-            internal_px4_sitl_doctor "$@"
-            ;;
-        px4-sitl-flight-check)
-            internal_px4_sitl_flight_check "$@"
-            ;;
-        isaac-runtime-flight-check)
-            internal_isaac_runtime_flight_check "$@"
             ;;
         expert-runtime-wait)
             internal_expert_wait_runtime
@@ -940,203 +462,10 @@ internal_dispatch() {
         isaac-trace-replay)
             internal_isaac_trace_replay "$@"
             ;;
-        topics)
-            clean_bootstrap required
-            ros2 node list
-            ros2 topic list -t
-            ros2 service list -t
-            ros2 action list -t
-            scan_forbidden_topics
-            ;;
-        interfaces)
-            clean_bootstrap required
-            show_interfaces
-            ;;
-        shell)
-            clean_bootstrap optional
-            cd "$REPO_ROOT"
-            printf 'Planning frame: px4_ned\n'
-            export PS1='[uav-ros2] \u@\h:\w\$ '
-            exec /usr/bin/bash --noprofile --norc -i
-            ;;
         *)
             die "internal error: unsupported clean command: $command_name"
             ;;
     esac
-}
-
-command_status() {
-    printf 'Repository: %s\n' "$REPO_ROOT"
-    git -c core.pager=cat -C "$REPO_ROOT" status
-    git -C "$REPO_ROOT" branch --show-current
-    git -c core.pager=cat -C "$REPO_ROOT" log -5 --oneline
-    git -C "$REPO_ROOT" remote -v
-    git -c core.pager=cat -C "$REPO_ROOT" branch -vv
-
-    local directory
-    for directory in src build install log; do
-        if [[ -d "$ROS_WS/$directory" ]]; then
-            printf 'EXISTS: ros2_ws/%s\n' "$directory"
-        else
-            printf 'MISSING: ros2_ws/%s\n' "$directory"
-        fi
-    done
-}
-
-check_inherited_environment() {
-    if [[ "${AMENT_PREFIX_PATH:-}" == *"uav_ros2_ws"* ]]; then
-        warn "inherited AMENT_PREFIX_PATH contains the legacy workspace"
-    else
-        printf 'Inherited AMENT_PREFIX_PATH: no legacy workspace detected\n'
-    fi
-    if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-        warn "VIRTUAL_ENV is active outside the wrapper: $VIRTUAL_ENV"
-    else
-        printf 'Inherited VIRTUAL_ENV: inactive\n'
-    fi
-    if [[ -n "${PYENV_VERSION:-}" ]]; then
-        warn "PYENV_VERSION is active outside the wrapper: $PYENV_VERSION"
-    else
-        printf 'Inherited PYENV_VERSION: inactive\n'
-    fi
-
-    local path_before_system="${PATH%%/usr/bin*}"
-    if [[ "$path_before_system" == *".pyenv/shims"* ]]; then
-        warn "pyenv shims occur before /usr/bin; clean commands will discard them"
-    else
-        printf 'Inherited PATH: no pyenv shim before /usr/bin\n'
-    fi
-}
-
-command_doctor() {
-    check_inherited_environment
-    clean_environment_command doctor
-}
-
-command_verify() {
-    mkdir -p "$RUN_LOG_DIR"
-    local timestamp
-    timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-    local log_file="$RUN_LOG_DIR/verify_${timestamp}.log"
-    info "verification log: $log_file"
-
-    set +e
-    (
-        command_doctor && clean_environment_command verify
-    ) 2>&1 | tee "$log_file"
-    local verify_status=${PIPESTATUS[0]}
-    set -e
-    return "$verify_status"
-}
-
-expert_collect_publish_usage() {
-    cat <<'EOF'
-用法：./uav expert-collect-publish --episodes <N> --dataset <name> [--scene v3|v4] [--max-attempts <N>] [--nas-root <path>]
-
-依序收集、驗證並以 SHA-256 驗證後上傳 dataset；僅在上傳完整成功後
-刪除 datasets/<name> 的本機資料。dataset 必須是簡短名稱，
-例如 cylinder_v3。NAS 路徑優先使用 --nas-root，否則使用 UAV_NAS_ROOT。
-EOF
-}
-
-command_expert_collect_publish() {
-    local episodes="" max_attempts="" dataset=""
-    local scene_version="v4"
-    local nas_root="${UAV_NAS_ROOT:-}"
-    while (($#)); do
-        case "$1" in
-            --episodes|--max-attempts|--dataset|--nas-root|--scene)
-                (($# >= 2)) || die "missing value for $1"
-                case "$1" in
-                    --episodes) episodes="$2" ;;
-                    --max-attempts) max_attempts="$2" ;;
-                    --dataset) dataset="$2" ;;
-                    --nas-root) nas_root="$2" ;;
-                    --scene) scene_version="$2" ;;
-                esac
-                shift 2
-                ;;
-            -h|--help)
-                expert_collect_publish_usage
-                return 0
-                ;;
-            *)
-                die "unknown expert-collect-publish argument: $1"
-                return 64
-                ;;
-        esac
-    done
-    [[ "$episodes" =~ ^[1-9][0-9]*$ ]] || die "--episodes must be a positive integer"
-    [[ "$scene_version" == "v3" || "$scene_version" == "v4" ]] || die "--scene must be v3 or v4"
-    [[ -z "$max_attempts" || "$max_attempts" =~ ^[1-9][0-9]*$ ]] || \
-        die "--max-attempts must be a positive integer"
-    [[ "$dataset" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || \
-        die "--dataset must be a simple dataset name"
-    [[ -n "$nas_root" && -d "$nas_root" ]] || \
-        die "--nas-root must be an existing mounted directory"
-
-    local dataset_root="$REPO_ROOT/datasets/$dataset"
-    local -a collect_arguments=(--episodes "$episodes" --dataset "$dataset" --scene "$scene_version")
-    if [[ -n "$max_attempts" ]]; then
-        collect_arguments+=(--max-attempts "$max_attempts")
-    fi
-    info "collecting dataset: $dataset_root"
-    python3 -m uav_ml.tools.expert_collect "${collect_arguments[@]}"
-    info "validating dataset: $dataset_root"
-    python3 -m uav_ml.tools.validate_expert_collection \
-        --dataset "$dataset_root" --finalize
-    info "publishing verified dataset to NAS: $nas_root/datasets/$dataset"
-    python3 -m uav_ml.tools.artifact_publish \
-        "$dataset_root" --nas-root "$nas_root" --category datasets --delete-local
-}
-
-print_planner_topics() {
-    cat <<'EOF'
-
-Planner topic contracts:
-  /uav/scene/obstacles
-  /uav/scene/start
-  /uav/scene/goal
-  /uav/planner/path_raw
-  /uav/planner/path_simplified
-  /uav/planner/path_bspline_candidate
-  /uav/planner/bspline_valid
-  /uav/planner/path
-  /uav/planner/status
-
-Trajectory topic contracts:
-  /uav/planner/path
-  /uav/trajectory/candidate
-  /uav/trajectory/valid
-  /uav/trajectory/status
-
-Expert tracking topic contracts:
-  /uav/vehicle/odometry
-  /uav/control/astar_command
-  /uav/control/astar_reference_pose
-  /uav/control/astar_reference_twist
-  /uav/control/astar_tracking_status
-
-Control mux contracts:
-  /uav/control/astar_command
-  /uav/control/bc_command
-  /uav/control/selected_command
-  /uav/control/source
-  /uav/control/mux_status
-  /uav/control/set_source
-
-PX4 output gate contracts:
-  /uav/px4/setpoint_candidate
-  /uav/px4/output_gate_status
-  /uav/px4/safe_to_forward
-  /uav/px4/set_output_enable
-
-SITL-only stream contracts:
-  /uav/px4/stream_status
-  /uav/px4/set_stream_enable
-  /fmu/in/trajectory_setpoint
-  /fmu/in/offboard_control_mode
-EOF
 }
 
 main() {
@@ -1155,13 +484,6 @@ main() {
         help|-h|--help)
             usage
             ;;
-        status)
-            require_repository
-            command_status
-            ;;
-        backup)
-            bash "$REPO_ROOT/tools/backup.sh"
-            ;;    
         profile)
             require_repository
             shift
@@ -1193,46 +515,15 @@ main() {
             shift
             python3 -m uav_ml.tools.bc_flight_plotting "$@"
             ;;
-        ml-test)
-            require_repository
-            shift
-            python3 -m unittest discover -s tests/ml -p 'test_*.py' "$@"
-            ;;
         expert-collect)
             require_repository
             shift
             python3 -m uav_ml.tools.expert_collect "$@"
             ;;
-        expert-collect-publish)
-            require_repository
-            shift
-            command_expert_collect_publish "$@"
-            ;;
-        expert-runtime-smoke)
-            require_repository
-            shift
-            python3 -m uav_ml.tools.expert_runtime_smoke "$@"
-            ;;
-        expert-scene-preview)
-            require_repository
-            shift
-            if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-                expert_scene_preview_usage
-                return 0
-            fi
-            require_ros_base
-            require_workspace_overlay
-            command_expert_scene_preview "$@"
-            ;;
         expert-validate)
             require_repository
             shift
             python3 -m uav_ml.tools.validate_expert_collection "$@"
-            ;;
-        artifact-publish)
-            require_repository
-            shift
-            python3 -m uav_ml.tools.artifact_publish "$@"
             ;;
         expert-runtime-wait|expert-scene-prepare|expert-run-episode|bc-flight-run|isaac-trace-replay)
             require_repository
@@ -1241,60 +532,11 @@ main() {
             shift
             clean_environment_command "$command_name" "$@"
             ;;
-        doctor)
-            require_repository
-            require_ros_base
-            command_doctor
-            ;;
         build)
             require_repository
             require_ros_base
             shift
             clean_environment_command build "$@"
-            ;;
-        test)
-            require_repository
-            require_ros_base
-            require_workspace_overlay
-            shift
-            clean_environment_command test "$@"
-            ;;
-        verify)
-            require_repository
-            require_ros_base
-            command_verify
-            ;;
-        px4-sitl-doctor)
-            require_repository
-            require_ros_base
-            require_workspace_overlay
-            shift
-            clean_environment_command px4-sitl-doctor "$@"
-            ;;
-        px4-sitl-flight-check|isaac-runtime-flight-check)
-            require_repository
-            require_ros_base
-            require_workspace_overlay
-            shift
-            clean_environment_command "$command_name" "$@"
-            ;;
-        topics)
-            require_repository
-            require_ros_base
-            require_workspace_overlay
-            clean_environment_command topics
-            ;;
-        interfaces)
-            require_repository
-            require_ros_base
-            require_workspace_overlay
-            clean_environment_command interfaces
-            print_planner_topics
-            ;;
-        shell)
-            require_repository
-            require_ros_base
-            clean_environment_command shell
             ;;
         *)
             error "unknown command: $command_name"

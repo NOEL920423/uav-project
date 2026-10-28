@@ -17,23 +17,16 @@ if "$UAV" definitely-not-a-command >/dev/null 2>&1; then
     fail "unknown command unexpectedly returned zero"
 fi
 
-before_status="$(git -C "$REPO_ROOT" status --porcelain=v1)"
-"$UAV" status >/dev/null
-after_status="$(git -C "$REPO_ROOT" status --porcelain=v1)"
-[[ "$before_status" == "$after_status" ]] || fail "status modified the repository"
-
-doctor_output="$("$UAV" doctor 2>&1)"
-[[ "$doctor_output" == *"Python path: /usr/bin/python3"* ]] || \
-    fail "doctor did not select /usr/bin/python3"
-[[ "$doctor_output" == *"ROS distribution: jazzy"* ]] || \
-    fail "doctor did not source ROS 2 Jazzy"
+if "$UAV" __clean build >/dev/null 2>&1; then
+    fail "internal clean command accepted direct entry"
+fi
 
 temporary_root="$(mktemp -d /tmp/uav-wrapper-test.XXXXXX)"
 trap 'rm -rf -- "$temporary_root"' EXIT
 cp "$UAV" "$temporary_root/uav"
 chmod +x "$temporary_root/uav"
 set +e
-bad_output="$(cd "$temporary_root" && ./uav status 2>&1)"
+bad_output="$(cd "$temporary_root" && ./uav expert-collect --help 2>&1)"
 bad_status=$?
 set -e
 ((bad_status != 0)) || fail "incorrect repository assumptions were accepted"
@@ -44,12 +37,13 @@ if /usr/bin/grep -nE 'source[^\n]*uav_ros2_ws' "$UAV"; then
     fail "wrapper contains a legacy workspace source command"
 fi
 help_output="$("$UAV" help)"
-[[ "$help_output" == *"expert-collect"* ]] || \
-    fail "expert-collect is missing from help"
-[[ "$help_output" == *"expert-collect-publish"* ]] || \
-    fail "expert-collect-publish is missing from help"
-[[ "$help_output" == *"resnet-train"* ]] || \
-    fail "resnet-train is missing from help"
+for workflow in build profile expert-collect expert-validate ae-train resnet-train bc-train bc-eval eval bc-eval-plot; do
+    [[ "$help_output" == *"$workflow"* ]] || fail "$workflow is missing from help"
+done
+for workflow in expert-validate ae-train bc-train bc-eval bc-eval-plot; do
+    workflow_help="$("$UAV" "$workflow" --help)"
+    [[ "$workflow_help" == *"usage:"* ]] || fail "$workflow help is unavailable"
+done
 resnet_help="$($UAV resnet-train --help)"
 [[ "$resnet_help" == *"--dataset DATASET"* ]] || \
     fail "resnet-train help is missing --dataset"
@@ -65,16 +59,15 @@ expert_help="$($UAV expert-collect --help)"
 evaluation_help="$($UAV eval --help)"
 [[ "$evaluation_help" == *"--scene {v3,v4}"* ]] || \
     fail "eval alias is missing --scene"
-publish_help="$($UAV expert-collect-publish --help)"
-[[ "$publish_help" == *"--nas-root <path>"* ]] || \
-    fail "expert-collect-publish help is missing --nas-root"
-if "$UAV" expert-collect-publish --episodes 1 --dataset cylinder_v3 \
-    >/dev/null 2>&1
-then
-    fail "expert-collect-publish accepted a missing NAS root"
-fi
+profile_help="$("$UAV" profile current expert-collect --help)"
+[[ "$profile_help" == "$expert_help" ]] || fail "profile did not forward collection help"
 
-for retired in offline-check tracking-check mux-check px4-map-check px4-sitl-stream-check bc-overfit; do
+for retired in \
+    offline-check tracking-check mux-check px4-map-check px4-sitl-stream-check bc-overfit \
+    status backup doctor test verify ml-test px4-sitl-doctor px4-sitl-flight-check \
+    isaac-runtime-flight-check expert-collect-publish expert-runtime-smoke \
+    expert-scene-preview artifact-publish topics interfaces shell
+do
     set +e
     "$UAV" "$retired" >/dev/null 2>&1
     retired_status=$?

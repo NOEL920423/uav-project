@@ -55,7 +55,9 @@ from uav_ml.tools.training_cli import (
     resolve_dataset,
     select_autoencoder_checkpoint,
     select_multi_autoencoder_checkpoint,
+    save_checkpoint,
 )
+from uav_ml.tools.artifact_publish import nas_output_path, require_nas_root
 from uav_ml.training import resolve_device, set_seeds
 
 import matplotlib
@@ -106,14 +108,14 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def _publish_latest_bc(repository_root: Path, summary: dict) -> None:
+def _publish_latest_bc(artifact_root: Path, summary: dict) -> None:
     """Atomically publish a completed CLI training run as the global default."""
     if summary.get("run_status") != "completed":
         raise ValueError("refusing to publish an incomplete BC run")
     checkpoint = Path(summary["best_checkpoint"]).resolve()
     if not checkpoint.is_file() or not (checkpoint.parent / "summary.json").is_file():
         raise FileNotFoundError(f"completed BC artifacts are missing: {checkpoint}")
-    pointer = repository_root / "experiments/bc/latest.json"
+    pointer = nas_output_path(artifact_root / "experiments/bc/latest.json", nas_root=artifact_root)
     temporary = pointer.with_suffix(".json.tmp")
     _write_json(temporary, {
         "format_version": FORMAT_VERSION,
@@ -838,7 +840,7 @@ def train_baseline(
             latent_dimension=64 if train_encoder else 512,
         )
         encoder_checkpoint = output_dir / "resnet18_encoder.pt"
-        torch.save({
+        save_checkpoint({
             "model_class": "ResNet18Encoder",
             "model_config": initial_encoder.checkpoint_config,
             "model_state": initial_encoder.state_dict(),
@@ -1053,7 +1055,7 @@ def train_baseline(
             if train_encoder:
                 encoder_payload["model_state"] = encoder.state_dict()
                 last_encoder = output_dir / "resnet18_encoder_last.pt"
-                torch.save(encoder_payload, last_encoder)
+                save_checkpoint(encoder_payload, last_encoder)
                 epoch_audit = {
                     **audit, "encoder_checkpoint": str(last_encoder.resolve()),
                     "encoder_sha256": _sha256(last_encoder),
@@ -1071,19 +1073,19 @@ def train_baseline(
                 image_source,
                 encoder,
             )
-            torch.save(payload, output_dir / "last.pt")
+            save_checkpoint(payload, output_dir / "last.pt")
             if validation_metrics["mse"] < best_loss:
                 best_loss = validation_metrics["mse"]
                 best_epoch = epoch
                 stale_epochs = 0
                 if train_encoder:
-                    torch.save(encoder_payload, encoder_checkpoint)
+                    save_checkpoint(encoder_payload, encoder_checkpoint)
                     audit["encoder_sha256"] = _sha256(encoder_checkpoint)
                     payload = {
                         **payload, "autoencoder_checkpoint": str(encoder_checkpoint.resolve()),
                         "autoencoder_checkpoint_sha256": audit["encoder_sha256"],
                     }
-                torch.save(payload, output_dir / "best.pt")
+                save_checkpoint(payload, output_dir / "best.pt")
             else:
                 stale_epochs += 1
             writer.add_scalar(
@@ -1308,6 +1310,7 @@ def main() -> int:
         print(f"ERROR: {error_stage} stopped: {error}")
         return 1
     try:
+        nas_root = require_nas_root()
         sources = normalize_image_sources(
             args.image_sources if args.image_sources else (args.image_source,)
         )
@@ -1322,6 +1325,7 @@ def main() -> int:
                     {source: IMAGE_PREPROCESSING[source] for source in sources},
                     explicit=Path(args.encoder) if args.encoder else None,
                     project_root=repository_root,
+                    artifact_root=nas_root,
                 )
             else:
                 encoder = select_autoencoder_checkpoint(
@@ -1330,6 +1334,7 @@ def main() -> int:
                     IMAGE_PREPROCESSING[sources[0]],
                     explicit=Path(args.encoder) if args.encoder else None,
                     project_root=repository_root,
+                    artifact_root=nas_root,
                 )
         else:
             encoder = None
@@ -1354,11 +1359,15 @@ def main() -> int:
             dataset_location,
             source_label,
             _stamp(),
-            project_root=repository_root,
+            artifact_root=nas_root,
         )
         if args.encoder_type == "resnet18":
             output = output.parent / "resnet18" / output.name
     try:
+        output = nas_output_path(output, nas_root=nas_root)
+        if output.exists():
+            raise FileExistsError(f"refusing to overwrite experiment: {output}")
+        output.mkdir(parents=True, exist_ok=False)
         with TensorBoardServer(
             output / "tensorboard",
             enabled=args.tensorboard,
@@ -1395,7 +1404,7 @@ def main() -> int:
                 initialize_policy=args.initialize_policy,
             )
             if not train_encoder:
-                _publish_latest_bc(repository_root, summary)
+                _publish_latest_bc(nas_root, summary)
             test = summary["test"]["per_action"]
             print(
                 "=========================================\n"

@@ -14,6 +14,8 @@ import time
 
 import torch
 
+from uav_ml.tools.artifact_publish import nas_project_root, stored_experiment_path
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATASET_BASE = PROJECT_ROOT / "datasets"
@@ -81,11 +83,11 @@ def experiment_run_directory(
     image_source: str,
     timestamp: str,
     *,
-    project_root: Path = PROJECT_ROOT,
+    artifact_root: Path | None = None,
 ) -> Path:
     """Return the canonical provenance-preserving experiment run path."""
     return (
-        project_root.resolve()
+        nas_project_root(artifact_root)
         / "experiments"
         / experiment
         / dataset.name
@@ -98,10 +100,10 @@ def autoencoder_latest_path(
     dataset: DatasetLocation,
     image_source: str,
     *,
-    project_root: Path = PROJECT_ROOT,
+    artifact_root: Path | None = None,
 ) -> Path:
     return (
-        project_root.resolve()
+        nas_project_root(artifact_root)
         / "experiments"
         / "autoencoder"
         / dataset.name
@@ -122,6 +124,13 @@ def _atomic_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def save_checkpoint(payload: dict, path: Path) -> None:
+    """Replace a checkpoint only after its complete serialization succeeds."""
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    torch.save(payload, temporary)
     temporary.replace(path)
 
 
@@ -162,6 +171,8 @@ def validate_autoencoder_checkpoint(
     *,
     automatic: bool,
     index: dict | None = None,
+    project_root: Path = PROJECT_ROOT,
+    artifact_root: Path | None = None,
 ) -> EncoderSelection:
     """Require matching dataset/source/model contracts and readable artifacts."""
     checkpoint = checkpoint.resolve()
@@ -222,9 +233,13 @@ def validate_autoencoder_checkpoint(
     if index is not None:
         if (
             index.get("run_status") != "completed"
-            or Path(index.get("best_checkpoint", "")).resolve() != checkpoint
+            or stored_experiment_path(
+                index.get("best_checkpoint", ""), project_root, artifact_root=artifact_root
+            ) != checkpoint
             or index.get("best_checkpoint_sha256") != _sha256(checkpoint)
-            or Path(index.get("summary", "")).resolve() != summary_path.resolve()
+            or stored_experiment_path(
+                index.get("summary", ""), project_root, artifact_root=artifact_root
+            ) != summary_path.resolve()
         ):
             raise ValueError("AutoEncoder latest index is stale or inconsistent")
     return EncoderSelection(checkpoint, automatic, summary)
@@ -237,6 +252,7 @@ def select_autoencoder_checkpoint(
     *,
     explicit: Path | None,
     project_root: Path = PROJECT_ROOT,
+    artifact_root: Path | None = None,
 ) -> EncoderSelection:
     """Select explicit AE or the single provenance-indexed latest matching run."""
     if explicit is not None:
@@ -248,7 +264,7 @@ def select_autoencoder_checkpoint(
             automatic=False,
         )
     index_path = autoencoder_latest_path(
-        dataset, image_source, project_root=project_root
+        dataset, image_source, artifact_root=artifact_root
     )
     if not index_path.is_file():
         raise FileNotFoundError(
@@ -272,12 +288,16 @@ def select_autoencoder_checkpoint(
             "AutoEncoder latest index provenance mismatch: " + ", ".join(mismatches)
         )
     return validate_autoencoder_checkpoint(
-        Path(index["best_checkpoint"]),
+        stored_experiment_path(
+            index["best_checkpoint"], project_root, artifact_root=artifact_root
+        ),
         dataset,
         image_source,
         image_preprocessing,
         automatic=True,
         index=index,
+        project_root=project_root,
+        artifact_root=artifact_root,
     )
 
 
@@ -288,6 +308,7 @@ def select_multi_autoencoder_checkpoint(
     *,
     explicit: Path | None,
     project_root: Path = PROJECT_ROOT,
+    artifact_root: Path | None = None,
 ) -> EncoderSelection:
     """Select a multi-image AE whose ordered source contract matches BC."""
     sources = tuple(image_sources)
@@ -295,7 +316,7 @@ def select_multi_autoencoder_checkpoint(
         raise ValueError("multi-image encoder selection requires at least two sources")
     label = "+".join(sources)
     index_path = autoencoder_latest_path(
-        dataset, label, project_root=project_root
+        dataset, label, artifact_root=artifact_root
     )
     index = None
     if explicit is None:
@@ -306,7 +327,9 @@ def select_multi_autoencoder_checkpoint(
                 "Run AE training first with the same --image-sources list."
             )
         index = json.loads(index_path.read_text(encoding="utf-8"))
-        checkpoint = Path(index.get("best_checkpoint", ""))
+        checkpoint = stored_experiment_path(
+            index.get("best_checkpoint", ""), project_root, artifact_root=artifact_root
+        )
         automatic = True
     else:
         checkpoint = explicit
@@ -359,7 +382,9 @@ def select_multi_autoencoder_checkpoint(
         mismatches = [key for key, value in expected.items() if index.get(key) != value]
         if (
             mismatches
-            or Path(index.get("summary", "")).resolve() != summary_path.resolve()
+            or stored_experiment_path(
+                index.get("summary", ""), project_root, artifact_root=artifact_root
+            ) != summary_path.resolve()
         ):
             raise ValueError(
                 "AutoEncoder latest index is stale or inconsistent: "

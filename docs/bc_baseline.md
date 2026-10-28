@@ -1,5 +1,12 @@
 # BC 基準模型訓練與評估
 
+本文件的訓練 `experiments/` 與評估 `evaluations/` 均位於 NAS 專案根目錄；
+預設為 `/home/noel_614420090/NAS/614/614420090_ChenHao/uav-project`，可用
+`UAV_NAS_ROOT` 指定其他已掛載的 NAS 專案目錄。模型、metrics、TensorBoard、
+模型索引與評估產物直接寫 NAS。`--output` 必須位於該 NAS 根目錄內，NAS 不可用時停止。
+資料集仍於本機收集，整批完成且驗證後再使用 `bash tools/backup.sh` 備份。
+既有檔案保留原位；儲存限制與操作方式見 [SystemUserManual.md](SystemUserManual.md)。
+
 這是使用 canonical 高樓專家資料集建立的第一個正式 behavior-cloning 基準。流程刻意
 保持精簡且可重現：
 
@@ -272,7 +279,8 @@ evaluations/bc/AE_1010T1530Y2026/
 
 ResNet18 則使用 `evaluations/bc/ResNet18_1010T1530Y2026/`，包含
 `RgbAutoencoderV0`、`MultiImageAutoencoderV0` 的 AE 都使用 `AE_` 前綴。
-`--output PATH` 仍可指定完整輸出目錄；`--nas-root` 發布到 NAS 的 `evaluations/bc/`。
+`--output PATH` 可指定 NAS 內的完整輸出目錄；`--nas-root` 選擇直接輸出的 NAS 專案根目錄，
+預設寫入該根目錄的 `evaluations/bc/`，不再先寫本機或在結束後搬移／刪除資料。
 既有目錄不會自動搬移，同一分鐘同類模型的同名目錄也不會被覆寫。
 專案根目錄的 `evaluations/` 已由 `.gitignore` 忽略，所有評估產物都不會加入 Git。
 

@@ -210,9 +210,9 @@ def test_bridge_reapplies_same_episode_when_scene_version_changes():
         _observer_frame_count=2, _depth_frame_count=3,
         _apply_scene=lambda scene: applied.append(scene),
     )
-    for version in ("v3", "v4", "v4"):
+    for version in ("v3", "v4", "v5", "v5"):
         request = dict(command="prepare_episode", episode_id="episode_000001", random_seed=103001, scene_version=version)
         scope["_episode_command_callback"](bridge, SimpleNamespace(data=json.dumps(request)))
         assert bridge._episode_command_error == ""
-    assert [scene["scene_version"] for scene in applied] == ["v3", "v4"]
-    assert bridge._scene_revision == 2
+    assert [scene["scene_version"] for scene in applied] == ["v3", "v4", "v5"]
+    assert bridge._scene_revision == 3

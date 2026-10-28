@@ -18,6 +18,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import torch
+from uav_ml.tools.artifact_publish import nas_output_path, require_nas_root
 
 from isaac.runtime.environment import (
     DEFAULT_SCENE_VERSION, SCENE_VERSIONS, load_scene_profile,
@@ -60,10 +61,10 @@ def _stamp() -> str:
     return datetime.now().strftime("%Y%m%dT%H%M")
 
 
-def _evaluation_run_directory(repository_root: Path, encoder_architecture: str) -> Path:
+def _evaluation_run_directory(artifact_root: Path, encoder_architecture: str) -> Path:
     feature_extractor = FEATURE_EXTRACTOR_NAMES[encoder_architecture]
     stamp = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%m%dT%H%MY%Y")
-    return repository_root / "evaluations/bc" / f"{feature_extractor}_{stamp}"
+    return artifact_root / "evaluations/bc" / f"{feature_extractor}_{stamp}"
 
 
 def _stop_process(process: subprocess.Popen | None) -> None:
@@ -119,11 +120,19 @@ def _tail(path: Path, count: int = 20) -> str:
     return "".join(path.read_text(encoding="utf-8", errors="replace").splitlines(True)[-count:])
 
 
-def _pump(stream, output, *, label: str, verbose: bool) -> None:
+def _pump(stream, output, *, label: str, verbose: bool, on_error=None) -> None:
+    write_failed = False
     for line in iter(stream.readline, ""):
-        output.write(line)
-        output.flush()
-        if verbose or _is_error_line(line) or label.endswith("stderr"):
+        if not write_failed:
+            try:
+                output.write(line)
+                output.flush()
+            except OSError as error:
+                write_failed = True
+                print(f"[BC Flight] Log write failed ({label}): {error}", file=sys.stderr, flush=True)
+                if on_error is not None:
+                    on_error(error)
+        if write_failed or verbose or _is_error_line(line) or label.endswith("stderr"):
             print(_display_line(line), end="", file=sys.stderr if label.endswith("stderr") else sys.stdout, flush=True)
     stream.close()
 
@@ -161,12 +170,14 @@ class ManagedFlightRuntime:
         self._isaac: subprocess.Popen | None = None
         self._streams = []
         self._pump_threads: list[threading.Thread] = []
+        self._log_errors: list[OSError] = []
         self._episode_start_time_s: float | None = None
         self._runtime_dir: Path | None = None
         self._capture_stop = threading.Event()
         self._capture_thread = None
         self._px4_process = None
-        self._ulog_handles = {}
+        self._ulog_ready = threading.Event()
+        self._ulog_error: str | None = None
 
     def preflight(self) -> None:
         launcher = self.isaac_release / (
@@ -202,6 +213,7 @@ class ManagedFlightRuntime:
         self._episode_start_time_s = time.time()
         self._runtime_dir = runtime_dir
         environment = os.environ.copy()
+        environment["ROS_LOG_DIR"] = str((runtime_dir / "ros_logs").resolve())
         environment["UAV_BC_FLIGHT_DIAGNOSTICS"] = (
             "1" if ENABLE_BC_FLIGHT_RECORDING else "0"
         )
@@ -249,7 +261,8 @@ class ManagedFlightRuntime:
         else:
             command.append("--no-window")
         command.extend([
-            "--exec", str(self.repository_root / "isaac/runtime/bootstrap.py")
+            "--exec", str(self.repository_root / "isaac/runtime/bootstrap.py"),
+            f"--/log/file={runtime_dir.resolve() / 'kit.log'}",
         ])
         self._isaac = subprocess.Popen(
             command,
@@ -283,7 +296,7 @@ class ManagedFlightRuntime:
         return False
 
     def _capture_ulog(self) -> None:
-        """Hold open ULogs so temporary-rootfs deletion cannot lose evidence."""
+        """Redirect PX4's temporary log directory to NAS before starting its logger."""
         destination = self._runtime_dir / "px4_ulog"
         destination.mkdir(exist_ok=True)
         logger_started = False
@@ -306,6 +319,7 @@ class ManagedFlightRuntime:
             pid, executable, cwd = self._px4_process
             if not logger_started:
                 try:
+                    self._prepare_ulog_directory(cwd, destination)
                     # Diagnostic recorder only; no PX4 parameter is changed.
                     with (destination / "logger_command.log").open("a") as log:
                         result = subprocess.run(
@@ -314,34 +328,40 @@ class ManagedFlightRuntime:
                         )
                     logger_started = result.returncode == 0
                     if not logger_started:
-                        print(f"[BC Flight] logger start returned {result.returncode}: {destination / 'logger_command.log'}", file=sys.stderr)
-                except (OSError, subprocess.TimeoutExpired) as error:
+                        raise RuntimeError(f"logger start returned {result.returncode}: {destination / 'logger_command.log'}")
+                except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+                    self._ulog_error = str(error)
                     print(f"[BC Flight] ULog recorder error: {error}", file=sys.stderr)
-            try:
-                for source in (cwd / "log").rglob("*.ulg"):
-                    if str(source) not in self._ulog_handles:
-                        self._ulog_handles[str(source)] = source.open("rb")
-            except OSError as error:
-                print(f"[BC Flight] ULog discovery error: {error}", file=sys.stderr)
+                    self._ulog_ready.set()
+                    break
+                self._ulog_ready.set()
         self._write_ulog_snapshot(destination)
 
+    @staticmethod
+    def _prepare_ulog_directory(cwd: Path, destination: Path) -> None:
+        """Replace only empty runtime log directories; preserve existing evidence."""
+        for name, target in (("log", destination), ("mission_log", destination / "mission")):
+            target.mkdir(parents=True, exist_ok=True)
+            source = cwd / name
+            if source.is_symlink():
+                if source.resolve() != target.resolve():
+                    raise RuntimeError(f"PX4 log directory points elsewhere: {source}")
+                continue
+            if source.exists():
+                if not source.is_dir() or any(source.iterdir()):
+                    raise RuntimeError(f"refusing to replace existing PX4 log evidence: {source}")
+                source.rmdir()
+            source.symlink_to(target.resolve(), target_is_directory=True)
+
     def _write_ulog_snapshot(self, destination: Path) -> None:
-        copied = []
-        for source, handle in self._ulog_handles.items():
-            try:
-                handle.seek(0)
-                target = destination / Path(source).name
-                with target.open("wb") as output:
-                    shutil.copyfileobj(handle, output)
-                copied.append({"path": target.name, "size": target.stat().st_size})
-            except OSError as error:
-                print(f"[BC Flight] ULog copy failed: {error}", file=sys.stderr)
-            finally:
-                handle.close()
+        copied = [
+            {"path": str(path.relative_to(destination)), "size": path.stat().st_size}
+            for path in sorted(destination.rglob("*.ulg")) if path.is_file()
+        ]
         (destination / "manifest.json").write_text(json.dumps({
             "copied_files": copied, "pid": self._px4_process[0] if self._px4_process else None,
-            "failure_reason": "" if copied else "No ULog captured; see logger_command.log",
-            "snapshot": "logger stopped before runtime cleanup",
+            "failure_reason": self._ulog_error or ("" if copied else "No ULog captured; see logger_command.log"),
+            "snapshot": "written directly to NAS; logger stopped before runtime cleanup",
         }, indent=2), encoding="utf-8")
         if not copied:
             print(f"[BC Flight] ULog missing: {destination / 'manifest.json'}", file=sys.stderr)
@@ -350,12 +370,15 @@ class ManagedFlightRuntime:
         output = self._log(log_path)
         for stream, label in ((process.stdout, f"{name} stdout"), (process.stderr, f"{name} stderr")):
             if stream is not None:
-                thread = threading.Thread(target=_pump, args=(stream, output), kwargs={"label": label, "verbose": self.verbose}, daemon=True)
+                thread = threading.Thread(target=_pump, args=(stream, output), kwargs={
+                    "label": label, "verbose": self.verbose, "on_error": self._log_errors.append,
+                }, daemon=True)
                 self._pump_threads.append(thread)
                 thread.start()
 
     def _uav(self, arguments: list[str], log_path: Path) -> int:
         environment = os.environ.copy()
+        environment["ROS_LOG_DIR"] = str((log_path.parent / "ros_logs").resolve())
         environment["UAV_BC_FLIGHT_DIAGNOSTICS"] = (
             "1" if ENABLE_BC_FLIGHT_RECORDING else "0"
         )
@@ -379,6 +402,8 @@ class ManagedFlightRuntime:
         except subprocess.TimeoutExpired:
             _stop_process(process)
             raise
+        if self._log_errors:
+            raise self._log_errors[0]
         if code != 0:
             detail = _tail(log_path)
             print(f"[BC Flight] subprocess failure: stage={arguments[0]} process=./uav {arguments[0]} return code={code}\n{detail}[BC Flight] log: {log_path}", file=sys.stderr, flush=True)
@@ -394,6 +419,11 @@ class ManagedFlightRuntime:
         runtime_dir.mkdir(parents=True, exist_ok=True)
         if self._uav(["expert-runtime-wait"], runtime_dir / "ready.log") != 0:
             raise RuntimeError("Isaac/PX4 runtime did not become ready")
+        if self.diagnostics_enabled:
+            if not self._ulog_ready.wait(timeout=min(self.timeout_s, 30.0)):
+                raise RuntimeError("PX4 direct NAS ULog recorder did not become ready")
+            if self._ulog_error:
+                raise RuntimeError(f"PX4 direct NAS ULog recorder failed: {self._ulog_error}")
         episode_id = f"episode_{episode:06d}"
         profile_path = runtime_dir / "scene_parameters.json"
         profile_path.write_text(json.dumps(self.scene_record, indent=2) + "\n", encoding="utf-8")
@@ -459,62 +489,12 @@ class ManagedFlightRuntime:
             raise RuntimeError("Isaac trace replay failed")
 
     def save_ulog(self, runtime_dir: Path, abnormal: bool) -> None:
-        """Snapshot PX4 ULog files before stopping managed processes."""
+        """Record existing direct NAS ULogs without copying temporary local files."""
         if not self.diagnostics_enabled or not abnormal:
             return
         destination = runtime_dir / "px4_ulog"
         destination.mkdir(exist_ok=True)
-        px4_pid = None
-        px4_cwd = None
-        failure_reason = ""
-        for proc in Path("/proc").iterdir():
-            if not proc.name.isdigit():
-                continue
-            try:
-                command = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
-                if "/PX4-Autopilot/build/px4_sitl_default/bin/px4" not in command:
-                    continue
-                px4_pid = int(proc.name)
-                px4_cwd = Path(os.readlink(proc / "cwd"))
-                break
-            except (OSError, ValueError):
-                continue
-        if px4_pid is None or px4_cwd is None:
-            failure_reason = "live PX4 process PID/cwd could not be obtained"
-        roots = [] if px4_cwd is None else [px4_cwd / "log"]
-        copied = []
-        cutoff = (self._episode_start_time_s or time.time()) - 1.0
-        candidates = []
-        for root in roots:
-            if not root.is_dir():
-                continue
-            for source in root.rglob("*.ulg"):
-                if source.is_file():
-                    stat = source.stat()
-                    selected = stat.st_mtime >= cutoff
-                    record = {"source_path": str(source), "mtime": stat.st_mtime,
-                              "size": stat.st_size, "selected": selected,
-                              "reason": "created_or_updated_after_episode_start" if selected
-                              else "older_than_episode_start"}
-                    candidates.append(record)
-                    if selected:
-                        target = destination / source.name
-                        try:
-                            shutil.copy2(source, target)
-                        except OSError as error:
-                            record["selected"] = False
-                            record["reason"] = f"copy_failed:{error}"
-                        else:
-                            copied.append(record)
-        (destination / "manifest.json").write_text(
-            json.dumps({"copied_files": copied, "candidates": candidates,
-                        "pid": px4_pid, "cwd": None if px4_cwd is None else str(px4_cwd),
-                        "failure_reason": failure_reason,
-                        "episode_start_time": self._episode_start_time_s,
-                        "cutoff_time": cutoff,
-                        "searched_roots": [str(r) for r in roots]}, indent=2),
-            encoding="utf-8",
-        )
+        self._write_ulog_snapshot(destination)
 
     def cleanup(self) -> None:
         if self._capture_thread is not None:
@@ -550,6 +530,8 @@ class ManagedFlightRuntime:
             except Exception:
                 import traceback
                 traceback.print_exc()
+        if self._log_errors:
+            raise OSError(f"NAS log capture failed: {self._log_errors[0]}") from self._log_errors[0]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -580,11 +562,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--nas-root",
         type=Path,
-        default=(Path(os.environ["UAV_NAS_ROOT"])
-                 if os.environ.get("UAV_NAS_ROOT") else None),
         help=(
-            "publish this completed evaluation under NAS/evaluations/bc "
-            "and delete verified local artifacts"
+            "write evaluation artifacts directly under this NAS project root "
+            "(default: UAV_NAS_ROOT or the configured NAS project)"
         ),
     )
     parser.add_argument("--verbose", action="store_true", help="Show all subprocess stdout.")
@@ -753,13 +733,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.playback_speed <= 0.0:
         raise ValueError("--playback-speed must be positive")
     repository_root = Path(__file__).resolve().parents[2]
+    nas_root = require_nas_root(args.nas_root)
+    if args.diagnosis:
+        space = os.statvfs(nas_root)
+        if space.f_bavail * space.f_frsize < 50 * 1024 * 1024:
+            raise RuntimeError(
+                f"PX4 direct NAS ULog requires at least 50 MiB of reported available space: {nas_root}; "
+                "use a NAS mount that reports available space correctly"
+            )
     if args.replay_trace:
-        return _replay_trace(args, repository_root)
+        return _replay_trace(args, repository_root, nas_root)
     test_started_s = time.monotonic()
     requested_image_source = (
         canonical_image_source(args.image_source) if args.image_source is not None else None
     )
-    checkpoint = resolve_checkpoint(repository_root, args.checkpoint)
+    checkpoint = resolve_checkpoint(repository_root, args.checkpoint, artifact_root=nas_root)
     if ENABLE_BC_FLIGHT_RECORDING and shutil.which("ffmpeg") is None:
         raise FileNotFoundError(
             "ffmpeg is required for BC policy-input diagnostic video recording"
@@ -777,8 +765,9 @@ def main(argv: list[str] | None = None) -> int:
     output_root = (
         args.output.expanduser().resolve()
         if args.output
-        else _evaluation_run_directory(repository_root, encoder_architecture)
+        else _evaluation_run_directory(nas_root, encoder_architecture)
     )
+    output_root = nas_output_path(output_root, nas_root=nas_root)
     output_root.mkdir(parents=True, exist_ok=False)
     profile = load_scene_profile(args.scene)
     (output_root / "scene_parameters.json").write_text(
@@ -831,20 +820,10 @@ def main(argv: list[str] | None = None) -> int:
             encoder_architecture=encoder_architecture,
             scene_profile=profile,
         )
-    if args.nas_root is not None:
-        from uav_ml.tools.artifact_publish import publish_artifact_tree
-
-        destination = publish_artifact_tree(
-            output_root,
-            args.nas_root,
-            "evaluations/bc",
-            delete_local=True,
-        )
-        print(f"[BC Flight] Published verified artifact: {destination}", flush=True)
     return 0
 
 
-def _replay_trace(args: argparse.Namespace, repository_root: Path) -> int:
+def _replay_trace(args: argparse.Namespace, repository_root: Path, nas_root: Path) -> int:
     """Run a visual-only trajectory replay in the managed Isaac runtime."""
     trace_path = args.replay_trace.expanduser().resolve()
     if not trace_path.is_file():
@@ -858,8 +837,9 @@ def _replay_trace(args: argparse.Namespace, repository_root: Path) -> int:
     output_root = (
         args.output.expanduser().resolve()
         if args.output
-        else repository_root / "evaluations/bc" / f"replay_{_stamp()}"
+        else nas_root / "evaluations/bc" / f"replay_{_stamp()}"
     )
+    output_root = nas_output_path(output_root, nas_root=nas_root)
     output_root.mkdir(parents=True, exist_ok=False)
     global _LAST_ARTIFACT_PATH
     _LAST_ARTIFACT_PATH = output_root

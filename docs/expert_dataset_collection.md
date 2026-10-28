@@ -167,8 +167,7 @@ v3 的生成器還原自 Git revision `d53c991`，並比對過去 v3 資料的�
 ./uav expert-collect --scene v3 --episodes 100 --dataset cylinder_v3_new --resume
 ```
 
-`--episodes` 的 accepted 目標語意不變。`expert-collect-publish` 與
-`expert-scene-preview` 也接受 `--scene v3|v4`。
+`--episodes` 的 accepted 目標語意不變。
 `--resume` 會在修改 attempt history 前核對設定 JSON；不同版本或不同參數會直接拒絕。
 對於沒有設定快照的舊資料集，會先核對所有已有 episode 的場景，才建立資料集層級快照。
 

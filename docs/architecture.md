@@ -90,5 +90,5 @@ Isaac Sim、PX4 與 Pegasus 維持外部安裝。專案內 `pegasus_test/Pegasus
 - 五個 ROS 套件重新建置成功，保留的 20 個 console entry points 均可 import。
 - ML／runtime：163 tests 通過；ROS 功能測試：375 通過、22 跳過；CLI 檢查通過。
 - 現有 BC checkpoint 與其 encoder 可載入；未啟動 training、collection 或 Isaac 飛行。
-- 完整 `./uav test` 仍有 recorder、navigation、PX4 control 三個既有 lint suites 失敗。
+- 當時完整 ROS workspace 測試仍有 recorder、navigation、PX4 control 三個既有 lint suites 失敗。
   功能測試結果與 lint 分開回報；未放寬 lint 設定或移除其測試。

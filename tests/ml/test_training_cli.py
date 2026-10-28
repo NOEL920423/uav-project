@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
+import shutil
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest import mock
@@ -25,6 +28,7 @@ from uav_ml.tools.training_cli import (
     publish_autoencoder_latest,
     resolve_dataset,
     select_autoencoder_checkpoint,
+    save_checkpoint,
 )
 from uav_ml.train_autoencoder import (
     _parser as autoencoder_parser,
@@ -54,6 +58,19 @@ class _FakeProcess:
 
 
 class TrainingCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="nas-cli-fixture-")
+        self.addCleanup(temporary.cleanup)
+        self.nas = Path(temporary.name)
+        environment = mock.patch.dict(os.environ, {"UAV_NAS_ROOT": str(self.nas)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        probe = mock.patch("uav_ml.tools.artifact_publish.subprocess.run", return_value=SimpleNamespace(
+            returncode=0, stdout="fuse.raidrive\n", stderr="",
+        ))
+        probe.start()
+        self.addCleanup(probe.stop)
+
     def test_resnet_training_uses_requested_dataset_and_its_own_experiment_path(self) -> None:
         defaults = bc_parser(resnet_training=True).parse_args([])
         self.assertEqual(defaults.encoder_type, "resnet18_trainable")
@@ -142,7 +159,7 @@ class TrainingCliTests(unittest.TestCase):
             self.assertEqual(short.name, "bc_expert_cube")
             self.assertEqual(explicit_dot.path, legacy.resolve())
             run = experiment_run_directory(
-                "autoencoder", short, "top", "STAMP", project_root=project
+                "autoencoder", short, "top", "STAMP", artifact_root=project
             )
             self.assertEqual(
                 run,
@@ -217,7 +234,7 @@ class TrainingCliTests(unittest.TestCase):
                 "cube", must_exist=True, project_root=project
             )
             run = experiment_run_directory(
-                "autoencoder", dataset, "top", "STAMP", project_root=project
+                "autoencoder", dataset, "top", "STAMP", artifact_root=project
             )
             run.mkdir(parents=True)
             model = RgbAutoencoderV0()
@@ -248,7 +265,7 @@ class TrainingCliTests(unittest.TestCase):
             }
             summary_path.write_text(json.dumps(summary), encoding="utf-8")
             index_path = autoencoder_latest_path(
-                dataset, "top", project_root=project
+                dataset, "top", artifact_root=project
             )
             publish_autoencoder_latest(index_path, summary)
             selection = select_autoencoder_checkpoint(
@@ -257,15 +274,25 @@ class TrainingCliTests(unittest.TestCase):
                 IMAGE_PREPROCESSING["top"],
                 explicit=None,
                 project_root=project,
+                artifact_root=project,
             )
             self.assertTrue(selection.automatic)
             self.assertEqual(selection.checkpoint, checkpoint.resolve())
+            shutil.copytree(project / "experiments", self.nas / "experiments")
+            archived = select_autoencoder_checkpoint(
+                dataset, "top", IMAGE_PREPROCESSING["top"], explicit=None,
+                project_root=project, artifact_root=self.nas,
+            )
+            self.assertEqual(archived.checkpoint, self.nas / checkpoint.relative_to(project))
+            self.assertEqual(archived.summary["dataset_root"], str(dataset.path))
+            self.assertTrue(checkpoint.is_file())
             explicit = select_autoencoder_checkpoint(
                 dataset,
                 "top",
                 IMAGE_PREPROCESSING["top"],
                 explicit=checkpoint,
                 project_root=project,
+                artifact_root=project,
             )
             self.assertFalse(explicit.automatic)
             with self.assertRaisesRegex(ValueError, "provenance mismatch"):
@@ -275,6 +302,7 @@ class TrainingCliTests(unittest.TestCase):
                     IMAGE_PREPROCESSING["fpv_rgb"],
                     explicit=checkpoint,
                     project_root=project,
+                    artifact_root=project,
                 )
             wrong_path = project / "datasets" / "other"
             wrong_path.mkdir()
@@ -288,7 +316,58 @@ class TrainingCliTests(unittest.TestCase):
                     IMAGE_PREPROCESSING["top"],
                     explicit=checkpoint,
                     project_root=project,
+                    artifact_root=project,
                 )
+
+    def test_default_outputs_and_indexes_are_on_nas_while_dataset_stays_local(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            dataset = resolve_dataset("collection", must_exist=False, project_root=project)
+            self.assertEqual(dataset.path, project / "datasets/collection")
+            output = experiment_run_directory("bc", dataset, "top", "STAMP")
+            self.assertEqual(output, self.nas / "experiments/bc/collection/top/run_STAMP")
+            self.assertEqual(autoencoder_latest_path(dataset, "top"),
+                             self.nas / "experiments/autoencoder/collection/top/latest.json")
+            self.assertFalse((project / "experiments").exists())
+
+    def test_failed_checkpoint_save_preserves_last_complete_checkpoint(self) -> None:
+        checkpoint = self.nas / "best.pt"
+        checkpoint.write_bytes(b"complete checkpoint")
+        def fail_save(payload, path):
+            path.write_bytes(b"partial checkpoint")
+            raise OSError("NAS disconnected")
+        with mock.patch("torch.save", side_effect=fail_save):
+            with self.assertRaisesRegex(OSError, "NAS disconnected"):
+                save_checkpoint({}, checkpoint)
+        self.assertEqual(checkpoint.read_bytes(), b"complete checkpoint")
+
+    def test_unavailable_nas_stops_ae_before_tensorboard_or_training(self) -> None:
+        with mock.patch("sys.argv", ["ae-train", "--dataset", str(self.nas)]), mock.patch(
+            "uav_ml.train_autoencoder.require_nas_root", side_effect=RuntimeError("NAS unmounted"),
+        ), mock.patch("uav_ml.train_autoencoder.TensorBoardServer") as tensorboard, mock.patch(
+            "uav_ml.train_autoencoder.train",
+        ) as train:
+            self.assertEqual(autoencoder_main(), 1)
+        tensorboard.assert_not_called()
+        train.assert_not_called()
+        self.assertEqual(list(self.nas.iterdir()), [])
+
+    def test_training_clis_reject_local_output_before_starting_training(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            local = Path(directory) / "run"
+            for stage, main, module, options in (
+                ("ae-train", autoencoder_main, "uav_ml.train_autoencoder", ["--output-dir", str(local)]),
+                ("bc-train", bc_main, "uav_ml.tools.bc_baseline", ["--output", str(local), "--encoder-type", "resnet18"]),
+            ):
+                with self.subTest(stage=stage), mock.patch(
+                    "sys.argv", [stage, "--dataset", str(self.nas), *options],
+                ), mock.patch(f"{module}.TensorBoardServer") as tensorboard, mock.patch(
+                    f"{module}.{'train' if stage == 'ae-train' else 'train_baseline'}",
+                ) as train:
+                    self.assertEqual(main(), 1)
+                train.assert_not_called()
+                tensorboard.assert_not_called()
+                self.assertFalse(local.exists())
 
     @mock.patch(
         "sys.argv",

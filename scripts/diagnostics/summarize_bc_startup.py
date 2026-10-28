@@ -186,7 +186,7 @@ def write_run_reader_summary(root: Path) -> dict:
 
 def inspect_ulog(root: Path, export: bool = False) -> dict:
     """Inspect existing PX4 evidence without inventing host/boot alignment."""
-    paths = sorted((root / "px4_ulog").glob("*.ulg"))
+    paths = sorted((root / "px4_ulog").rglob("*.ulg"))
     report = {"files": [], "clock_alignment": "unavailable",
               "limitations": [
                   "ULog topic timestamp is not a measured command receive/actuation time.",

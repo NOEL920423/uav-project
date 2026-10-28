@@ -208,6 +208,46 @@ class MockClosedLoopEnvironment:
 
 
 class BcBaselineTests(unittest.TestCase):
+    def test_training_clis_write_and_select_artifacts_on_nas_with_local_dataset(self) -> None:
+        from uav_ml.train_autoencoder import main as ae_main
+        from uav_ml.tools.bc_baseline import main as bc_main
+        from uav_ml.inference.bc_flight import BcFlightPolicy, resolve_checkpoint
+        local_pointer = REPOSITORY_ROOT / "experiments/bc/latest.json"
+        original_pointer = local_pointer.read_bytes() if local_pointer.is_file() else None
+        with tempfile.TemporaryDirectory(prefix="nas-training-smoke-") as directory:
+            root = Path(directory)
+            dataset, _ = _make_fixture(root)
+            original_manifest = (dataset / "collection_manifest.json").read_bytes()
+            nas = root / "nas"
+            nas.mkdir()
+            with (
+                mock.patch.dict("os.environ", {"UAV_NAS_ROOT": str(nas)}),
+                mock.patch("uav_ml.tools.artifact_publish.require_nas_root", return_value=nas),
+                mock.patch("uav_ml.train_autoencoder.require_nas_root", return_value=nas),
+                mock.patch("uav_ml.tools.bc_baseline.require_nas_root", return_value=nas),
+            ):
+                common = ["--dataset", str(dataset), "--epochs", "1", "--batch-size", "4", "--device", "cpu", "--no-tensorboard"]
+                with mock.patch("sys.argv", ["ae-train", *common, "--workers", "0"]):
+                    self.assertEqual(ae_main(), 0)
+                with mock.patch("sys.argv", ["bc-train", *common]):
+                    self.assertEqual(bc_main(), 0)
+                checkpoint = resolve_checkpoint(REPOSITORY_ROOT)
+                self.assertTrue(checkpoint.is_relative_to(nas))
+                policy = BcFlightPolicy(checkpoint, None, torch.device("cpu"))
+                self.assertTrue(Path(policy.identity.encoder_path).is_relative_to(nas))
+            for stage in ("autoencoder", "bc"):
+                pointer = nas / f"experiments/{stage}/dataset/top/latest.json"
+                self.assertTrue(pointer.is_file())
+                payload = json.loads(pointer.read_text())
+                run = Path(payload["run_dir"])
+                for name in ("best.pt", "last.pt", "summary.json", "split_manifest.json"):
+                    self.assertTrue((run / name).is_file(), str(run / name))
+                self.assertTrue((run / "tensorboard").is_dir())
+                self.assertFalse(list(run.glob("*.tmp")))
+            self.assertEqual((dataset / "collection_manifest.json").read_bytes(), original_manifest)
+            self.assertFalse((root / "experiments").exists())
+        self.assertEqual(local_pointer.read_bytes() if local_pointer.is_file() else None, original_pointer)
+
     def test_episode_subset_selects_exact_counts_reproducibly_without_leakage(self) -> None:
         audit = {
             "usable": [
@@ -392,8 +432,9 @@ class BcBaselineTests(unittest.TestCase):
             from uav_ml.tools.bc_baseline import _publish_latest_bc
             from uav_ml.inference.bc_flight import BcFlightPolicy, resolve_checkpoint
 
-            _publish_latest_bc(root, summary)
-            self.assertEqual(resolve_checkpoint(root), output / "best.pt")
+            with mock.patch("uav_ml.tools.bc_baseline.nas_output_path", side_effect=lambda path, **kwargs: path):
+                _publish_latest_bc(root, summary)
+            self.assertEqual(resolve_checkpoint(root, artifact_root=root), output / "best.pt")
             automatic_policy = BcFlightPolicy(output / "best.pt", None, torch.device("cpu"))
             self.assertEqual(automatic_policy.identity.image_source, "fpv_rgb")
             self.assertEqual(automatic_policy.identity.encoder_path, str(encoder))
@@ -402,7 +443,7 @@ class BcBaselineTests(unittest.TestCase):
             self.assertFalse(pointer.with_suffix(".json.tmp").exists())
             with self.assertRaisesRegex(ValueError, "incomplete BC run"):
                 _publish_latest_bc(root, {**summary, "run_status": "running"})
-            self.assertEqual(resolve_checkpoint(root), output / "best.pt")
+            self.assertEqual(resolve_checkpoint(root, artifact_root=root), output / "best.pt")
             self.assertTrue((output / "tensorboard").is_dir())
             self.assertTrue(any((output / "tensorboard").iterdir()))
             accumulator = EventAccumulator(str(output / "tensorboard"))

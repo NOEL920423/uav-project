@@ -212,6 +212,27 @@ class ExpertCollectionToolTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self._collector(dataset, DryRunBackend(), resume=True, scene_version="v3").run()
 
+    def test_corridor_collection_records_profile_and_validates_scene(self) -> None:
+        dataset = self.root / "v5"
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = self._collector(
+                dataset, DryRunBackend(), scene_version="v5", episodes=2,
+            ).run()
+        self.assertTrue(result["valid"])
+        record = json.loads((dataset / "scene_parameters.json").read_text())
+        placement = record["scene_profile"]["obstacle_placement"]
+        self.assertEqual(placement["width_m"], 1.0)
+        self.assertEqual(placement["constraint"], "center")
+        for index in (1, 2):
+            episode_id = f"episode_{index:06d}"
+            scene = json.loads((self.root / "runtime" / episode_id / "expected_scene.json").read_text())
+            self.assertEqual(scene["scene_profile_sha256"], record["scene_profile_sha256"])
+            self.assertEqual(scene["placement_contract"]["obstacle_placement"]["lateral_offset_m"], [-0.5, 0.5])
+            validate_cylinder_scene(scene, episode_id, 103000 + index)
+        scene["obstacles"][0]["x"] += 2.0
+        with self.assertRaisesRegex(ValueError, "recorded profile"):
+            validate_cylinder_scene(scene, episode_id, 103000 + index)
+
     def test_scene_validator_rejects_profile_or_layout_tampering(self) -> None:
         scene = generate_episode_scene("episode_000001", 103001, 0.0, 0.0, scene_version="v3")
         validate_cylinder_scene(scene, "episode_000001", 103001)

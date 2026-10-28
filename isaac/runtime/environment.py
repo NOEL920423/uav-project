@@ -267,7 +267,7 @@ LIGHTING_CONTRACT = {
     },
 }
 
-SCENE_VERSIONS = ("v3", "v4")
+SCENE_VERSIONS = ("v3", "v4", "v5")
 DEFAULT_SCENE_VERSION = "v4"
 SCENE_PROFILE_ROOT = SCRIPT_ROOT.parents[1] / "config" / "scenes"
 # Freeze all generation and appearance settings, including derived constants.
@@ -302,6 +302,27 @@ def scene_parameters(profile: dict | None = None) -> SimpleNamespace:
     ):
         raise ValueError("invalid or incomplete scene profile")
     scene_profile_sha256(profile)  # Reject nonfinite JSON settings.
+    placement = profile.get("obstacle_placement")
+    if "obstacle_placement" in profile or profile["scene_version"] == "v5":
+        if (
+            not isinstance(placement, dict)
+            or set(placement) != {"mode", "width_m", "constraint"}
+            or placement.get("mode") != "direct_path_corridor"
+            or placement.get("constraint") != "center"
+            or isinstance(placement.get("width_m"), bool)
+            or not isinstance(placement.get("width_m"), (int, float))
+            or not math.isfinite(placement["width_m"])
+            or placement["width_m"] <= 0.0
+        ):
+            raise ValueError("invalid obstacle center corridor")
+        parameters = profile["parameters"]
+        if (
+            profile["generation"] != "seeded"
+            or parameters["GUARANTEE_DIRECT_PATH_BLOCKERS"]
+            or parameters["DIRECT_PATH_BLOCKER_COUNT"] != 0
+            or parameters["RANDOM_OBSTACLE_COUNT"] != parameters["NUM_OBSTACLES"]
+        ):
+            raise ValueError("center corridor requires only seeded random obstacles")
     return SimpleNamespace(**profile["parameters"])
 
 
@@ -546,6 +567,60 @@ def _window_contract(spec: dict, rng: random.Random, parameters=None) -> dict:
     }
 
 
+def _decorate_obstacles(placed: list[dict], rng: random.Random, parameters) -> list[dict]:
+    """Add stable names and building details without changing geometry."""
+    for index, spec in enumerate(placed, start=1):
+        spec["name"] = f"Obstacle_{index:03d}"
+        spec["windows"] = _window_contract(spec, rng, parameters)
+        spec["hierarchy"] = ["Body", "Windows", "Roof/Crown"]
+        if spec["roof_style"] == "antenna":
+            spec["hierarchy"].append("Roof/Antenna")
+    return placed
+
+
+def _generate_corridor_obstacles(
+    rng: random.Random, parameters, width_m: float,
+) -> list[dict]:
+    """Sample complete layouts with centers inside a shared path corridor."""
+    p = parameters
+    start_x, start_y = p.START_POS[:2]
+    line_dx = p.TARGET_POS[0] - start_x
+    line_dy = p.TARGET_POS[1] - start_y
+    line_length = math.hypot(line_dx, line_dy)
+    if line_length < 1e-6:
+        raise RuntimeError("cannot place corridor obstacles when start and target coincide")
+    normal_x, normal_y = -line_dy / line_length, line_dx / line_length
+    half_width = 0.5 * width_m
+
+    # Retry the whole layout so an isolated first sample cannot trap later ones.
+    for _attempt in range(p.MAX_PLACEMENT_ATTEMPTS):
+        placed: list[dict] = []
+        for _index in range(p.NUM_OBSTACLES):
+            spec = _random_cylinder_spec(rng, parameters=p)
+            radius = spec["radius"]
+            t = rng.uniform(0.0, 1.0)
+            lateral = rng.uniform(-half_width, half_width)
+            x = start_x + t * line_dx + lateral * normal_x
+            y = start_y + t * line_dy + lateral * normal_y
+            if not (
+                p.X_MIN + radius <= x <= p.X_MAX - radius
+                and p.Y_MIN + radius <= y <= p.Y_MAX - radius
+                and _is_valid_obstacle_position(x, y, radius, placed, p)
+            ):
+                break
+            spec.update({
+                "x": x, "y": y, "z": 0.5 * spec["height"],
+                "placement_mode": "random",
+            })
+            placed.append(spec)
+        else:
+            return _decorate_obstacles(placed, rng, p)
+    raise RuntimeError(
+        "could not place all obstacles in the shared center corridor "
+        f"after {p.MAX_PLACEMENT_ATTEMPTS} layout attempts"
+    )
+
+
 def _generate_seeded_obstacles(rng: random.Random, parameters=None) -> list[dict]:
     """Run the canonical obstacle rejection sampler and random call order."""
     p = parameters or scene_parameters()
@@ -648,13 +723,7 @@ def _generate_seeded_obstacles(rng: random.Random, parameters=None) -> list[dict
     if len(physical_blockers) < blocker_count:
         raise RuntimeError("canonical direct-path blocker validation failed")
 
-    for index, spec in enumerate(placed, start=1):
-        spec["name"] = f"Obstacle_{index:03d}"
-        spec["windows"] = _window_contract(spec, rng, p)
-        spec["hierarchy"] = ["Body", "Windows", "Roof/Crown"]
-        if spec["roof_style"] == "antenna":
-            spec["hierarchy"].append("Roof/Antenna")
-    return placed
+    return _decorate_obstacles(placed, rng, p)
 
 
 
@@ -714,13 +783,7 @@ def _generate_obstacles(rng: random.Random, parameters=None) -> list[dict]:
     if len(physical_blockers) < p.DIRECT_PATH_BLOCKER_COUNT:
         raise RuntimeError("canonical direct-path blocker validation failed")
 
-    for index, spec in enumerate(placed, start=1):
-        spec["name"] = f"Obstacle_{index:03d}"
-        spec["windows"] = _window_contract(spec, rng, p)
-        spec["hierarchy"] = ["Body", "Windows", "Roof/Crown"]
-        if spec["roof_style"] == "antenna":
-            spec["hierarchy"].append("Roof/Antenna")
-    return placed
+    return _decorate_obstacles(placed, rng, p)
 
 
 
@@ -905,8 +968,14 @@ def generate_episode_scene(
         raise ValueError("vehicle reset pose is outside the canonical start margin")
 
     decoration_seed = int(seed) if profile["generation"] == "seeded" else p.FIXED_OBSTACLE_DECORATION_SEED
-    sampler = _generate_seeded_obstacles if profile["generation"] == "seeded" else _generate_obstacles
-    obstacles = sampler(random.Random(decoration_seed), p)
+    placement = profile.get("obstacle_placement")
+    if placement is not None:
+        obstacles = _generate_corridor_obstacles(
+            random.Random(decoration_seed), p, placement["width_m"],
+        )
+    else:
+        sampler = _generate_seeded_obstacles if profile["generation"] == "seeded" else _generate_obstacles
+        obstacles = sampler(random.Random(decoration_seed), p)
     direct_blocker_count = sum(
         item["placement_mode"] == "guaranteed_direct_path_blocker"
         for item in obstacles
@@ -971,6 +1040,13 @@ def generate_episode_scene(
             ),
         },
     }
+    if placement is not None:
+        half_width = 0.5 * placement["width_m"]
+        scene["placement_contract"]["obstacle_placement"] = {
+            **placement,
+            "longitudinal_t_range": [0.0, 1.0],
+            "lateral_offset_m": [-half_width, half_width],
+        }
     return scene
 
 

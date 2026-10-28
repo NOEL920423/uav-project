@@ -43,6 +43,7 @@ from uav_ml.models import (
     ResNet18AutoencoderV0,
 )
 from uav_ml.tools.bc_baseline import audit_dataset, create_episode_split
+from uav_ml.tools.artifact_publish import nas_output_path, require_nas_root
 from uav_ml.tools.training_cli import (
     TensorBoardServer,
     add_episode_split_arguments,
@@ -51,6 +52,7 @@ from uav_ml.tools.training_cli import (
     experiment_run_directory,
     publish_autoencoder_latest,
     resolve_dataset,
+    save_checkpoint,
 )
 from uav_ml.tools.validate_expert_collection import DEFAULT_DATASET
 from uav_ml.training import resolve_device, set_seeds
@@ -182,7 +184,7 @@ def _save_checkpoint(
     metadata: dict,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
+    save_checkpoint(
         {
             "format_version": (
                 "multi_image_autoencoder_checkpoint_v0.1"
@@ -993,25 +995,31 @@ def main() -> int:
     except ValueError as error:
         print(f"ERROR: Autoencoder training stopped: {error}")
         return 1
-    output = (
-        Path(args.output_dir)
-        if args.output_dir
-        else experiment_run_directory(
-            "autoencoder",
-            location,
-            source_label,
-            timestamp,
-            project_root=repository_root,
-        )
-    )
-    if args.encoder_backbone == "resnet18" and not args.output_dir:
-        output = output.parent / "resnet18" / output.name
-    latest_index = autoencoder_latest_path(
-        location, source_label, project_root=repository_root
-    )
-    if args.encoder_backbone == "resnet18":
-        latest_index = latest_index.parent / "resnet18" / latest_index.name
     try:
+        nas_root = require_nas_root()
+        output = (
+            Path(args.output_dir)
+            if args.output_dir
+            else experiment_run_directory(
+                "autoencoder", location, source_label, timestamp, artifact_root=nas_root,
+            )
+        )
+        if args.encoder_backbone == "resnet18" and not args.output_dir:
+            output = output.parent / "resnet18" / output.name
+        output = nas_output_path(output, nas_root=nas_root)
+        if output.exists():
+            raise FileExistsError(f"refusing to overwrite experiment: {output}")
+        latest_index = autoencoder_latest_path(
+            location, source_label, artifact_root=nas_root
+        )
+        if args.encoder_backbone == "resnet18":
+            latest_index = latest_index.parent / "resnet18" / latest_index.name
+        latest_index = nas_output_path(latest_index, nas_root=nas_root)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"ERROR: Autoencoder training stopped: {error}")
+        return 1
+    try:
+        output.mkdir(parents=True, exist_ok=False)
         with TensorBoardServer(
             output / "tensorboard",
             enabled=args.tensorboard,

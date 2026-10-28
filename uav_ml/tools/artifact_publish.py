@@ -8,10 +8,76 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 
 
 MANIFEST_FILENAME = "transfer_manifest.json"
 MANIFEST_SCHEMA = "uav_artifact_transfer/v1"
+DEFAULT_NAS_ROOT = Path.home() / "NAS/614/614420090_ChenHao/uav-project"
+NETWORK_FILESYSTEMS = {
+    "nfs", "nfs4", "cifs", "smb3", "ceph", "glusterfs",
+    "fuse.raidrive", "fuse.rclone", "fuse.sshfs", "fuse.davfs", "davfs",
+}
+
+
+def nas_project_root(value: str | Path | None = None) -> Path:
+    """Resolve the shared NAS project root without creating directories."""
+    selected = value if value is not None else os.environ.get("UAV_NAS_ROOT", DEFAULT_NAS_ROOT)
+    if not str(selected).strip():
+        raise ValueError("NAS project root cannot be empty")
+    return Path(selected).expanduser().resolve()
+
+
+def require_nas_root(value: str | Path | None = None) -> Path:
+    """Reject absent, local, or unwritable NAS roots before any output is opened."""
+    root = nas_project_root(value)
+    if not root.is_dir():
+        raise FileNotFoundError(f"NAS project root is unavailable: {root}")
+    result = subprocess.run(
+        ["findmnt", "--noheadings", "--output", "FSTYPE", "--target", str(root)],
+        capture_output=True, text=True, timeout=5, check=False,
+    )
+    filesystem = result.stdout.strip()
+    if result.returncode or filesystem not in NETWORK_FILESYSTEMS:
+        raise RuntimeError(
+            f"NAS project root is not on a mounted network filesystem: {root} "
+            f"(filesystem={filesystem or 'unknown'}; {result.stderr.strip()})"
+        )
+    if not os.access(root, os.W_OK | os.X_OK):
+        raise PermissionError(f"NAS project root is not writable: {root}")
+    return root
+
+
+def nas_output_path(value: str | Path, *, nas_root: Path | None = None) -> Path:
+    """Require every explicit or default output to remain inside the mounted NAS."""
+    root = require_nas_root(nas_root)
+    output = Path(value).expanduser().resolve()
+    if output == root or not output.is_relative_to(root):
+        raise ValueError(f"output must be a directory inside NAS project root {root}: {output}")
+    return output
+
+
+def stored_experiment_path(
+    value: str | Path, project_root: Path, *, artifact_root: Path | None = None,
+) -> Path:
+    """Resolve archived experiment references without changing checkpoint metadata."""
+    project = project_root.resolve()
+    path = Path(value).expanduser()
+    path = (path if path.is_absolute() else project / path).resolve()
+    try:
+        relative = path.relative_to(project / "artifacts/experiments")
+    except ValueError:
+        pass
+    else:
+        if relative.parts and relative.parts[0] == "bc_baseline":
+            return path
+        path = project / "experiments" / relative
+    try:
+        relative = path.relative_to(project / "experiments")
+    except ValueError:
+        return path
+    archived = nas_project_root(artifact_root) / "experiments" / relative
+    return archived if archived.is_file() else path
 
 
 def _sha256(path: Path) -> str:

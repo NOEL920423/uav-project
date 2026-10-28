@@ -22,9 +22,12 @@
 ## Current workflows
 
 Daily work should enter through `./uav`. The supported workflows are expert
-collection (`expert-collect`), autoencoder training (`ae-train`), BC training
-(`bc-train`), BC flight evaluation (`bc-eval`), and guarded PX4 SITL flight
-(`px4-sitl-flight-check`). Readiness checks, timing diagnostics, and regression tests support these workflows.
+collection (`expert-collect`), autoencoder training (`ae-train`), ResNet training
+(`resnet-train`), BC training (`bc-train`), and closed-loop flight evaluation
+(`bc-eval` or `eval`). Supporting commands cover workspace builds (`build`),
+dataset validation (`expert-validate`), saved evaluation plots (`bc-eval-plot`),
+and repeatable arguments (`profile`). Runtime readiness checks remain part of
+collection and evaluation.
 The workspace has five ROS packages and two flight launch files; see [architecture](docs/architecture.md).
 
 Use a profile for repeatable daily arguments without changing module defaults:
