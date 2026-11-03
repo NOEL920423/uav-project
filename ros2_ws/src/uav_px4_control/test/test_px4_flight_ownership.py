@@ -1,8 +1,10 @@
-"""Static single-owner contracts for the explicitly authorized SITL flight."""
+"""Ownership and ROS adapter regressions for the guarded SITL flight."""
 
 import ast
+import json
 import runpy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -192,3 +194,190 @@ def test_human_supervisor_ros_adapter_requires_live_neutral_landed_input():
         if node is not None:
             node.destroy_node()
         rclpy.shutdown()
+
+
+@pytest.fixture
+def telemetry_supervisor():
+    """Exercise real ROS messages and supervisor decisions without PX4."""
+    import rclpy
+    from uav_interfaces.msg import (
+        ControlMuxStatus, Px4OutputGateStatus, Px4StreamStatus,
+    )
+    from uav_px4_control.flight.px4_flight_models import Px4FlightState
+    from uav_px4_control.flight.px4_sitl_flight_supervisor_node import (
+        Px4SitlFlightSupervisorNode,
+    )
+
+    rclpy.init(args=[])
+    node = None
+    try:
+        node = Px4SitlFlightSupervisorNode()
+        node._now_seconds = lambda: 1.0
+        node._sitl_guard_valid = lambda: True
+        status = node._VehicleStatus(timestamp=123_000)
+        status.arming_state = status.ARMING_STATE_ARMED
+        status.nav_state = status.NAVIGATION_STATE_OFFBOARD
+        node._vehicle_status_callback(status)
+        node._vehicle_odometry_callback(
+            node._VehicleOdometry(timestamp=456_000)
+        )
+        node._mux_status = ControlMuxStatus(
+            active_source="ASTAR_EXPERT", selected_command_valid=True,
+        )
+        node._gate_status = Px4OutputGateStatus(
+            state="SAFE_TO_FORWARD", safe_to_forward=True,
+        )
+        node._stream_status = Px4StreamStatus(
+            state="STREAMING", streaming=True, observed_rate_hz=20.0,
+        )
+        node._scene_kind = "takeoff"
+        node.machine.request_enable(True, 0.0)
+        node.machine.state = Px4FlightState.TAKEOFF
+        errors, actions, statuses = [], [], []
+        node.get_logger = lambda: SimpleNamespace(
+            info=lambda message: None, error=errors.append,
+        )
+        node._execute_action = lambda action, now: actions.append(action)
+        node._status_publisher = SimpleNamespace(publish=statuses.append)
+        yield node, errors, actions, statuses
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
+@pytest.mark.parametrize("status_age,odometry_age,stale", [
+    (0.751, 0.25, ["/fmu/out/vehicle_status"]),
+    (0.75, 0.251, ["/fmu/out/vehicle_odometry"]),
+    (0.751, 0.251, [
+        "/fmu/out/vehicle_status", "/fmu/out/vehicle_odometry",
+    ]),
+])
+def test_telemetry_timeout_identifies_topic_and_preserves_landing(
+    telemetry_supervisor, status_age, odometry_age, stale
+):
+    """Report the triggering ages without replacing the original failure."""
+    node, errors, actions, statuses = telemetry_supervisor
+    node._vehicle_status_receipt_s = 1.0 - status_age
+    node._vehicle_odometry_receipt_s = 1.0 - odometry_age
+    node._tick()
+
+    assert actions == [
+        "STOP_TRACKING", "DISABLE_STREAM", "DISABLE_OUTPUT_GATE", "SEND_LAND",
+    ]
+    assert statuses[-1].state == "LANDING"
+    assert statuses[-1].failure_reason == "PX4 telemetry became stale"
+    assert len(errors) == 1
+    prefix, raw = errors[0].split(" ", 1)
+    assert prefix == "PX4_TELEMETRY_TIMEOUT"
+    snapshot = json.loads(raw)
+    assert snapshot["failure_reason"] == statuses[-1].failure_reason
+    assert snapshot["state_before"] == "TAKEOFF"
+    assert snapshot["state_after"] == "LANDING"
+    assert snapshot["decision_ros_s"] == 1.0
+    assert snapshot["receive_clock"] == "ros_node_clock"
+    assert snapshot["stale_topics"] == stale
+    for topic, age, threshold, timestamp in (
+        ("/fmu/out/vehicle_status", status_age, 0.75, 123_000),
+        ("/fmu/out/vehicle_odometry", odometry_age, 0.25, 456_000),
+    ):
+        details = snapshot["topics"][topic]
+        assert details["receive_age_s"] == pytest.approx(age)
+        assert details["last_receive_ros_s"] == pytest.approx(1.0 - age)
+        assert details["timeout_s"] == threshold
+        assert details["px4_timestamp_us"] == timestamp
+        assert details["fresh"] == (topic not in stale)
+
+
+@pytest.mark.parametrize("status_age,odometry_age", [
+    (0.0, 0.0), (0.749, 0.249), (0.75, 0.25),
+])
+def test_telemetry_at_original_limits_remains_fresh_and_quiet(
+    telemetry_supervisor, status_age, odometry_age
+):
+    """Keep the inclusive 0.75/0.25 second limits and normal takeoff."""
+    node, errors, actions, statuses = telemetry_supervisor
+    node._vehicle_status_receipt_s = 1.0 - status_age
+    node._vehicle_odometry_receipt_s = 1.0 - odometry_age
+    assert node._evidence(1.0).telemetry_fresh
+    node._tick()
+    assert errors == []
+    assert actions == []
+    assert statuses[-1].state == "TAKEOFF"
+    assert statuses[-1].failure_reason == ""
+
+
+def test_missing_odometry_is_reported_without_invented_timestamps(
+    telemetry_supervisor,
+):
+    """Serialize missing measurements as null and retain safe landing."""
+    node, errors, actions, statuses = telemetry_supervisor
+    node._vehicle_odometry = None
+    node._vehicle_odometry_receipt_s = None
+    node._tick()
+    snapshot = json.loads(errors[0].split(" ", 1)[1])
+    assert snapshot["stale_topics"] == ["/fmu/out/vehicle_odometry"]
+    assert snapshot["topics"]["/fmu/out/vehicle_odometry"] == {
+        "receive_age_s": None, "timeout_s": 0.25, "fresh": False,
+        "last_receive_ros_s": None, "px4_timestamp_us": None,
+    }
+    assert "SEND_LAND" in actions
+    assert statuses[-1].failure_reason == "PX4 telemetry became stale"
+
+
+@pytest.mark.parametrize("failsafe", [False, True])
+def test_stale_data_does_not_relabel_readiness_or_failsafe(
+    telemetry_supervisor, failsafe
+):
+    """Log only an actual telemetry failure selected by the state machine."""
+    from uav_px4_control.flight.px4_flight_models import Px4FlightState
+
+    node, errors, actions, statuses = telemetry_supervisor
+    node._vehicle_status_receipt_s = 0.0
+    node._vehicle_status.failsafe = failsafe
+    if not failsafe:
+        node.machine.state = Px4FlightState.WAITING_PIPELINE
+    node._tick()
+    assert errors == []
+    if failsafe:
+        assert statuses[-1].failure_reason == "PX4 failsafe became active"
+        assert "SEND_LAND" in actions
+    else:
+        assert statuses[-1].state == "WAITING_PIPELINE"
+        assert statuses[-1].failure_reason == ""
+
+
+def test_telemetry_timeout_logs_once_and_again_for_a_new_mission(
+    telemetry_supervisor,
+):
+    """Landing retains one snapshot; a separately enabled mission gets its own."""
+    from uav_interfaces.srv import SetPx4FlightEnable
+    from uav_px4_control.flight.px4_flight_models import Px4FlightState
+
+    node, errors, actions, statuses = telemetry_supervisor
+    node._vehicle_status_receipt_s = 0.0
+    node._tick()
+    original_snapshot = errors[0]
+    for _ in range(3):
+        node._tick()
+    node._vehicle_status.arming_state = (
+        node._vehicle_status.ARMING_STATE_STANDBY
+    )
+    node._land_callback(node._VehicleLandDetected(landed=True))
+    node._tick()
+    assert statuses[-1].state == "FAILED"
+    assert statuses[-1].failure_reason == "PX4 telemetry became stale"
+    assert errors == [original_snapshot]
+
+    node._publish_takeoff_scene = lambda: None
+    response = node._flight_enable_callback(
+        SetPx4FlightEnable.Request(enable=True), SetPx4FlightEnable.Response()
+    )
+    assert response.accepted
+    node.machine.state = Px4FlightState.TAKEOFF
+    node._scene_kind = "takeoff"
+    node._vehicle_status.arming_state = node._vehicle_status.ARMING_STATE_ARMED
+    node._land_callback(node._VehicleLandDetected(landed=False))
+    node._tick()
+    assert len(errors) == 2
+    assert statuses[-1].failure_reason == "PX4 telemetry became stale"

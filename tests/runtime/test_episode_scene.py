@@ -19,6 +19,30 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
 
+def test_runtime_bridge_starts_without_removed_gui(monkeypatch):
+    """Bridge startup must complete without the removed optional GUI module."""
+    calls = []
+    bridge = object()
+    handles = SimpleNamespace()
+
+    def stop_bridge():
+        calls.append("stop")
+
+    def create_bridge():
+        calls.append("create")
+        return bridge
+
+    monkeypatch.setattr(MODULE, "ISAAC_RUNTIME_AVAILABLE", True)
+    monkeypatch.setattr(MODULE, "builtins", handles)
+    monkeypatch.setattr(MODULE, "stop_isaac_runtime_bridge", stop_bridge, raising=False)
+    monkeypatch.setattr(MODULE, "IsaacRuntimeBridge", create_bridge, raising=False)
+    MODULE.start_isaac_runtime_bridge()
+
+    assert calls == ["stop", "create"]
+    assert handles._isaac_runtime_bridge is bridge
+    assert handles.stop_isaac_runtime_bridge is stop_bridge
+
+
 def test_seed_reproduces_configured_obstacle_scene():
     """The same reset pose and seed produce byte-equal canonical metadata."""
     left = MODULE.generate_episode_scene("episode_000001", 102001, 0.0, 0.0)

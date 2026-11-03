@@ -2068,8 +2068,6 @@ def start_isaac_runtime_bridge() -> None:
     stop_isaac_runtime_bridge()
     builtins._isaac_runtime_bridge = IsaacRuntimeBridge()
     builtins.stop_isaac_runtime_bridge = stop_isaac_runtime_bridge
-    from GUI import show_environment_gui
-    show_environment_gui(builtins._isaac_runtime_bridge)
 
 
 if __name__ == "__isaac_runtime_bridge__":

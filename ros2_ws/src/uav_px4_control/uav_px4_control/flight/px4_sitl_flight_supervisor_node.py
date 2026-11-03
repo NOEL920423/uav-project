@@ -94,6 +94,8 @@ MSG_SUPERVISOR_DISABLED = (
     "SITL flight supervisor starts disabled; lifecycle commands "
     "use the sole VehicleCommand owner"
 )
+_VEHICLE_STATUS_TIMEOUT_S = 0.75
+_VEHICLE_ODOMETRY_TIMEOUT_S = 0.25
 
 
 class Px4SitlFlightSupervisorNode(Node):
@@ -602,8 +604,10 @@ class Px4SitlFlightSupervisorNode(Node):
         telemetry_fresh = bool(
             self._vehicle_status_receipt_s is not None
             and self._vehicle_odometry_receipt_s is not None
-            and now - self._vehicle_status_receipt_s <= 0.75
-            and now - self._vehicle_odometry_receipt_s <= 0.25
+            and now - self._vehicle_status_receipt_s
+            <= _VEHICLE_STATUS_TIMEOUT_S
+            and now - self._vehicle_odometry_receipt_s
+            <= _VEHICLE_ODOMETRY_TIMEOUT_S
         )
         mux = self._mux_status
         astar_selected = bool(
@@ -739,6 +743,7 @@ class Px4SitlFlightSupervisorNode(Node):
             self._publish_takeoff_scene()
         evidence = self._evidence(now)
         previous = self.machine.state
+        previous_failure = self.machine.failure_reason
         decision = self.machine.step(now, evidence)
         if decision.state != previous:
             self.get_logger().info(
@@ -746,9 +751,48 @@ class Px4SitlFlightSupervisorNode(Node):
             )
         for action in decision.actions:
             self._execute_action(action, now)
+        if (
+            decision.failure_reason == "PX4 telemetry became stale"
+            and previous_failure != decision.failure_reason
+        ):
+            self._log_telemetry_timeout(now, previous)
         if self.human_control:
             self._publish_human_takeoff_command(evidence)
         self._status_publisher.publish(self._status_message(evidence))
+
+    def _log_telemetry_timeout(
+        self, now: float, previous: Px4FlightState
+    ) -> None:
+        """Record the triggering receipt ages after requesting safe actions."""
+        topics = {}
+        for topic, message, receipt_s, timeout_s in (
+            (VEHICLE_STATUS_TOPIC, self._vehicle_status,
+             self._vehicle_status_receipt_s, _VEHICLE_STATUS_TIMEOUT_S),
+            (VEHICLE_ODOMETRY_TOPIC, self._vehicle_odometry,
+             self._vehicle_odometry_receipt_s, _VEHICLE_ODOMETRY_TIMEOUT_S),
+        ):
+            age_s = None if receipt_s is None else now - receipt_s
+            topics[topic] = {
+                "receive_age_s": age_s,
+                "timeout_s": timeout_s,
+                "fresh": receipt_s is not None and age_s <= timeout_s,
+                "last_receive_ros_s": receipt_s,
+                "px4_timestamp_us": (
+                    None if message is None else int(message.timestamp)
+                ),
+            }
+        self.get_logger().error("PX4_TELEMETRY_TIMEOUT " + json.dumps({
+            "failure_reason": self.machine.failure_reason,
+            "state_before": previous.value,
+            "state_after": self.machine.state.value,
+            "decision_ros_s": now,
+            "receive_clock": "ros_node_clock",
+            "stale_topics": [
+                topic for topic, details in topics.items()
+                if not details["fresh"]
+            ],
+            "topics": topics,
+        }, allow_nan=False, sort_keys=True))
 
     def _publish_human_takeoff_command(self, evidence: FlightEvidence) -> None:
         """Keep the existing lifecycle source fresh through human handoff."""
